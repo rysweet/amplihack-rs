@@ -6,6 +6,7 @@ description: |
   Use when reviewing test coverage or planning test improvements.
   Generates specific test suggestions with example templates following amplihack's testing pyramid (60% unit, 30% integration, 10% E2E).
   Can use coverage.py for Python projects.
+  Also explains how to write the tests it suggests.
 ---
 
 # Test Gap Analyzer Skill
@@ -388,14 +389,15 @@ def test_user_service_with_database(test_db):
 - Minimal E2E tests (verify user flows)
 - Balanced distribution prevents brittleness
 
+## Writing the Tests
+
+Read `writing-tests.md` beside this file when you write a test this skill suggests. It covers arrange, act, assert, the unit, integration, mocking and parameterised patterns, layout and naming, a checklist, and the anti-patterns to avoid.
+
 ## Integration with Other Skills
 
 ### Works With
 
-- **code-quality-analyzer**: Identifies complexity
 - **module-spec-generator**: Aligns tests with specs
-- **refactor-advisor**: Plans test changes
-- **type-safety-checker**: Tests type contracts
 
 ### Feeds Into
 

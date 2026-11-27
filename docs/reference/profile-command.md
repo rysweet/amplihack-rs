@@ -4543,6 +4543,11 @@ profile in this order:
 3. `<root>/.default`
 4. none — `CLAUDE_CONFIG_DIR` is left exactly as inherited.
 
+Recipe launches marked by `AMPLIHACK_RECIPE_RUN_ID` skip step 3. With no
+explicit profile they use the inherited `CLAUDE_CONFIG_DIR`, or the live
+host login in `$HOME/.claude` when the variable is unset. This also applies
+when usage-limit waiting is disabled.
+
 When a profile resolves, three variables are set on the child `Command` only
 (never `set_var`), and only for Claude-compatible binaries. This applies to
 every command that starts Claude with a profile: `amplihack claude`,
@@ -4603,11 +4608,12 @@ AMPLIHACK_CLAUDE_PROFILE=work amplihack recipe run default-workflow
 A stale export in a shell startup file acts as a per-shell default that beats
 the pointer; `unset AMPLIHACK_CLAUDE_PROFILE` removes it.
 
-`amplihack recipe run` and `amplihack multitask` do not resolve a profile
-themselves. Started from a plain shell with no inherited
-`AMPLIHACK_CLAUDE_PROFILE`, each agent step resolves the pointer on its own,
-so a `profile switch` part way through moves later steps to the new profile.
-Start them from inside an `amplihack claude` session, or set
+Agent steps in `amplihack recipe run` and recipe-mode `amplihack multitask`
+without an explicit or inherited profile use the inherited `CLAUDE_CONFIG_DIR`
+or `~/.claude`. A successful `profile switch` changes the login used by steps
+on `~/.claude`. Classic multitask launches started from a plain shell still
+read the default pointer when no profile is selected. Start a run from inside
+a profiled `amplihack claude` session, or set
 `AMPLIHACK_CLAUDE_PROFILE` as above, to pin one profile for the whole run.
 
 Fleet and remote VM launches do not pass the profile on, so nested launches
@@ -7067,21 +7073,32 @@ consecutive cycles, including this one, whose live probe failed.
 |-----------|---------|----------|
 | The live login has a standing recorded block in the ledger | None of these rules applies, including the home-key stay below: a failed live probe is read as the recorded block, which is evidence of no room, so it does not hold the move off. A target that could not be read fresh is taken [unconfirmed](#rotate-confirmation) on its recent reading. | as the swap line |
 | `k < 3` | Stay. | `stay: live probe failed (<k>/3)` |
-| `k >= 3` and `now - swapped_at < hold` | Stay. | `stay: live probe failed; held after last swap (<N>s left)`, where `N = hold - (now - swapped_at)`, or `hold` if `swapped_at` is in the future |
+| `k >= 3`, the post-swap hold applies, and the rotator has no evidence of high use | Stay. | `stay: live probe failed; held after last swap (<N>s left)`, where `N = hold - (now - swapped_at)`, or `hold` if `swapped_at` is in the future |
 | The [API-key login check](#api-key-login-check) passes on the `$HOME` files and the API key is not live | Stay. | `stay: live probe failed; home key (<detail>) applies to every login once live, a swap changes nothing`; see [API-key login check](#api-key-login-check) |
-| Otherwise | Swap to the first-ranked qualifying candidate, per [Rotate target choice](#rotate-target-choice). | `swap <from>-><to> live failed target s=<n>% w=<n>% reason=failed-probe` |
+| Otherwise | Swap to the first-ranked qualifying candidate after a fresh confirmation, per [Rotate target choice](#rotate-target-choice). | `swap <from>-><to> live failed target s=<n>% w=<n>% reason=failed-probe`, with the usage evidence appended when the swap occurs during the hold |
+
+Use counts as high if either figure from the last accepted post-swap
+reading meets its threshold (`--session-at` or `--week-at`) while its own
+window is still open. A weekly figure with no known reset time can count
+for less than five hours from the reading. An open high-water reading also
+counts if it meets its threshold and no newer window supersedes it. A rise
+between two accepted post-swap session observations at least `--interval`
+seconds apart in the same window also counts if it projects `--session-at`
+before the hold ends and before any known session reset. The projection starts at the
+last observation's original time, including when later cycles reuse that
+reading. The swap line gives the figures and thresholds used.
 
 `k` is kept in memory by `watch`. It is reset to `0` by a cycle whose live
 probe does not fail, by a completed swap, and by restarting the rotator. The
 one-shot `rotate` always uses `k = 1`, so it never swaps on a failed live
-probe alone. With `--hold 0` the second rule never applies, but the first
-still limits these swaps to one every three cycles.
+probe alone. With `--hold 0`, the post-swap hold is disabled and the
+three-failure count still applies.
 
 Nothing else changes: an ALERT when no candidate meets the margin, swaps on
 a measured threshold, swaps on an exhausted live login and upgrade swaps
 behave as in the table above.
 
-One exception changes only the timing of these rules. When the live login
+The near-threshold rule also changes the timing of these rules. When the live login
 was near `--session-at` on a last known reading whose session window can
 still be open, and the swap target has at least `--margin` more headroom
 than the larger of `--session-at` and that last known session use, and is
@@ -10393,12 +10410,11 @@ writes. If a recovery ran, only that recovery's changes are made, and its
 
 #### Default only
 
-Making `<name>` the default for new launches never depended on moving the
-live login, and it still does not. When the live login cannot be moved for
-a reason about the live login or `<name>` (step 6, 7 or 8, or a platform
-without Unix file semantics), `switch` writes `<root>/.default` under the
-rotate lock, prints two lines on stdout, and exits 1 with the refusal on
-stderr:
+When the live login cannot be moved for a reason about the live login or
+`<name>` (step 6, 7 or 8, or a platform without Unix file semantics),
+`switch` still sets the default for launches outside recipes. It writes
+`<root>/.default` under the rotate lock, prints two lines on stdout, and
+exits 1 with the refusal on stderr:
 
 ```
 Default for new launches: spare
@@ -10410,10 +10426,10 @@ It writes no pin and no ledger record, so the
 and the rotator keeps rotating. A pin left by an earlier `switch` is not
 changed; the second line then names it:
 ``Live login not moved; rotation still held on work until `amplihack profile switch --none`.``
-The pin decides what `~/.claude` holds and `.default` decides what
-amplihack launches without `--profile` use, so after a default-only refusal
-they can name different profiles until the next successful `switch` or
-`switch --none`. `switch --none` removes both.
+The pin holds a login in `~/.claude`. The `.default` pointer applies outside
+recipe runs when no flag or inherited profile selects one. After a
+default-only refusal, the live login and the default pointer can name
+different profiles. `switch --none` removes the pin and the default pointer.
 
 This is how `switch` sets the default on macOS, where `/proc` cannot be
 scanned and every profile counts as having a running session, and for a
@@ -10431,8 +10447,8 @@ pin to `<other>`.
 
 A `switch` counts as capacity for the [usage-limit wait](#usage-limit-wait):
 you chose that login, so the switch stands in for a measurement taken at the
-moment of the switch, and a recipe step that stopped on a usage limit before
-the switch reruns. This holds for every held cycle that follows, because a
+moment of the switch, and a recipe step waiting on a limit in `~/.claude`
+reruns. This holds for every held cycle that follows, because a
 held cycle keeps the `switched` record (see [Rotate pin](#rotate-pin)).
 
 A `switch` does not resume interactive sessions. It writes no
@@ -12543,9 +12559,10 @@ login in `~/.claude`, and its retry runs on whichever login is live there.
 See [Retry login](#retry-login).
 Otherwise the same supervisor runs with no profile substitution: the retry
 runs under the inherited profile, or with no override when none was
-inherited. With no inherited profile the launch may still apply the
-`.default` pointer's profile; the wait then watches that profile's login,
-unless it is the rotator's live profile, whose login is in `~/.claude`.
+inherited. With no inherited profile, recipe launches watch the login in
+`CLAUDE_CONFIG_DIR` when set, or the live host login in `~/.claude`. Other
+launches may apply the `.default` pointer's profile. The wait then watches
+that profile's login, unless it is the rotator's live profile in `~/.claude`.
 
 The supervisor keeps the held-back stdout in `<root>/.auto-switch.d/rerun/`
 when auto-switch is on, otherwise in `$HOME/.amplihack/rerun/`.

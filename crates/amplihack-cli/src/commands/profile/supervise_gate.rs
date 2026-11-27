@@ -126,15 +126,17 @@ mod unix {
 }
 
 /// The profile a launch with no `--profile` and no inherited profile applies
-/// from the `.default` pointer, resolved as `launch_profile_dir` does it:
-/// `None` when there is no pointer, it cannot be resolved, or its profile is
-/// the rotator's live one (the launch then uses `~/.claude`). Prints
-/// nothing; the launch itself reports any problem.
+/// from the `.default` pointer, resolved as `launch_profile_dir` does it.
+/// Recipe launches skip the pointer. Prints nothing; the launch itself
+/// reports any problem.
 #[cfg(unix)]
 fn default_profile(
     store: &super::store::ProfileStore,
     home: Option<&std::path::Path>,
 ) -> Option<super::name::ProfileName> {
+    if !super::uses_default_launch_profile() {
+        return None;
+    }
     let (name, _) = super::resolve_launch_profile(store, None, None).ok()??;
     let live = super::default_live::could_be_live(store, &name)
         && super::default_live::detect(store, home)

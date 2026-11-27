@@ -109,7 +109,7 @@ and repeat the same command to finish applying it.
 
 In a Copilot home, amplihack manages the top-level Markdown of the skill
 folders named after bundle skills, including the nested skills
-`analyzing-deeply`, `architecting-solutions`, `creating-pull-requests`, `researching-topics`, `reviewing-code`, `setting-up-projects` and `testing-code`, under both settings, so a Copilot skill of your own needs a
+`analyzing-deeply`, `researching-topics`, `reviewing-code` and `setting-up-projects`, under both settings, so a Copilot skill of your own needs a
 folder name the bundle does not use.
 
 ## When loading the repository as a plugin

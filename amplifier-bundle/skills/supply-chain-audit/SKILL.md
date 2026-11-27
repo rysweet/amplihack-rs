@@ -303,4 +303,4 @@ See [reference/eval-scenarios.md](reference/eval-scenarios.md) for three graded 
 - `pre-commit-manager` — automated quality enforcement hooks
 - `cybersecurity-analyst` — runtime security and threat modeling
 - `silent-degradation-audit` — CI reliability and regression detection
-- `pr-review-assistant` — philosophy-aware PR review including supply chain checks
+- `reviewing-code` — code and pull request review

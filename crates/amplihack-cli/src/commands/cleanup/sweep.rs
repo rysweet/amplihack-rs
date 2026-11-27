@@ -7,10 +7,8 @@
 
 use super::Category;
 use super::archive::archive_file;
-use super::eligibility::{
-    PrInfo, Verdict, is_valid_branch, is_valid_id, lookup_pr, no_pr_verdict, pr_verdict,
-    run_is_active,
-};
+use super::eligibility::{Verdict, is_valid_branch, is_valid_id, no_pr_verdict, run_is_active};
+use super::pull_requests;
 use super::run_dir::{
     CLEANUP_RECORD, OWNED_PATHS, OwnedKind, OwnedPath, RUN_JSON, RUN_SCHEMA_VERSION, RunReport,
     TargetOrigin, format_owned_line, now_rfc3339, read_capped_nofollow, read_owned_paths, short_id,
@@ -24,6 +22,7 @@ use crate::commands::hygiene::cleanup::{
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -55,6 +54,12 @@ pub(crate) const REASON_LOCK_HELD: &str = "cleanup lock held";
 /// cleanup lists them and leaves them to that command.
 pub(crate) const REASON_SESSIONS_ARCHIVE: &str = "archived by `amplihack sessions archive`";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PullRequests {
+    LocalOnly,
+    GitHub,
+}
+
 /// Everything a sweep needs to know.
 #[derive(Debug, Clone)]
 pub(crate) struct Settings {
@@ -64,6 +69,7 @@ pub(crate) struct Settings {
     pub archive_dir: PathBuf,
     pub categories: BTreeSet<Category>,
     pub apply: bool,
+    pub pull_requests: PullRequests,
     /// Report linked worktrees that no run recorded (skipped).
     pub report_unrecorded: bool,
     pub deadline: Option<Instant>,
@@ -803,11 +809,14 @@ fn checked_out_branch(worktree: &Path) -> Result<Option<String>> {
         .args(["symbolic-ref", "--quiet", "HEAD"]);
     let output = crate::util::run_output_with_timeout(command, GIT_TIMEOUT)?;
     match output.status.code() {
-        // Not `--short`: that prints `heads/<name>` when a tag shares the
-        // name, and `gh pr list --head heads/<name>` then finds no PR.
+        // `--short` prints `heads/<name>` when a tag shares the name.
         Some(0) => {
-            let full = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            Ok(full.strip_prefix("refs/heads/").map(String::from))
+            let full = std::str::from_utf8(&output.stdout).context("branch is not UTF-8")?;
+            let branch = full
+                .trim_end_matches('\n')
+                .strip_prefix("refs/heads/")
+                .context("HEAD does not name a local branch")?;
+            Ok(Some(branch.to_string()))
         }
         // Exit 1 with --quiet: HEAD is not a symbolic ref (detached).
         Some(1) => Ok(None),
@@ -964,6 +973,11 @@ struct Candidate<'a> {
     shape: Option<Shape>,
 }
 
+enum WorktreeEvidence<'a> {
+    Known(Verdict),
+    Branch(Cow<'a, str>),
+}
+
 struct Collector<'a> {
     s: &'a Settings,
     roots: ManagedRoots,
@@ -971,7 +985,7 @@ struct Collector<'a> {
     now: SystemTime,
     /// Taken on first use: most categories never ask.
     procs: Option<ProcScan>,
-    gh_cache: HashMap<(PathBuf, String), Result<Option<PrInfo>, String>>,
+    pr_listings: HashMap<pull_requests::Repository, Result<pull_requests::Listing>>,
     common_cache: HashMap<PathBuf, Option<PathBuf>>,
     list_cache: HashMap<PathBuf, Result<Vec<PathBuf>, String>>,
     items: Vec<Item>,
@@ -1022,65 +1036,70 @@ impl Collector<'_> {
         value
     }
 
-    fn pr_for(&mut self, branch: &str, repo_dir: &Path) -> Result<Option<PrInfo>, String> {
-        // Keyed by repository as well: two checkouts can share a branch name.
-        let key = (repo_dir.to_path_buf(), branch.to_string());
-        if let Some(hit) = self.gh_cache.get(&key) {
-            return hit.clone();
-        }
-        let value = lookup_pr(branch, repo_dir).map_err(|e| format!("{e:#}"));
-        self.gh_cache.insert(key, value.clone());
-        value
-    }
-
-    /// The verdict for one contained, linked worktree of an inactive run,
-    /// from its own branch. The PR is looked up in the worktree itself, never
-    /// in a folder named only by `run.json`.
-    fn worktree_verdict(
-        &mut self,
-        c: &Candidate<'_>,
+    fn worktree_evidence<'a>(
+        &self,
+        c: &Candidate<'a>,
         run: &RunInfo,
-        report: &RunReport,
-    ) -> Verdict {
-        // No branch recorded: ask about the branch the worktree has checked
-        // out, so an open PR on it still keeps the worktree. Only a detached
-        // HEAD falls through to the no-PR rule.
-        let checked_out;
+        ended: Option<DateTime<Utc>>,
+    ) -> WorktreeEvidence<'a> {
+        let keep = |reason: String| WorktreeEvidence::Known(Verdict::Skip { reason });
+        if ended.is_some_and(
+            |stamp| !matches!(self.now.duration_since(stamp.into()), Ok(age) if age >= self.s.keep),
+        ) {
+            return keep("run ended within the keep period".into());
+        }
+        // Older ownership records may omit the branch. Only a detached HEAD
+        // without a recorded branch falls through to the no-PR rule.
         let branch = match c.owned.branch.as_deref() {
-            Some(branch) => branch,
+            Some(branch) => Cow::Borrowed(branch),
             None => match checked_out_branch(&c.canonical) {
-                Ok(Some(branch)) => {
-                    checked_out = branch;
-                    checked_out.as_str()
-                }
-                Ok(None) => return self.no_pr(report, run),
+                Ok(Some(branch)) => Cow::Owned(branch),
+                Ok(None) => return WorktreeEvidence::Known(self.no_pr(ended, run)),
                 Err(error) => {
-                    return Verdict::Skip {
-                        reason: format!("cannot read the checked-out branch: {error:#}"),
-                    };
+                    return keep(format!("cannot read the checked-out branch: {error:#}"));
                 }
             },
         };
-        if !is_valid_branch(branch) {
-            return Verdict::Skip {
-                reason: format!("recorded branch {branch:?} is not a valid branch name"),
-            };
+        if !is_valid_branch(&branch) {
+            return keep(format!("branch {branch:?} is not a valid branch name"));
         }
-        match self.pr_for(branch, &c.canonical) {
-            Ok(Some(pr)) => pr_verdict(&pr, Utc::now(), self.s.keep),
-            Ok(None) => self.no_pr(report, run),
+        match self.s.pull_requests {
+            PullRequests::LocalOnly => keep("PR lookup deferred until manual cleanup".into()),
+            PullRequests::GitHub => WorktreeEvidence::Branch(branch),
+        }
+    }
+
+    fn worktree_verdict(
+        &mut self,
+        branch: &str,
+        c: &Candidate<'_>,
+        run: &RunInfo,
+        ended: Option<DateTime<Utc>>,
+    ) -> Verdict {
+        let repository = match pull_requests::repository(&c.canonical, GIT_TIMEOUT) {
+            Ok(repository) => repository,
+            Err(error) => {
+                return Verdict::Skip {
+                    reason: format!("cannot identify repository: {error:#}"),
+                };
+            }
+        };
+        let no_pr = self.no_pr(ended, run);
+        let listing = self
+            .pr_listings
+            .entry(repository)
+            .or_insert_with_key(|repository| {
+                pull_requests::Listing::read(repository, self.now.into(), self.s.keep)
+            });
+        match listing {
+            Ok(listing) => listing.verdict(branch, self.now.into(), self.s.keep, no_pr),
             Err(error) => Verdict::Skip {
-                reason: format!("gh failed: {error}"),
+                reason: format!("cannot list pull requests: {error:#}"),
             },
         }
     }
 
-    fn no_pr(&self, report: &RunReport, run: &RunInfo) -> Verdict {
-        let ended = report
-            .ended_at
-            .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|d| d.with_timezone(&Utc));
+    fn no_pr(&self, ended: Option<DateTime<Utc>>, run: &RunInfo) -> Verdict {
         no_pr_verdict(ended, run.run_json_mtime, self.now, self.s.keep)
     }
 
@@ -1319,21 +1338,86 @@ impl Collector<'_> {
 
             // This run's worktree items start here; rule (a) marks them below.
             let first_item = self.items.len();
-            // One verdict per worktree, from its own branch (D6).
-            let mut verdicts: Vec<Verdict> = Vec::new();
+            let ended = report
+                .ended_at
+                .as_deref()
+                .and_then(|stamp| DateTime::parse_from_rfc3339(stamp).ok())
+                .map(|stamp| stamp.with_timezone(&Utc));
+            let has_legacy_target = want_tgt
+                && candidates
+                    .iter()
+                    .any(|c| c.owned.kind == OwnedKind::Target && c.owned.target.is_none());
+            let mut target_verdict = unknown_worktree.map(|reason| Verdict::Skip { reason });
+            let worktrees: Vec<_> = candidates
+                .iter()
+                .filter(|c| {
+                    c.owned.kind == OwnedKind::Worktree
+                        && (want_wt || (has_legacy_target && target_verdict.is_none()))
+                })
+                .map(|c| (c, self.worktree_evidence(c, run, ended)))
+                .collect();
+
+            // A local keep settles a legacy target before any PR lookups.
+            if has_legacy_target
+                && target_verdict.is_none()
+                && let Some(reason) = worktrees.iter().find_map(|(_, evidence)| match evidence {
+                    WorktreeEvidence::Known(Verdict::Skip { reason }) => Some(reason),
+                    _ => None,
+                })
+            {
+                target_verdict = Some(Verdict::Skip {
+                    reason: format!("a worktree of this run is kept: {reason}"),
+                });
+            }
             // Worktrees this sweep plans to remove, for rule (a) of #2039.
             let mut removed_worktrees: Vec<PathBuf> = Vec::new();
-            for c in candidates
-                .iter()
-                .filter(|c| c.owned.kind == OwnedKind::Worktree)
-            {
-                let v = self.worktree_verdict(c, run, &report);
-                verdicts.push(v.clone());
+            for (c, evidence) in worktrees {
+                let target_depends_on_worktree =
+                    has_legacy_target && !matches!(target_verdict, Some(Verdict::Skip { .. }));
+                let mut removal = None;
+                let verdict = match evidence {
+                    WorktreeEvidence::Known(verdict) => verdict,
+                    WorktreeEvidence::Branch(branch) => {
+                        removal = want_wt.then(|| self.check_worktree_removal(c));
+                        if !target_depends_on_worktree && !matches!(removal, Some(Ok(_))) {
+                            if let Some(Err(reason)) = removal {
+                                self.items.push(Item::skip(
+                                    Category::RunWorktree,
+                                    &c.owned.path,
+                                    reason,
+                                    Some(id),
+                                ));
+                            }
+                            continue;
+                        }
+                        self.worktree_verdict(&branch, c, run, ended)
+                    }
+                };
+                if target_depends_on_worktree {
+                    match &verdict {
+                        Verdict::Skip { reason } => {
+                            target_verdict = Some(Verdict::Skip {
+                                reason: format!("a worktree of this run is kept: {reason}"),
+                            });
+                        }
+                        Verdict::Eligible { .. } if target_verdict.is_none() => {
+                            target_verdict = Some(verdict.clone());
+                        }
+                        Verdict::Eligible { .. } => {}
+                    }
+                }
                 if !want_wt {
                     continue;
                 }
-                let item = match v {
-                    Verdict::Eligible { reason } => self.worktree_item(c, &run.dir, reason, id),
+                let item = match verdict {
+                    Verdict::Eligible { reason } => {
+                        match removal.unwrap_or_else(|| self.check_worktree_removal(c)) {
+                            Ok(main) => Self::worktree_item(c, main, &run.dir, reason, id),
+                            Err(reason) => {
+                                Item::skip(Category::RunWorktree, &c.owned.path, reason, Some(id))
+                            }
+                        }
+                    }
                     Verdict::Skip { reason } => {
                         Item::skip(Category::RunWorktree, &c.owned.path, reason, Some(id))
                     }
@@ -1348,24 +1432,9 @@ impl Collector<'_> {
                 continue;
             }
 
-            // A run's targets go only when every worktree it still has may go.
-            // With no worktree left, the no-PR rule dates them from the run.
-            let target_verdict = if let Some(reason) = unknown_worktree {
-                Verdict::Skip { reason }
-            } else if let Some(Verdict::Skip { reason }) = verdicts
-                .iter()
-                .find(|v| !matches!(v, Verdict::Eligible { .. }))
-            {
-                Verdict::Skip {
-                    reason: format!("a worktree of this run is kept: {reason}"),
-                }
-            } else if let Some(Verdict::Eligible { reason }) = verdicts.first() {
-                Verdict::Eligible {
-                    reason: reason.clone(),
-                }
-            } else {
-                self.no_pr(&report, run)
-            };
+            // Legacy targets depend on every worktree's PR verdict. With no
+            // worktree left, the no-PR rule dates them from the run.
+            let target_verdict = target_verdict.unwrap_or_else(|| self.no_pr(ended, run));
             for c in candidates
                 .iter()
                 .filter(|c| c.owned.kind == OwnedKind::Target)
@@ -1404,27 +1473,29 @@ impl Collector<'_> {
         }
     }
 
+    fn check_worktree_removal<'a>(&mut self, c: &'a Candidate<'_>) -> Result<&'a Path, String> {
+        let main = c.main.as_deref().ok_or("repository has no main checkout")?;
+        if git_has_dirty_state(&c.canonical) {
+            return Err("has uncommitted changes".into());
+        }
+        if let Some(reason) = unpushed_reason(&c.canonical) {
+            return Err(reason);
+        }
+        if let Some(reason) = self.keep_reason(&c.canonical) {
+            return Err(reason.into());
+        }
+        Ok(main)
+    }
+
     fn worktree_item(
-        &mut self,
         c: &Candidate<'_>,
+        main: &Path,
         run_dir: &Path,
         reason: String,
         id: &str,
     ) -> Item {
         let category = Category::RunWorktree;
         let path = &c.owned.path;
-        let Some(main) = c.main.clone() else {
-            return Item::skip(category, path, "repository has no main checkout", Some(id));
-        };
-        if git_has_dirty_state(&c.canonical) {
-            return Item::skip(category, path, "has uncommitted changes", Some(id));
-        }
-        if let Some(reason) = unpushed_reason(&c.canonical) {
-            return Item::skip(category, path, reason, Some(id));
-        }
-        if let Some(reason) = self.keep_reason(&c.canonical) {
-            return Item::skip(category, path, reason, Some(id));
-        }
         Item {
             category,
             path: path.clone(),
@@ -1433,7 +1504,7 @@ impl Collector<'_> {
             reason,
             run_id: Some(id.to_string()),
             op: Op::RemoveWorktree {
-                main,
+                main: main.to_path_buf(),
                 run_dir: run_dir.to_path_buf(),
                 rule_a_target: false,
             },
@@ -1834,7 +1905,7 @@ fn collect_seeing(settings: &Settings, procs: Option<ProcScan>) -> Result<Vec<It
         roots,
         now: SystemTime::now(),
         procs,
-        gh_cache: HashMap::new(),
+        pr_listings: HashMap::new(),
         common_cache: HashMap::new(),
         list_cache: HashMap::new(),
         items: Vec::new(),
@@ -2237,6 +2308,7 @@ fn end_of_run_inner(work_root: &WorkRoot) -> Result<()> {
         archive_dir: work_root.path.join("archive"),
         categories: END_OF_RUN_CATEGORIES.into_iter().collect(),
         apply: true,
+        pull_requests: PullRequests::LocalOnly,
         report_unrecorded: false,
         deadline: Some(Instant::now() + END_OF_RUN_DEADLINE),
         recipe_log_dir: None,

@@ -273,20 +273,11 @@ mod tests {
         let _guard = crate::test_support::home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous = std::env::var_os("HOME");
+        let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
         unsafe {
             std::env::set_var("HOME", OsString::from("/tmp/example-home"));
         }
         let value = home_dir().unwrap();
-        if let Some(old) = previous {
-            unsafe {
-                std::env::set_var("HOME", old);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("HOME");
-            }
-        }
         assert_eq!(value, PathBuf::from("/tmp/example-home"));
     }
 }

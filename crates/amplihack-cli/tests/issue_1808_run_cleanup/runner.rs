@@ -379,11 +379,10 @@ fn end_of_run_sweep_is_skipped_when_cleanup_lock_is_held() {
     );
 }
 
-/// AC1: a run whose PR merged long ago, with a keep period of 0, leaves only
-/// its report and cleanup record; the worktree and run target are removed
-/// (branch kept) and recorded with their sizes; recipe logs are untouched.
+/// Finalization defers the PR-dependent worktree and target. Manual apply
+/// removes them, preserves the branch, and records their sizes.
 #[test]
-fn ac1_run_with_merged_pr_and_keep_0_is_cleaned_at_run_end() {
+fn ac1_run_with_merged_pr_is_cleaned_by_manual_apply() {
     let fx = Fx::new();
     let branch = "feat/issue-1808-ac1";
     fx.gh_closed(branch, 1820, 48, true);
@@ -417,7 +416,8 @@ printf 'WT=%s\nTGT=%s\n' "$wt" "$tgt" >> "$RECORD_DIR/env"
         repo = fx.repo.display(),
     );
     let out = fx.recipe_run(&runner, |c| {
-        c.env("AMPLIHACK_CLEANUP_KEEP_HOURS", "0");
+        c.env("AMPLIHACK_CLEANUP_ON_EXIT", "1")
+            .env("AMPLIHACK_CLEANUP_KEEP_HOURS", "0");
     });
     assert!(out.status.success(), "{}", describe(&out));
 
@@ -425,6 +425,18 @@ printf 'WT=%s\nTGT=%s\n' "$wt" "$tgt" >> "$RECORD_DIR/env"
     let run_dir = fx.runs_dir().join(&env["AMPLIHACK_RUN_ID"]);
     let wt = PathBuf::from(&env["WT"]);
     let tgt = PathBuf::from(&env["TGT"]);
+
+    assert!(wt.exists() && tgt.exists());
+    assert!(fx.gh_calls().is_empty());
+    fx.cleanup_json(&[
+        "--apply",
+        "--keep-hours",
+        "0",
+        "--only",
+        "run-worktree",
+        "--only",
+        "run-target",
+    ]);
 
     assert!(!wt.exists(), "worktree must be removed");
     assert!(!tgt.exists(), "run target must be removed");
@@ -484,9 +496,52 @@ printf 'WT=%s\nTGT=%s\n' "$wt" "$tgt" >> "$RECORD_DIR/env"
             "recipe log {path:?} changed"
         );
     }
-    assert!(
-        fx.gh_calls().contains(&format!("--head={branch}")),
-        "{}",
-        fx.gh_calls()
-    );
+    assert_eq!(fx.gh_calls().lines().count(), 1);
+}
+
+#[test]
+fn twenty_enabled_recipe_finalizations_keep_pr_dependent_worktrees_without_gh() {
+    let fx = Fx::new();
+    let first = fx.worktree("needs-pr");
+    let second = fx.worktree("also-needs-pr");
+    fx.gh_closed("needs-pr", 1, 72, true);
+    let mut seeded = SeedRun::ended(72)
+        .owns_worktree(&first, "needs-pr")
+        .owns_worktree(&second, "also-needs-pr");
+    seeded.with_runtime = true;
+    let dir = fx.seed_run(&seeded);
+    let runner = success_runner();
+
+    for n in 0..20 {
+        let target = fx.target(
+            &format!("amplihack-precommit-target-0123456789ab-run-{n}"),
+            64,
+        );
+        fx.seed_run(&SeedRun::ended(72).owns_target(&target));
+        let out = fx.recipe_run(&runner, |c| {
+            c.env("AMPLIHACK_CLEANUP_ON_EXIT", "1");
+        });
+        assert!(out.status.success(), "{}", describe(&out));
+        assert!(!target.exists(), "finalization {n} skipped its sweep");
+        assert!(
+            first.exists() && second.exists(),
+            "finalization {n} removed a worktree"
+        );
+    }
+
+    assert!(fx.gh_calls().is_empty());
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.join("cleanup-record.json")).unwrap()).unwrap();
+    let skipped = record["sweeps"][0]["skipped"].as_array().unwrap();
+    for wt in [&first, &second] {
+        assert!(
+            skipped.iter().any(|item| {
+                item["path"] == wt.to_str().unwrap()
+                    && item["reason"]
+                        .as_str()
+                        .is_some_and(|reason| !reason.is_empty())
+            }),
+            "{record}"
+        );
+    }
 }

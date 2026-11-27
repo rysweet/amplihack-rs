@@ -129,10 +129,16 @@ fn scenario(foreign_on_add: bool) {
 
 #[test]
 fn failed_upgrade_restores_disabled_owned_plugin_and_exact_original_snapshots() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     scenario(false);
 }
 
 #[test]
 fn failed_upgrade_preserves_foreign_config_written_during_reregistration() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     scenario(true);
 }

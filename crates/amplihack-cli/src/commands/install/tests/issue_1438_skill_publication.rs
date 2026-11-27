@@ -70,6 +70,10 @@ fn write_skill(skills_root: &Path, name: &str) {
 
 #[test]
 fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -80,6 +84,7 @@ fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
     let bin_dir = temp.path().join("stub_bin");
     fs::create_dir_all(&bin_dir).unwrap();
     let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    create_exe_stub(&bin_dir, "recipe-runner-rs");
     let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let prev_path = std::env::var_os("PATH");
     unsafe {
@@ -149,14 +154,17 @@ fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&[
+pub(super) fn fixture_environment() -> crate::test_support::EnvGuard {
+    let mut saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
         "AMPLIHACK_SKIP_MMDC",
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
         "HOME",
         "PATH",
     ]);
+    for name in crate::test_support::claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS {
+        saved.clear(name);
+    }
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe {
         std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");

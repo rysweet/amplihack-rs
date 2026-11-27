@@ -319,8 +319,10 @@ hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotatio
 It writes no hold, no ALERT and no swap. A hold from an earlier `switch`
 stays where it was, and the second line names it:
 ``Live login not moved; rotation still held on work until `amplihack profile switch --none`.``
-Plain `claude` keeps using the login in `~/.claude`; amplihack launches
-without `--profile` use `spare` in its own directory.
+Plain `claude` and recipe steps using `~/.claude` keep the current live login.
+Outside recipe runs, an amplihack launch that reads the default pointer
+uses `spare` in its own directory. See
+[profile selection](claude-profiles.md#choose-a-profile).
 
 A busy lock or an inconsistent recovery writes nothing at all, `.default`
 included: they say nothing about the profile, so try again once they are

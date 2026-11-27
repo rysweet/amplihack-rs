@@ -61,6 +61,10 @@ fn repair(home: &Path, settings: Value) -> Value {
 
 #[test]
 fn the_launch_repair_writes_the_status_line_when_absent() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let tmp = tempfile::tempdir().unwrap();
     let after = repair(tmp.path(), json!({"model": "opus"}));
     assert_eq!(
@@ -83,6 +87,10 @@ fn trusted_home() -> tempfile::TempDir {
 /// entry left by a build directory is replaced by it.
 #[test]
 fn the_launch_repair_records_the_deployed_binary_not_the_running_one() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     for settings in [
         json!({"model": "opus"}),
         json!({"statusLine": {
@@ -103,6 +111,10 @@ fn the_launch_repair_records_the_deployed_binary_not_the_running_one() {
 
 #[test]
 fn a_deployed_binary_other_users_can_replace_is_refused_not_passed_over() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     use std::os::unix::fs::PermissionsExt;
     let tmp = trusted_home();
     let deployed = create_exe_stub(&tmp.path().join(".local/bin"), "amplihack");
@@ -121,6 +133,10 @@ fn a_build_output_is_warned_about_and_a_deployed_path_is_not() {
 
 #[test]
 fn the_launch_repair_keeps_a_users_own_status_line() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let tmp = tempfile::tempdir().unwrap();
     let mine = json!({"type": "command", "command": "printf 'mine'", "padding": 0});
     let after = repair(tmp.path(), json!({"statusLine": mine.clone()}));

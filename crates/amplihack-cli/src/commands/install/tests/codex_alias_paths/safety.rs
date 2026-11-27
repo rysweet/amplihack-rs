@@ -22,6 +22,9 @@ fn env<'a>(paths: &'a AliasPaths, binary: &'a Path) -> EnvGuard {
 
 #[test]
 fn explicit_codex_missing_descendants_below_stable_alias_anchor_are_created() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let mut paths = AliasPaths::new(true);
     paths.codex_home = paths.alias.join("user/missing/nested/codex");
@@ -39,6 +42,9 @@ fn explicit_codex_missing_descendants_below_stable_alias_anchor_are_created() {
 
 #[test]
 fn selected_home_and_explicit_home_parent_links_are_rejected_before_probe() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     for location in ["home", "codex-home", "codex-parent"] {
         selected_home_and_explicit_home_parent_links_are_rejected_before_probe_case(location);
@@ -80,6 +86,9 @@ fn selected_home_and_explicit_home_parent_links_are_rejected_before_probe_case(l
 
 #[test]
 fn alias_retarget_and_regular_home_replacement_during_probe_prevent_mutations() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     for replacement in ["alias", "home"] {
         alias_retarget_and_regular_home_replacement_during_probe_prevent_mutations_case(
@@ -130,6 +139,9 @@ fn alias_retarget_and_regular_home_replacement_during_probe_prevent_mutations_ca
 
 #[test]
 fn explicit_home_component_escape_is_rejected_before_probe_or_creation() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let mut paths = AliasPaths::new(true);
     fs::create_dir(paths.alias.join("user/child")).unwrap();
@@ -155,36 +167,54 @@ fn explicit_home_component_escape_is_rejected_before_probe_or_creation() {
 
 #[test]
 fn independent_home_link() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     selected_home_and_explicit_home_parent_links_are_rejected_before_probe_case("home");
 }
 
 #[test]
 fn independent_codex_home_link() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     selected_home_and_explicit_home_parent_links_are_rejected_before_probe_case("codex-home");
 }
 
 #[test]
 fn independent_codex_parent_link() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     selected_home_and_explicit_home_parent_links_are_rejected_before_probe_case("codex-parent");
 }
 
 #[test]
 fn independent_alias_probe_replacement() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     alias_retarget_and_regular_home_replacement_during_probe_prevent_mutations_case("alias");
 }
 
 #[test]
 fn independent_home_probe_replacement() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     alias_retarget_and_regular_home_replacement_during_probe_prevent_mutations_case("home");
 }
 
 #[test]
 fn version_probe_retarget_is_rejected_before_native_inventory_or_staging() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let paths = AliasPaths::new(true);
     let (source, binary, hooks) = setup(&paths);

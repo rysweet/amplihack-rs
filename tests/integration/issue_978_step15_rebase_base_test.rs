@@ -13,7 +13,6 @@
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 
 use serde_yaml::Value;
 use tempfile::TempDir;
@@ -88,11 +87,14 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 }
 
 fn run_step15(repo: &Path, command: &str) -> std::process::Output {
-    Command::new("bash")
+    let fixture = crate::isolated_amplihack::private_env_in(std::env::temp_dir());
+    fixture
+        .command("bash")
         .arg("-c")
         .arg(command)
         .current_dir(repo)
         .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         // step-15 runs worktree_setup_path.sh from the bundle, AMPLIHACK_HOME first.
         .env("AMPLIHACK_HOME", workspace_root())
         .env("WORKTREE_SETUP_WORKTREE_PATH", repo)

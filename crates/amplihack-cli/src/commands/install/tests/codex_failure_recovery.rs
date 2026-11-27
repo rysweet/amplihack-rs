@@ -15,6 +15,10 @@ fn make_source_newer(source: &std::path::Path) {
 
 #[test]
 fn failed_upgrade_restores_package_ledger_and_hooks() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
@@ -108,6 +112,10 @@ fn failed_upgrade_restores_package_ledger_and_hooks() {
 
 #[test]
 fn identical_unowned_hook_failed_retry_and_uninstall_preserve_foreign_hook() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
@@ -142,6 +150,10 @@ fn identical_unowned_hook_failed_retry_and_uninstall_preserve_foreign_hook() {
 
 #[test]
 fn unsupported_optional_codex_skips_without_persistent_writes() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let bin = dir.path().join("codex");
@@ -172,6 +184,10 @@ fn unsupported_optional_codex_skips_without_persistent_writes() {
 
 #[test]
 fn hook_and_ledger_write_failures_retain_recovery_until_retry() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     for relative in [".codex/hooks.json", ".amplihack/codex/ownership.json"] {
         let dir = tempfile::tempdir().unwrap();
@@ -214,6 +230,10 @@ fn hook_and_ledger_write_failures_retain_recovery_until_retry() {
 
 #[test]
 fn existing_framework_reconciles_native_resources_when_codex_arrives() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
@@ -266,12 +286,14 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     // floor is the count measured after that. #3343 folds two near-duplicate
     // skills into the skills they duplicate, and the floor is the count
     // measured after that. #3345 removes three agent files, which lowers it
-    // by three.
+    // by three. #3365 removes four skills and the `collaboration` folder,
+    // which the package copied, so the floor is the count measured after
+    // that, five lower.
     let names = fs::read_dir(skills)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    assert!(names.len() >= 166, "{} packaged skills", names.len());
+    assert!(names.len() >= 161, "{} packaged skills", names.len());
     assert!(
         names
             .iter()
@@ -286,6 +308,10 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
 
 #[test]
 fn interrupted_native_install_preserves_foreign_edits_and_all_recovery_evidence() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     for relative in [
         ".codex/config.toml",

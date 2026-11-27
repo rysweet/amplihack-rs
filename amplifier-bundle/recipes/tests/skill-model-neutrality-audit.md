@@ -154,7 +154,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | code-philosophy | Pass | No |
 | code-smell-detector | Pass | Yes |
 | code-visualizer | Pass | Yes |
-| collaboration/creating-pull-requests | Pass | Yes |
 | computer-scientist-analyst | Pass | Yes |
 | consensus-voting | Pass | Yes |
 | context-management | Pass | No |
@@ -165,7 +164,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | dependency-resolver | Pass | No |
 | design-patterns-expert | Pass | Yes |
 | dev-orchestrator | Pass | No |
-| development/architecting-solutions | Pass | Yes |
 | development/setting-up-projects | Pass | Yes |
 | documentation-writing | Pass | Yes |
 | docx | Pass | Yes |
@@ -224,13 +222,11 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | political-scientist-analyst | Pass | Yes |
 | pptx | Pass | Yes |
 | pr-guide | Pass | No |
-| pr-review-assistant | Pass | Yes |
 | pre-commit-manager | Pass | No |
 | property-based-testing | Pass | No |
 | psychologist-analyst | Pass | Yes |
 | qa-team | Pass | Yes |
 | quality/reviewing-code | Pass | Yes |
-| quality/testing-code | Pass | Yes |
 | quality-audit | Pass | Yes |
 | repository-oom-audit | Pass | No |
 | research/researching-topics | Pass | Yes |

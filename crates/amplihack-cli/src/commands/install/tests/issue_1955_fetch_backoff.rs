@@ -44,6 +44,10 @@ fn fetch_failure(err: &anyhow::Error) -> &SourceFetchFailed {
 
 #[test]
 fn a_second_launch_after_a_failed_fetch_makes_no_fetch() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     let fetcher = FakeFetcher::failing("network request timed out");
 
@@ -70,6 +74,10 @@ fn a_second_launch_after_a_failed_fetch_makes_no_fetch() {
 
 #[test]
 fn an_explicit_install_fetches_despite_a_recent_failure_and_clears_it() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     write_marker(&fx, crate::VERSION, SystemTime::now());
     let fetcher = FakeFetcher::serving(crate::VERSION);
@@ -89,6 +97,10 @@ fn an_explicit_install_fetches_despite_a_recent_failure_and_clears_it() {
 
 #[test]
 fn a_failure_older_than_the_window_is_retried() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     let long_ago = SystemTime::now() - BACKOFF_WINDOW - std::time::Duration::from_secs(1);
     write_marker(&fx, crate::VERSION, long_ago);
@@ -102,6 +114,10 @@ fn a_failure_older_than_the_window_is_retried() {
 
 #[test]
 fn a_failure_for_another_version_does_not_block_this_one() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     write_marker(&fx, &older_than_binary(), SystemTime::now());
     let fetcher = FakeFetcher::serving(crate::VERSION);
@@ -113,6 +129,10 @@ fn a_failure_for_another_version_does_not_block_this_one() {
 
 #[test]
 fn a_build_that_may_not_fetch_records_nothing() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     let fetcher = FakeFetcher::failing("must not be called");
     let binary = BinaryIdentity {

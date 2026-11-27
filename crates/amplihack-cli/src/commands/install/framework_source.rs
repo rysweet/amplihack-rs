@@ -428,7 +428,7 @@ fn fetch_release_tag(
     let fetched = fetcher.fetch(&version, fetched_dir.path(), budget);
     if let Some(marker) = &policy.fetch_backoff {
         match &fetched {
-            Ok(_) => fetch_backoff::clear(marker),
+            Ok(_) => {}
             Err(error)
                 if matches!(
                     error.downcast_ref::<SourceFetchFailed>(),
@@ -453,6 +453,11 @@ fn fetch_release_tag(
     validate(&root).map_err(|error| {
         anyhow::anyhow!("the framework bundle from release tag v{version} is incompatible: {error}")
     })?;
+    // A fetched tree is not a successful source until validation accepts it.
+    // Incomplete input must leave even an existing backoff marker unchanged.
+    if let Some(marker) = &policy.fetch_backoff {
+        fetch_backoff::clear(marker);
+    }
     Ok(AcquiredSource {
         root,
         origin: SourceOrigin::ReleaseTag,

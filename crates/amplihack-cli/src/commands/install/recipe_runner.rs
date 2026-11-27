@@ -210,41 +210,16 @@ mod tests {
     fn ensure_recipe_runner_bails_when_missing_with_env_skip() {
         let _guard = lock_env();
         let temp = tempfile::tempdir().unwrap();
-        let prev_path = std::env::var_os("PATH");
-        let prev_override = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-        let prev_skip = std::env::var_os("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL");
-        let prev_home = std::env::var_os("HOME");
-        let prev_cargo_home = std::env::var_os("CARGO_HOME");
-        unsafe {
-            // Empty PATH dir + tempdir HOME, no CARGO_HOME, so neither
-            // $CARGO_HOME/bin, $HOME/.cargo/bin nor PATH dirs contain a real
-            // recipe-runner-rs.
-            std::env::set_var("PATH", temp.path());
-            std::env::set_var("HOME", temp.path());
-            std::env::remove_var("CARGO_HOME");
-            std::env::remove_var("RECIPE_RUNNER_RS_PATH");
-            std::env::set_var("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
-        }
+        let mut env = crate::test_support::EnvGuard::capture(&[]);
+        // Empty PATH dir + tempdir HOME, no CARGO_HOME, so neither
+        // $CARGO_HOME/bin, $HOME/.cargo/bin nor PATH dirs contain a real
+        // recipe-runner-rs. Restore absent values too, before unlocking.
+        env.assign("PATH", temp.path());
+        env.assign("HOME", temp.path());
+        env.clear("CARGO_HOME");
+        env.clear("RECIPE_RUNNER_RS_PATH");
+        env.assign("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
         let result = ensure_recipe_runner();
-        unsafe {
-            if let Some(v) = prev_path {
-                std::env::set_var("PATH", v);
-            }
-            if let Some(v) = prev_override {
-                std::env::set_var("RECIPE_RUNNER_RS_PATH", v);
-            }
-            if let Some(v) = prev_skip {
-                std::env::set_var("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", v);
-            } else {
-                std::env::remove_var("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL");
-            }
-            if let Some(v) = prev_home {
-                std::env::set_var("HOME", v);
-            }
-            if let Some(v) = prev_cargo_home {
-                std::env::set_var("CARGO_HOME", v);
-            }
-        }
         let err = result.expect_err("must bail when missing + env-skip set");
         let msg = format!("{err:#}").to_ascii_lowercase();
         assert!(msg.contains("recipe-runner-rs"), "msg={msg}");
@@ -259,40 +234,20 @@ mod tests {
     fn implicit_install_never_bootstraps_a_toolchain() {
         let _guard = lock_env();
         let temp = tempfile::tempdir().unwrap();
-        let saved: Vec<(&str, Option<std::ffi::OsString>)> = [
-            "PATH",
-            "HOME",
+        let mut env = crate::test_support::EnvGuard::capture(&[]);
+        // No cargo, no curl/wget, no recipe-runner-rs anywhere: were
+        // bootstrapping attempted, the error would name curl/wget.
+        env.assign("PATH", temp.path());
+        env.assign("HOME", temp.path());
+        for key in [
             "CARGO_HOME",
             "RECIPE_RUNNER_RS_PATH",
             "AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL",
             "AMPLIHACK_NO_RUST_BOOTSTRAP",
-        ]
-        .into_iter()
-        .map(|key| (key, std::env::var_os(key)))
-        .collect();
-        unsafe {
-            // No cargo, no curl/wget, no recipe-runner-rs anywhere: were
-            // bootstrapping attempted, the error would name curl/wget.
-            std::env::set_var("PATH", temp.path());
-            std::env::set_var("HOME", temp.path());
-            for key in [
-                "CARGO_HOME",
-                "RECIPE_RUNNER_RS_PATH",
-                "AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL",
-                "AMPLIHACK_NO_RUST_BOOTSTRAP",
-            ] {
-                std::env::remove_var(key);
-            }
+        ] {
+            env.clear(key);
         }
         let result = ensure_recipe_runner();
-        unsafe {
-            for (key, value) in saved {
-                match value {
-                    Some(value) => std::env::set_var(key, value),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
         let msg = format!("{:#}", result.expect_err("no toolchain, no bootstrap"));
         assert!(msg.contains("cargo is required"), "msg={msg}");
         assert!(

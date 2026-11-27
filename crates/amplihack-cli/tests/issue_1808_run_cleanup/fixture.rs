@@ -8,7 +8,7 @@
 //! - `bin/`    the only `PATH` entry: symlinks to the real tools the children
 //!   need, plus a fake `gh` and a stub `recipe-runner-rs`. `/usr/bin` is never
 //!   on `PATH`, so the real `gh` can never be reached;
-//! - `gh/`     canned answers for the fake `gh`, one file per branch;
+//! - `gh/`     canned REST pages for the fake `gh`, keyed by repository and state;
 //! - `origin.git/` and `repo/`  a bare origin and its main checkout.
 //!
 //! Children are started with `isolated(..)`, so they never inherit
@@ -77,22 +77,45 @@ const TOOLS: &[&str] = &[
     "printf",
 ];
 
-/// Answers `gh pr list --head=<branch> ...` from `$FAKE_GH_DIR`, keyed by the
-/// branch with `/` replaced by `_`: `<key>.json` is printed, `<key>.fail`
-/// makes it fail, anything else prints `[]` (no PR). Every call is logged.
-/// Only the single-argument `--head=<branch>` form is understood, as the
-/// design requires.
+pub const DEFAULT_REPOSITORY: &str = "fixture-owner/first";
+
+/// Records every call. A canned HTTP response overrides the default, which
+/// returns the repository's JSON rows on page one.
 const FAKE_GH: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_GH_DIR/calls.log"
-head=
+test "$1" = api || exit 64
+endpoint=
+page=
+state=
+sort=
+direction=
 for a in "$@"; do
-  case "$a" in --head=*) head=${a#--head=} ;; esac
+  case "$a" in
+    repos/*/pulls) endpoint=$a ;;
+    page=*) page=${a#page=} ;;
+    state=*) state=${a#state=} ;;
+    sort=*) sort=${a#sort=} ;;
+    direction=*) direction=${a#direction=} ;;
+  esac
 done
-key=$(printf '%s' "$head" | tr '/' '_')
-if [ -z "$key" ]; then echo "fake gh: no --head=<branch> argument" >&2; exit 64; fi
-if [ -f "$FAKE_GH_DIR/$key.fail" ]; then echo "fake gh: simulated failure" >&2; exit 1; fi
-if [ -f "$FAKE_GH_DIR/$key.json" ]; then cat "$FAKE_GH_DIR/$key.json"; exit 0; fi
-echo '[]'
+test -n "$endpoint" && test -n "$page" || exit 64
+query="$state-$sort-$direction"
+case "$query" in
+  all-created-asc|open-created-asc|all-updated-desc) ;;
+  *) exit 64 ;;
+esac
+repository=${endpoint#repos/}
+repository=${repository%/pulls}
+dir="$FAKE_GH_DIR/$repository"
+if [ -f "$dir/$page.fail" ]; then echo 'fake gh: simulated failure' >&2; exit 1; fi
+if [ -f "$dir/$query-$page.http" ]; then cat "$dir/$query-$page.http"; exit 0; fi
+test "$query" = all-created-asc || exit 64
+printf 'HTTP/2.0 200 OK\n\n'
+if [ "$page" = 1 ] && [ -f "$dir/pulls.json" ]; then
+  cat "$dir/pulls.json"
+else
+  echo '[]'
+fi
 "#;
 
 pub const RECIPE: &str = "name: issue-1808-probe\ndescription: probe\nversion: 1.0.0\nsteps:\n  - id: probe\n    type: bash\n    command: \"true\"\n";
@@ -209,6 +232,27 @@ impl Fx {
             &["remote", "add", "origin", self.origin.to_str().unwrap()],
         );
         self.git_ok(&self.repo, &["push", "-q", "-u", "origin", "main"]);
+        self.set_github_repository(&self.repo, DEFAULT_REPOSITORY);
+    }
+
+    pub fn set_github_repository(&self, checkout: &Path, repository: &str) {
+        let url = format!("https://github.com/{repository}.git");
+        self.git_ok(checkout, &["config", "remote.github.url", &url]);
+    }
+
+    pub fn clone_for_repository(&self, name: &str, repository: &str) -> PathBuf {
+        let checkout = self.root.join(name);
+        self.git_ok(
+            &self.root,
+            &[
+                "clone",
+                "-q",
+                self.origin.to_str().unwrap(),
+                checkout.to_str().unwrap(),
+            ],
+        );
+        self.set_github_repository(&checkout, repository);
+        checkout
     }
 
     /// A `git` command with no global or system config and a fixed identity.
@@ -290,9 +334,17 @@ impl Fx {
 
     /// `amplihack cleanup --format json <args>`, parsed; asserts exit 0.
     pub fn cleanup_json(&self, args: &[&str]) -> serde_json::Value {
+        self.cleanup_json_with(args, |_| {})
+    }
+
+    pub fn cleanup_json_with(
+        &self,
+        args: &[&str],
+        tweak: impl FnOnce(&mut Command),
+    ) -> serde_json::Value {
         let mut all = vec!["--format", "json"];
         all.extend_from_slice(args);
-        let out = self.cleanup(&all);
+        let out = self.cleanup_with(&all, tweak);
         assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
         serde_json::from_slice(&out.stdout)
             .unwrap_or_else(|e| panic!("cleanup JSON did not parse ({e}): {}", describe(&out)))
@@ -354,37 +406,106 @@ impl Fx {
 
     // ----- gh answers -------------------------------------------------------
 
-    fn gh_key(branch: &str) -> String {
-        branch.replace('/', "_")
+    fn gh_listing_dir(&self, repository: &str) -> PathBuf {
+        let dir = self.gh.join(repository);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn gh_add(&self, row: serde_json::Value) {
+        let path = self.gh_listing_dir(DEFAULT_REPOSITORY).join("pulls.json");
+        let mut rows: Vec<serde_json::Value> = match fs::read(&path) {
+            Ok(data) => serde_json::from_slice(&data).unwrap(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(err) => panic!("cannot read fake PR rows: {err}"),
+        };
+        rows.push(row);
+        rows.sort_by_key(|row| row["number"].as_u64());
+        fs::write(path, serde_json::to_vec(&rows).unwrap()).unwrap();
     }
 
     pub fn gh_closed(&self, branch: &str, number: u64, closed_hours_ago: i64, merged: bool) {
         let at = rfc3339_hours_ago(closed_hours_ago);
-        let state = if merged { "MERGED" } else { "CLOSED" };
-        let merged_at = if merged {
-            format!("\"{at}\"")
-        } else {
-            "null".into()
-        };
-        fs::write(
-            self.gh.join(format!("{}.json", Self::gh_key(branch))),
-            format!(
-                r#"[{{"number":{number},"state":"{state}","closedAt":"{at}","mergedAt":{merged_at}}}]"#
-            ),
-        )
-        .unwrap();
+        self.gh_add(serde_json::json!({
+            "number": number, "state": "closed", "head": {"ref": branch},
+            "closed_at": at, "merged_at": merged.then_some(&at),
+        }));
     }
 
     pub fn gh_open(&self, branch: &str, number: u64) {
+        self.gh_add(serde_json::json!({
+            "number": number, "state": "open", "head": {"ref": branch},
+            "closed_at": null, "merged_at": null,
+        }));
+    }
+
+    pub fn gh_fail(&self, repository: &str, page: usize) {
         fs::write(
-            self.gh.join(format!("{}.json", Self::gh_key(branch))),
-            format!(r#"[{{"number":{number},"state":"OPEN","closedAt":null,"mergedAt":null}}]"#),
+            self.gh_listing_dir(repository).join(format!("{page}.fail")),
+            "",
         )
         .unwrap();
     }
 
-    pub fn gh_fail(&self, branch: &str) {
-        fs::write(self.gh.join(format!("{}.fail", Self::gh_key(branch))), "").unwrap();
+    pub fn gh_page(&self, repository: &str, page: usize, next: bool, rows: &str) {
+        let mut links = Vec::new();
+        if page > 1 {
+            links.push(("prev", page - 1));
+        }
+        if next {
+            links.push(("next", page + 1));
+        }
+        self.gh_page_with_links(repository, page, &links, rows);
+    }
+
+    pub fn gh_page_with_links(
+        &self,
+        repository: &str,
+        page: usize,
+        links: &[(&str, usize)],
+        rows: &str,
+    ) {
+        self.gh_page_with_filters(repository, ["all", "created", "asc"], page, links, rows);
+    }
+
+    pub fn gh_page_with_filters(
+        &self,
+        repository: &str,
+        [state, sort, direction]: [&str; 3],
+        page: usize,
+        links: &[(&str, usize)],
+        rows: &str,
+    ) {
+        let mut response = String::from("HTTP/2.0 200 OK\r\n");
+        for (relation, linked_page) in links {
+            response.push_str(&format!(
+                "Link: <https://api.github.com/repos/{repository}/pulls?state={state}&sort={sort}&direction={direction}&per_page=100&page={linked_page}>; rel=\"{relation}\"\r\n",
+            ));
+        }
+        response.push_str("\r\n");
+        response.push_str(rows);
+        self.gh_response(repository, [state, sort, direction], page, &response);
+    }
+
+    pub fn gh_response(
+        &self,
+        repository: &str,
+        [state, sort, direction]: [&str; 3],
+        page: usize,
+        response: &str,
+    ) {
+        let dir = self.gh_listing_dir(repository);
+        fs::write(
+            dir.join(format!("{state}-{sort}-{direction}-{page}.http")),
+            response,
+        )
+        .unwrap();
+    }
+
+    pub fn take_gh_calls(&self) -> Vec<String> {
+        let calls = self.gh_calls();
+        fs::write(self.gh.join("calls.log"), "").unwrap();
+        calls.lines().map(str::to_owned).collect()
     }
 
     pub fn gh_calls(&self) -> String {
@@ -396,10 +517,20 @@ impl Fx {
     /// A pushed, clean linked worktree for `branch` at
     /// `<work>/worktrees/repo-1a2b3c4d/<branch>`.
     pub fn worktree(&self, branch: &str) -> PathBuf {
-        let path = self.work.join("worktrees/repo-1a2b3c4d").join(branch);
+        let path = self.add_worktree(&self.repo, "repo-1a2b3c4d", branch);
+        fs::write(path.join("work.txt"), format!("{branch}\n")).unwrap();
+        self.git_ok(&path, &["add", "work.txt"]);
+        self.git_ok(&path, &["commit", "-q", "-m", branch]);
+        self.git_ok(&path, &["push", "-q", "-u", "origin", branch]);
+        path
+    }
+
+    /// Creates a linked worktree from the checkout's already-pushed HEAD.
+    pub fn add_worktree(&self, checkout: &Path, group: &str, branch: &str) -> PathBuf {
+        let path = self.work.join("worktrees").join(group).join(branch);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         self.git_ok(
-            &self.repo,
+            checkout,
             &[
                 "worktree",
                 "add",
@@ -409,10 +540,6 @@ impl Fx {
                 path.to_str().unwrap(),
             ],
         );
-        fs::write(path.join("work.txt"), format!("{branch}\n")).unwrap();
-        self.git_ok(&path, &["add", "work.txt"]);
-        self.git_ok(&path, &["commit", "-q", "-m", branch]);
-        self.git_ok(&path, &["push", "-q", "-u", "origin", branch]);
         path
     }
 

@@ -385,11 +385,14 @@ fn commit_push_marks_already_pushed_branch_as_publishable() {
         &["worktree", "add", worktree.to_str().unwrap(), "feature"],
     );
 
-    let output = Command::new("bash")
+    let fixture = crate::isolated_amplihack::private_env_in(std::env::temp_dir());
+    let output = fixture
+        .command("bash")
         .arg("-c")
         .arg(command)
         .current_dir(&worktree)
         .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         // step-15 runs worktree_setup_path.sh from the bundle, AMPLIHACK_HOME first.
         .env("AMPLIHACK_HOME", workspace_root())
         .env("WORKTREE_SETUP_WORKTREE_PATH", &worktree)

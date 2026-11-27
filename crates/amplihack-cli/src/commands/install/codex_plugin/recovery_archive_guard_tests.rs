@@ -39,6 +39,10 @@ fn assert_mutations_blocked(f: &Fixture) {
 
 #[test]
 fn post_rename_failure_blocks_all_mutations_when_evidence_conflicts() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     for conflict in ["changed", "missing", "corrupt-marker"] {
         let f = Fixture::new();
         f.orphan();
@@ -71,6 +75,10 @@ fn post_rename_failure_blocks_all_mutations_when_evidence_conflicts() {
 
 #[test]
 fn final_sync_and_unavailable_restoration_write_leave_discoverable_receipt() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     let bytes = f.orphan();
     let mut injected = false;
@@ -119,6 +127,10 @@ fn final_sync_and_unavailable_restoration_write_leave_discoverable_receipt() {
 
 #[test]
 fn completed_receipt_allows_new_transactions_and_subsequent_archival() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     f.orphan();
     with_archive_stamp(|| assert!(f.install().unwrap()));
@@ -139,6 +151,10 @@ fn completed_receipt_allows_new_transactions_and_subsequent_archival() {
 
 #[test]
 fn unsuccessful_completion_publication_keeps_original_intent_for_retry() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     let bytes = f.orphan();
     let mut injected = false;
@@ -169,6 +185,10 @@ fn unsuccessful_completion_publication_keeps_original_intent_for_retry() {
 
 #[test]
 fn evidence_is_revalidated_after_final_completion_barrier() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     f.orphan();
     let ledger = fs::read(f.root.join("ownership.json")).unwrap();

@@ -16,6 +16,10 @@ use resources::*;
 #[test]
 #[ignore = "requires real installed Codex; set CODEX_TEST_BINARY and run --ignored"]
 fn codex_plugin_install_update_uninstall_preserves_user_configuration_and_resources() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let codex =
         std::env::var("CODEX_TEST_BINARY").expect("absolute real Codex executable required");
@@ -137,7 +141,7 @@ fn codex_plugin_install_update_uninstall_preserves_user_configuration_and_resour
     let mut packaged_roots = Vec::new();
     skill_roots(&canonical, &mut canonical_roots);
     skill_roots(&package.join("skills"), &mut packaged_roots);
-    assert!(canonical_roots.len() >= 127, "canonical all127 fixture");
+    assert!(canonical_roots.len() >= 123, "canonical all123 fixture");
     for original in canonical_roots {
         let body = fs::read_to_string(original.join("SKILL.md")).unwrap();
         let name = body

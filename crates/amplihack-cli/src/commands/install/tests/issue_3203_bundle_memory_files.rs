@@ -57,6 +57,10 @@ fn the_checkout_bundle_holds_no_memory_file() {
 
 #[test]
 fn install_stages_home_claude_md_and_no_bundle_memory_file() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     with_install_env(|home, bin_dir| {
         helpers::create_exe_stub(bin_dir, "recipe-runner-rs");
 
