@@ -16,6 +16,10 @@ use resources::*;
 #[test]
 #[ignore = "requires real installed Codex; set CODEX_TEST_BINARY and run --ignored"]
 fn codex_plugin_install_update_uninstall_preserves_user_configuration_and_resources() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let codex =
         std::env::var("CODEX_TEST_BINARY").expect("absolute real Codex executable required");

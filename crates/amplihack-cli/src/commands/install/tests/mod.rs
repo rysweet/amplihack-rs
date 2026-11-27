@@ -63,6 +63,9 @@ mod issue_3220_directory_index;
 mod issue_527_tests;
 // Issue #3203: no file loaded as memory sits under amplifier-bundle/.
 mod issue_3203_bundle_memory_files;
+#[cfg(unix)]
+mod issue_3416_process_isolation;
+mod issue_3416_release_preflight;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]
 mod limit_resume_install;

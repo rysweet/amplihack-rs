@@ -68,6 +68,10 @@ fn printed_at_warn<T>(f: impl FnOnce() -> T) -> (T, String) {
 /// itself: once, and not at all under the bypass.
 #[test]
 fn bootstrap_with_a_newer_stamp_stages_nothing() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path();
     let fixture = tempfile::tempdir().unwrap();
@@ -134,6 +138,10 @@ fn bootstrap_with_a_newer_stamp_stages_nothing() {
 /// first, then the bootstrap refuses without a second warning.
 #[test]
 fn bootstrap_with_a_newer_stamp_leaves_settings_without_hooks_untouched() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path();
     let fixture = tempfile::tempdir().unwrap();
@@ -185,6 +193,10 @@ fn bootstrap_with_a_newer_stamp_leaves_settings_without_hooks_untouched() {
 /// and leave the file byte-identical, with no backup beside it.
 #[test]
 fn bootstrap_leaves_unparseable_settings_untouched() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path();
     let fixture = tempfile::tempdir().unwrap();
@@ -236,6 +248,10 @@ fn bootstrap_leaves_unparseable_settings_untouched() {
 /// `~/.codex` or the ledger under a newer stamp.
 #[test]
 fn newer_stamp_with_codex_selected_never_runs_codex() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path();
     let fixture = tempfile::tempdir().unwrap();

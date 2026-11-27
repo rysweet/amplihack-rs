@@ -127,10 +127,18 @@ fn check(provider: &str) {
 
 #[test]
 fn the_claude_provider_leaves_an_inherited_profile_byte_identical() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     check("claude");
 }
 
 #[test]
 fn the_codex_provider_leaves_an_inherited_profile_byte_identical() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     check("codex");
 }

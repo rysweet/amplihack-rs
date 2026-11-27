@@ -152,6 +152,23 @@ pub(crate) fn compatibility_issue_cached(
     root_or_bundle: &Path,
     cache_path: &Path,
 ) -> Option<String> {
+    compatibility_issue_with_cache(root_or_bundle, cache_path, true)
+}
+
+/// Read the cache without creating or replacing installation state on a miss.
+/// Source preflight can then fail without leaving a compatibility memo behind.
+pub(crate) fn compatibility_issue_read_only(
+    root_or_bundle: &Path,
+    cache_path: &Path,
+) -> Option<String> {
+    compatibility_issue_with_cache(root_or_bundle, cache_path, false)
+}
+
+fn compatibility_issue_with_cache(
+    root_or_bundle: &Path,
+    cache_path: &Path,
+    write: bool,
+) -> Option<String> {
     let current = fingerprint(root_or_bundle);
 
     if let Some(entry) = read_cache(cache_path)
@@ -165,15 +182,17 @@ pub(crate) fn compatibility_issue_cached(
 
     tracing::debug!("bundle_compat: cache miss; validating installed bundle");
     let issue = compatibility_issue_uncached(root_or_bundle);
-    write_cache(
-        cache_path,
-        &CacheEntry {
-            format_version: CACHE_FORMAT_VERSION,
-            binary_version: crate::VERSION.to_string(),
-            fingerprint: current,
-            issue: issue.clone(),
-        },
-    );
+    if write {
+        write_cache(
+            cache_path,
+            &CacheEntry {
+                format_version: CACHE_FORMAT_VERSION,
+                binary_version: crate::VERSION.to_string(),
+                fingerprint: current,
+                issue: issue.clone(),
+            },
+        );
+    }
     issue
 }
 

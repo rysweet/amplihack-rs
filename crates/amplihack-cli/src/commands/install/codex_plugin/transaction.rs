@@ -133,6 +133,10 @@ pub(super) fn removed_inventory(
 #[cfg(all(test, windows))]
 #[test]
 fn native_windows_skips_optional_codex_package_resources() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     assert!(!install(Path::new("unused"), Path::new("unused")).unwrap());
 }
 
