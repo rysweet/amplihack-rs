@@ -8,9 +8,8 @@
 //! and a redacting `Debug`. It is sent only in the `Authorization` header
 //! and the refresh body, and never appears in a URL, an error, a log line or
 //! a child's environment. Every failure is one of the fixed texts in
-//! [`reason`]; [`map_err`] is the only code that looks at a `ureq` error, and
-//! it keeps only the status code or the error kind. Nothing here reads the
-//! environment except [`Endpoints::from_env`], and nothing prints.
+//! [`reason`]. A usage 429 also exposes its parsed retry deadline. Response
+//! bodies, error messages, and raw header values stay internal.
 
 use super::auto_switch::kit::{
     CREDS, dir_writable_by_others, euid, read_bounded_nofollow, release_refresh_lock_at,
@@ -19,6 +18,7 @@ use super::auto_switch::kit::{
 use super::rotate::identify::Account;
 use super::usage_parse::UsageReport;
 use super::usage_request::{ExtraUsageShape, Limits, parse_limits};
+use super::usage_retry;
 use amplihack_utils::clock::{Clock, SystemClock};
 use amplihack_utils::secure_files::PrivateTemp;
 use serde_json::{Value, json};
@@ -147,6 +147,7 @@ pub(super) mod reason {
         HTTP_401 = Http401: "http 401";
         HTTP_403 = Http403: "http 403";
         HTTP_429 = Http429: "http 429";
+        RETRY_STATE = RetryState: "usage retry state unavailable";
         HTTP_3XX = Http3xx: "http 3xx";
         HTTP_4XX = Http4xx: "http 4xx";
         HTTP_5XX = Http5xx: "http 5xx";
@@ -242,6 +243,19 @@ impl Endpoints {
     /// test process never reaches a real endpoint.
     pub(super) fn usable(&self) -> bool {
         self.usable
+    }
+
+    /// The usage clock, with a fixed wall time for isolated subprocess tests.
+    pub(super) fn usage_now_ms(&self) -> i64 {
+        #[cfg(debug_assertions)]
+        if !self.https_only()
+            && std::env::var_os(TEST_GUARD_ENV).is_some_and(|v| !v.is_empty())
+            && let Ok(raw) = std::env::var("AMPLIHACK_TEST_USAGE_NOW_MS")
+            && let Ok(now) = raw.parse::<i64>()
+        {
+            return now;
+        }
+        chrono::Utc::now().timestamp_millis()
     }
 }
 
@@ -385,6 +399,10 @@ pub(super) struct Creds {
 }
 
 impl Creds {
+    fn retry_key(&self) -> &Token {
+        self.refresh.as_ref().unwrap_or(&self.access)
+    }
+
     /// `claudeAiOauth.accessToken` is required; `refreshToken` and
     /// `expiresAt` are used when they can be.
     #[cfg(test)]
@@ -781,6 +799,48 @@ pub(super) struct Direct {
     pub(super) credits_on: Option<ExtraUsageShape>,
 }
 
+#[derive(Debug)]
+pub(super) struct Failure {
+    pub(super) why: &'static str,
+    pub(super) retry_until_ms: Option<i64>,
+}
+
+impl From<&'static str> for Failure {
+    fn from(why: &'static str) -> Self {
+        Self {
+            why,
+            retry_until_ms: None,
+        }
+    }
+}
+
+impl Failure {
+    fn declined(retry_until_ms: Option<i64>) -> Self {
+        Self {
+            why: reason::HTTP_429,
+            retry_until_ms,
+        }
+    }
+}
+
+/// Check the server deadline when a caller already has a passive reading
+/// or selected a mode that does not make the direct request.
+pub(super) fn active_retry(
+    ep: &Endpoints,
+    creds_dir: &Path,
+    retry_parent: &Path,
+    now_ms: impl FnOnce() -> i64,
+) -> Result<Option<i64>, &'static str> {
+    if !ep.usable() || !usage_retry::exists(retry_parent).map_err(|_| reason::RETRY_STATE)? {
+        return Ok(None);
+    }
+    let Ok(creds) = load(creds_dir) else {
+        return Ok(None);
+    };
+    let held = usage_retry::Held::take(retry_parent, &ep.api, creds.retry_key().as_str())
+        .map_err(|_| reason::RETRY_STATE)?;
+    held.active(now_ms()).map_err(|_| reason::RETRY_STATE)
+}
 /// The usage of the login in `req.creds_dir`. At most two GETs and one
 /// refresh POST, all within `req.timeout` from the start of the read; a 429
 /// is not retried and a redirect is not followed.
@@ -789,55 +849,114 @@ pub(super) struct Direct {
 /// login with no token, or with an expired token and no refresh token, gets
 /// that verdict (`no oauth token`, `no credentials file`, `no refresh token`)
 /// even when the endpoints are unusable. Nothing is sent for any of them.
-pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<Direct, &'static str> {
-    read_with(ep, req, &Ctx::system())
+pub(super) fn read(
+    ep: &Endpoints,
+    req: &Request<'_>,
+    retry_parent: &Path,
+) -> Result<Direct, Failure> {
+    read_on(ep, req, &Ctx::system(), Some(retry_parent))
 }
 
-/// [`read`] with the deadline measured on `ctx.clock` and the refresh
-/// counted in `ctx.refreshing`.
+/// Direct transport and refresh tests that do not exercise shared state.
+#[cfg(test)]
 pub(super) fn read_with(
     ep: &Endpoints,
     req: &Request<'_>,
     ctx: &Ctx<'_>,
 ) -> Result<Direct, &'static str> {
+    read_on(ep, req, ctx, None).map_err(|failure| failure.why)
+}
+
+pub(super) fn read_on(
+    ep: &Endpoints,
+    req: &Request<'_>,
+    ctx: &Ctx<'_>,
+    retry_parent: Option<&Path>,
+) -> Result<Direct, Failure> {
+    let started = ctx.clock.now();
+    let wall_now = || {
+        let elapsed = ctx.clock.now().saturating_duration_since(started);
+        req.now_ms
+            .saturating_add(i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+    };
     let deadline = ctx.deadline(req.timeout);
     let creds = load(req.creds_dir)?;
-    // A plain comparison: a missing or non-integer `expiresAt` is `None` and
-    // never counts as expired here.
-    // Only an absent refresh token is a verdict; one that is there but
-    // rejected is `unreadable credentials` and falls back to `claude`.
-    if creds.refresh.is_none() && creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
-        return Err(if creds.refresh_rejected {
-            reason::UNREADABLE_CREDS
-        } else {
-            reason::NO_REFRESH_TOKEN
-        });
-    }
     if !ep.usable() {
-        return Err(reason::TRANSPORT);
+        // Preserve the account verdict when no refresh or network is possible.
+        require_refresh_token(&creds, req.now_ms)?;
+        return Err(reason::TRANSPORT.into());
     }
+    let take_retry = |creds: &Creds| -> Result<Option<usage_retry::Held>, Failure> {
+        let Some(parent) = retry_parent else {
+            return Ok(None);
+        };
+        let held = usage_retry::Held::take(parent, &ep.api, creds.retry_key().as_str())
+            .map_err(|_| reason::RETRY_STATE)?;
+        if let Some(until) = held.active(wall_now()).map_err(|_| reason::RETRY_STATE)? {
+            return Err(Failure::declined(Some(until)));
+        }
+        Ok(Some(held))
+    };
+    let held = take_retry(&creds)?;
+    require_refresh_token(&creds, req.now_ms)?;
     let agent = agent(ep, req.timeout, deadline);
     let now_s = req.now_ms.div_euclid(1000);
+    let usage = |creds: &Creds, held: Option<&usage_retry::Held>| {
+        get_usage(
+            &agent,
+            ep,
+            &creds.access,
+            now_s,
+            deadline,
+            ctx,
+            held,
+            &wall_now,
+        )
+    };
+    let refresh_and_read = |held: Option<usage_retry::Held>| {
+        let fresh = refresh(ep, req, ctx, &creds.access, deadline)?;
+        if fresh.retry_key().same(creds.retry_key()) {
+            return usage(&fresh, held.as_ref());
+        }
+        // The refresh may rotate the key. Coordinate the GET under the key
+        // that another caller will read from the newly saved credentials.
+        drop(held);
+        let fresh_held = take_retry(&fresh)?;
+        usage(&fresh, fresh_held.as_ref())
+    };
     let margin_ms = REFRESH_MARGIN_SECS * 1000;
     let due = creds
         .expires_at_ms
         .is_some_and(|at| at <= req.now_ms.saturating_add(margin_ms));
     if due {
         if req.allow_refresh {
-            let fresh = refresh(ep, req, ctx, &creds.access, deadline)?;
-            return get_usage(&agent, ep, &fresh, now_s, deadline, ctx);
+            return refresh_and_read(held);
         }
         if creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
-            return Err(reason::EXPIRED);
+            return Err(reason::EXPIRED.into());
         }
     }
-    match get_usage(&agent, ep, &creds.access, now_s, deadline, ctx) {
-        Err(r) if r == reason::HTTP_401 && req.allow_refresh => {
-            let fresh = refresh(ep, req, ctx, &creds.access, deadline)?;
-            get_usage(&agent, ep, &fresh, now_s, deadline, ctx)
+    match usage(&creds, held.as_ref()) {
+        Err(failure) if failure.why == reason::HTTP_401 && req.allow_refresh => {
+            refresh_and_read(held)
         }
         other => other,
     }
+}
+
+fn require_refresh_token(creds: &Creds, now_ms: i64) -> Result<(), &'static str> {
+    // A plain comparison: a missing or non-integer `expiresAt` is `None` and
+    // never counts as expired here.
+    // Only an absent refresh token is a verdict; one that is there but
+    // rejected is `unreadable credentials` and falls back to `claude`.
+    if creds.refresh.is_none() && creds.expires_at_ms.is_some_and(|at| at <= now_ms) {
+        return Err(if creds.refresh_rejected {
+            reason::UNREADABLE_CREDS
+        } else {
+            reason::NO_REFRESH_TOKEN
+        });
+    }
+    Ok(())
 }
 
 /// Issue #1886: the account the server reports for the login in
@@ -978,6 +1097,7 @@ fn body(resp: ureq::Response) -> Result<Vec<u8>, &'static str> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn get_usage(
     agent: &ureq::Agent,
     ep: &Endpoints,
@@ -985,7 +1105,9 @@ fn get_usage(
     now_s: i64,
     deadline: Deadline<'_>,
     ctx: &Ctx<'_>,
-) -> Result<Direct, &'static str> {
+    held: Option<&usage_retry::Held>,
+    wall_now: &impl Fn() -> i64,
+) -> Result<Direct, Failure> {
     let url = ep.usage_url();
     let req = agent
         .get(&url)
@@ -994,21 +1116,36 @@ fn get_usage(
         .set("anthropic-beta", BETA)
         .set("Accept", "application/json");
     if !parsed_agrees(&req, &url) {
-        return Err(reason::TRANSPORT);
+        return Err(reason::TRANSPORT.into());
     }
     let resp = match ctx.send(req, None) {
         Ok(resp) => resp,
-        Err(e) => return Err(map_err(&e)),
+        Err(e) => match *e {
+            HttpError::Status(429, resp) => resp,
+            _ => return Err(map_err(&e).into()),
+        },
     };
+    if resp.status() == 429 {
+        let received_ms = wall_now();
+        let retry_until_ms = resp
+            .header("Retry-After")
+            .and_then(|value| usage_retry::deadline(value, received_ms));
+        if let (Some(held), Some(until)) = (held, retry_until_ms)
+            && held.publish(until).is_err()
+        {
+            tracing::warn!("could not save the server's usage retry deadline");
+        }
+        return Err(Failure::declined(retry_until_ms));
+    }
     if resp.status() != 200 {
-        return Err(status_reason(resp.status()));
+        return Err(status_reason(resp.status()).into());
     }
     let raw = body(resp)?;
     let value: Value = serde_json::from_slice(&raw).map_err(|_| reason::UNPARSEABLE)?;
     match parse_limits(&value, now_s) {
         Limits::Report { report, credits_on } => Ok(Direct { report, credits_on }),
-        Limits::CreditsOn => Err(reason::CREDITS_ON),
-        Limits::Unparseable => Err(reason::UNPARSEABLE),
+        Limits::CreditsOn => Err(reason::CREDITS_ON.into()),
+        Limits::Unparseable => Err(reason::UNPARSEABLE.into()),
     }
 }
 
@@ -1129,7 +1266,7 @@ fn refresh(
     ctx: &Ctx<'_>,
     used: &Token,
     deadline: Deadline<'_>,
-) -> Result<Token, &'static str> {
+) -> Result<Creds, &'static str> {
     if !dir_private(req.creds_dir) {
         return Err(reason::REFRESH_REFUSED);
     }
@@ -1145,9 +1282,9 @@ fn refresh(
     if journal_present(req.journals) {
         return Err(reason::REFRESH_BUSY);
     }
-    let current = load(req.creds_dir)?;
+    let mut current = load(req.creds_dir)?;
     if !current.access.same(used) {
-        return Ok(current.access);
+        return Ok(current);
     }
     let Some(old_refresh) = current.refresh.as_ref() else {
         return Err(reason::REFRESH_FAILED);
@@ -1231,8 +1368,8 @@ fn refresh(
         .checked_mul(1000)
         .and_then(|ms| now_ms.checked_add(ms))
         .ok_or(reason::REFRESH_NOT_SAVED)?;
-    let mut whole = current.whole;
-    let Some(oauth) = whole
+    let Some(oauth) = current
+        .whole
         .get_mut("claudeAiOauth")
         .and_then(Value::as_object_mut)
     else {
@@ -1243,9 +1380,13 @@ fn refresh(
     if let Some(r) = &next_refresh {
         oauth.insert("refreshToken".into(), Value::from(r.as_str()));
     }
-    let bytes = serde_json::to_vec_pretty(&whole).map_err(|_| reason::REFRESH_NOT_SAVED)?;
+    let bytes = serde_json::to_vec_pretty(&current.whole).map_err(|_| reason::REFRESH_NOT_SAVED)?;
     temp.commit(&bytes).map_err(|_| reason::REFRESH_NOT_SAVED)?;
-    Ok(fresh)
+    current.access = fresh;
+    if next_refresh.is_some() {
+        current.refresh = next_refresh;
+    }
+    Ok(current)
 }
 
 #[cfg(test)]

@@ -272,6 +272,68 @@ fn json_rows(out: &std::process::Output) -> Vec<serde_json::Value> {
         .clone()
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn usage_command_and_rotator_share_the_server_retry_deadline() {
+    const START: i64 = 1_900_000_000_000;
+    const FIRST: i64 = START + 60_000;
+    const SECOND: i64 = FIRST + 60_000;
+    let f = Fixture::new();
+    for (name, path) in [
+        ("work", f.home_login()),
+        ("spare", f.slot("spare")),
+        ("extra", f.slot("extra")),
+    ] {
+        let mut doc: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        doc["claudeAiOauth"]["refreshToken"] = refresh(name).into();
+        private_file(&path, &doc.to_string());
+        f.usage_direct(name, 100, 55);
+    }
+    f.canned_usage("spare", "");
+    fs::rename(f.tools.join("claude"), f.tools.join("claude-real")).unwrap();
+    write_executable(&f.tools.join("claude"), RECORDING_CLAUDE, 0o755);
+
+    let deadline = |until| {
+        chrono::DateTime::from_timestamp_millis(until)
+            .unwrap()
+            .format("%a, %d %b %Y %T GMT")
+            .to_string()
+    };
+    let run = |args: &[&str], now: i64| {
+        let out = f
+            .cmd(args)
+            .env("AMPLIHACK_TEST_USAGE_NOW_MS", now.to_string())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        out
+    };
+    let usage = |now| json_rows(&run(&["profile", "usage", "--json", "spare"], now));
+    let rotate = |now| run(&["profile", "rotate", "--dry-run"], now);
+
+    f.usage_retry_after("spare", Some(&deadline(FIRST)));
+    let first = usage(START);
+    assert_eq!(first[0]["retry_until_ms"], FIRST);
+    assert_eq!(f.direct_usage_requests("spare"), 1);
+
+    rotate(FIRST - 5_000);
+    assert_eq!(f.direct_usage_requests("spare"), 1);
+    assert!(f.direct_usage_requests("extra") > 0);
+
+    f.usage_retry_after("spare", Some(&deadline(SECOND)));
+    rotate(FIRST);
+    assert_eq!(f.direct_usage_requests("spare"), 2);
+    assert_eq!(usage(SECOND - 5_000)[0]["retry_until_ms"], SECOND);
+    assert_eq!(f.direct_usage_requests("spare"), 2);
+
+    f.usage_retry_after("spare", None);
+    let eligible = usage(SECOND);
+    assert!(eligible[0].get("retry_until_ms").is_none());
+    assert_eq!(eligible[0]["week_all"]["used_percentage"], 55.0);
+    assert_eq!(f.direct_usage_requests("spare"), 3);
+    assert!(fs::read_dir(&f.records).unwrap().next().is_none());
+}
+
 #[test]
 fn sixteen_profiles_are_read_directly_without_claude() {
     let s = setup(0);

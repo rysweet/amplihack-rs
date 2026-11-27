@@ -235,6 +235,7 @@ impl Fleet {
             w,
             w_reset: Some(clock() + 3 * 86_400),
             s_reset: None,
+            observed_at: Some(clock() - age),
             no_session_limit: false,
             passive: false,
         };

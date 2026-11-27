@@ -42,6 +42,7 @@ fn probe(state: UsageState, error: Option<ErrorReason>, direct: Option<&'static 
         raw: None,
         source: None,
         direct_failure: direct,
+        retry_until_ms: None,
         spend: Spend::Unknown,
         extra_shape: None,
     }
@@ -79,6 +80,7 @@ const TABLE: &[(Reason, Option<ProbeLabel>)] = &[
     (Reason::Http401, None),
     (Reason::Http403, None),
     (Reason::Http429, Some(Http429)),
+    (Reason::RetryState, Some(ProbeError)),
     (Reason::Http3xx, Some(ProbeError)),
     (Reason::Http4xx, None),
     (Reason::Http5xx, Some(ProbeError)),
@@ -127,6 +129,15 @@ fn a_direct_failure_that_led_to_a_fallback_gets_the_same_label() {
         let why = r.as_str();
         assert_eq!(label_of(&fell_back(why)), *want, "fallback after: {why}");
     }
+}
+
+#[test]
+fn a_declined_read_is_unknown_and_writes_a_warning() {
+    let p = fell_back(reason::HTTP_429);
+    let mut warnings = Vec::new();
+    assert_eq!(reading_to("example", &p, &mut warnings), Probed::failed());
+    assert_eq!(label_of(&p), Some(Http429));
+    assert!(!warnings.is_empty());
 }
 
 #[test]
@@ -298,11 +309,13 @@ fn no_label_carries_anything_but_its_own_fixed_text() {
 }
 
 /// A direct read that failed for a transient cause, then a fallback that ran
-/// out of time: the probe timed out, so its label is the timeout. A cause
-/// about the login's account still gives no label, whatever followed it.
+/// out of time: a 429 keeps its own label, while other transient failures
+/// report a timeout. A cause about the login's account still gives no label.
 #[test]
-fn a_fallback_that_timed_out_after_a_transient_direct_failure_is_a_timeout() {
-    for why in [reason::UNPARSEABLE, reason::HTTP_5XX, reason::HTTP_429] {
+fn a_fallback_timeout_preserves_a_rate_limit_label() {
+    let limited = probe(UsageState::Timeout, None, Some(reason::HTTP_429));
+    assert_eq!(label_of(&limited), Some(Http429));
+    for why in [reason::UNPARSEABLE, reason::HTTP_5XX] {
         let p = probe(UsageState::Timeout, None, Some(why));
         assert_eq!(label_of(&p), Some(Timeout), "after {why}");
     }

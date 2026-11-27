@@ -8,8 +8,52 @@
 
 use super::auto_switch::{self, Window};
 use super::name::ProfileName;
+use super::usage_history::Point;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow};
 use std::path::Path;
+
+/// A stored reading eligible for display alongside a failed probe.
+pub(super) fn last_good(
+    root: &Path,
+    dir: &ProfileName,
+    now: i64,
+    history: Option<&Point>,
+) -> Option<UsageReport> {
+    let passive = fresh(
+        root,
+        dir,
+        super::rotate::fresh::MAX_READING_AGE_SECS as u64,
+        now,
+    );
+    if let Some(recorded) = history
+        && passive
+            .as_ref()
+            .is_none_or(|report| recorded.observed_at > report.observed_at)
+    {
+        let state = if recorded.s == Some(100) {
+            UsageState::SessionExhausted
+        } else if recorded.w == 100 {
+            UsageState::WeeklyExhausted
+        } else {
+            UsageState::Ok
+        };
+        return Some(UsageReport {
+            state,
+            session: recorded
+                .s
+                .map(|s| display_window("session", f64::from(s), None)),
+            week_all: Some(display_window(
+                "all models",
+                f64::from(recorded.w),
+                recorded.w_reset,
+            )),
+            week_models: Vec::new(),
+            session_limit: !recorded.no_session_limit,
+            observed_at: recorded.observed_at,
+        });
+    }
+    passive
+}
 
 /// The stored reading for the account whose login is in `dir`'s directory,
 /// as a report, when it was observed at most `max_age` seconds before `now`
@@ -59,12 +103,17 @@ pub(super) fn fresh(root: &Path, dir: &ProfileName, max_age: u64, now: i64) -> O
 }
 
 fn window(w: Window, label: &str) -> UsageWindow {
+    display_window(label, w.used_percentage, Some(w.resets_at))
+}
+
+fn display_window(label: &str, used_percentage: f64, resets_at: Option<i64>) -> UsageWindow {
     UsageWindow {
         observed_at: None,
         label: label.to_string(),
-        used_percentage: w.used_percentage,
-        resets_text: chrono::DateTime::from_timestamp(w.resets_at, 0)
+        used_percentage,
+        resets_text: resets_at
+            .and_then(|reset| chrono::DateTime::from_timestamp(reset, 0))
             .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
-        resets_at: Some(w.resets_at),
+        resets_at,
     }
 }

@@ -58,6 +58,8 @@ mod usage_parse;
 #[cfg(unix)]
 mod usage_passive;
 mod usage_request;
+#[cfg(unix)]
+mod usage_retry;
 mod usage_source;
 mod usage_view;
 #[cfg(unix)]

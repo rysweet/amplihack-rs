@@ -22,11 +22,10 @@
 //! - L7: the result is [`Reading::Measured`] in whole percentages.
 //!
 //! The history stores whole percentages, so a stored 95 may have been 95.4.
-//! A point written in place of a stale passive reading (issue #1970) carries
-//! an older figure under the newer time, and nothing in the point marks it,
-//! so its age may be understated. The history records a point only for a probe
-//! that read the login, so a spend limit or a refused token after the newest
-//! point leaves that point standing. All three are documented and accepted.
+//! Candidate selection uses the batch time, which may understate the age of
+//! a point copied in place of a stale passive reading (issue #1970). The
+//! history records a point only for a probe that read the login, so a spend
+//! limit or a refused token leaves the newest point available.
 
 use super::Reading;
 use crate::commands::profile::name::ProfileName;

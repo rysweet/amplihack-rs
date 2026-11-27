@@ -233,7 +233,7 @@ fn middle(row: &Row, time: &TimeView, colour: bool) -> Middle {
     if let Some(e @ ErrorReason::NotSignedIn(_)) = row.error {
         return Middle::Span(e.to_string());
     }
-    let r = &row.report;
+    let r = row.displayed_report();
     match r.state {
         UsageState::NotLoggedIn
         | UsageState::Timeout
@@ -250,7 +250,7 @@ fn middle(row: &Row, time: &TimeView, colour: bool) -> Middle {
             let reset = |w: &Option<UsageWindow>| {
                 Cell::text(reset_cell(w.as_ref().and_then(|w| w.resets_at), time))
             };
-            let session = if no_session_limit(row) {
+            let session = if no_session_limit(r) {
                 Cell::text(NO_SESSION_LIMIT_CELL)
             } else {
                 bar(&r.session)

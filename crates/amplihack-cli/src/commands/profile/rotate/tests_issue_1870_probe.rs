@@ -171,6 +171,7 @@ impl Claude {
             raw: None,
             source: Some(Source::Fallback),
             direct_failure: None,
+            retry_until_ms: None,
             spend: Spend::Ok,
             extra_shape: None,
         }

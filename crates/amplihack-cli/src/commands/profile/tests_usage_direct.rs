@@ -72,7 +72,7 @@ use super::usage_direct::{
     TOKEN_URL_ENV, Token, USAGE_PATH, USER_AGENT, base_ok, bounded_lookup, expires_in, map_err,
     post_failure, reason, refresh_counter, refresh_status, refreshes_in_progress,
 };
-use super::usage_direct::{Ctx, get_step, post_step, read_with, refresh_expired_with};
+use super::usage_direct::{Ctx, get_step, post_step, read_on, read_with, refresh_expired_with};
 use super::usage_parse::UsageState;
 use crate::test_support::virtual_clock::VirtualClock;
 use serde_json::{Value, json};
@@ -237,6 +237,245 @@ fn gets(fake: &FakeHttp) -> Vec<Seen> {
 
 fn posts(fake: &FakeHttp) -> usize {
     fake.count("POST", TOKEN_PATH)
+}
+
+#[test]
+fn retry_deadline_follows_a_login_between_slots_and_can_be_renewed() {
+    let l = login();
+    let live = l.root.join("live");
+    fs::create_dir(&live).unwrap();
+    let clock = VirtualClock::shared();
+    let receipt_clock = Arc::clone(&clock);
+    let started_ms = now_ms();
+    let first_until = started_ms + 61_000;
+    let renewed_until = first_until - first_until.rem_euclid(1000) + 30_000;
+    let date = chrono::DateTime::from_timestamp_millis(renewed_until)
+        .unwrap()
+        .format("%a, %d %b %Y %T GMT")
+        .to_string();
+    let fake = FakeHttp::scripted(move |seen, n| {
+        assert_eq!(seen.path, USAGE_PATH);
+        match n {
+            0 => {
+                receipt_clock.advance(Duration::from_secs(1));
+                Reply::raw(429, "").header("Retry-After", "60")
+            }
+            2 => Reply::raw(429, "").header("Retry-After", &date),
+            _ => Reply::json(200, &body_100_55()),
+        }
+    });
+    let ep = endpoints(&fake);
+    let counter = AtomicUsize::new(0);
+    let ctx = Ctx::new(&*clock, &counter, HANG_GUARD).with_transport(&fake);
+    let read = |dir, at| {
+        let mut req = request(&l, &[], false);
+        req.creds_dir = dir;
+        req.now_ms = at;
+        read_on(&ep, &req, &ctx, Some(l._tmp.path()))
+    };
+    let failure = read(&l.dir, started_ms).unwrap_err();
+    assert_eq!(failure.why, reason::HTTP_429);
+    assert_eq!(failure.retry_until_ms, Some(first_until));
+    fs::rename(l.path(), live.join(CREDS)).unwrap();
+
+    assert_eq!(
+        read(&live, first_until - 1).unwrap_err().retry_until_ms,
+        Some(first_until)
+    );
+    assert_eq!(gets(&fake).len(), 1);
+
+    // A different login can use the original slot during the first login's
+    // deadline.
+    let replacement = json!({"claudeAiOauth": {"accessToken": NEW_ACCESS}});
+    fs::write(l.path(), replacement.to_string()).unwrap();
+    fs::set_permissions(l.path(), fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(read(&l.dir, first_until - 1).is_ok());
+    assert_eq!(gets(&fake).len(), 2);
+
+    assert_eq!(
+        read(&live, first_until).unwrap_err().retry_until_ms,
+        Some(renewed_until)
+    );
+    assert_eq!(
+        read(&live, renewed_until - 1).unwrap_err().retry_until_ms,
+        Some(renewed_until)
+    );
+    assert_eq!(gets(&fake).len(), 3);
+    assert!(read(&live, renewed_until + 1).is_ok());
+    assert_eq!(gets(&fake).len(), 4);
+}
+
+#[test]
+fn callers_share_the_retry_deadline_from_an_in_flight_request() {
+    let l = login();
+    let clock = VirtualClock::new();
+    let (entered, first_request) = mpsc::channel();
+    let reply_ready = Arc::new(std::sync::Barrier::new(2));
+    let ready = Arc::clone(&reply_ready);
+    let fake = FakeHttp::scripted(move |_, n| {
+        if n == 0 {
+            entered.send(()).unwrap();
+            ready.wait();
+        }
+        Reply::raw(429, "").header("Retry-After", "60")
+    });
+    let ep = endpoints(&fake);
+    let req = request(&l, &[], false);
+    let counter = AtomicUsize::new(0);
+    let read = || {
+        let ctx = Ctx::new(&clock, &counter, HANG_GUARD).with_transport(&fake);
+        read_on(&ep, &req, &ctx, Some(l._tmp.path())).unwrap_err()
+    };
+    std::thread::scope(|scope| {
+        let first = scope.spawn(read);
+        first_request.recv().unwrap();
+        let (started, second_caller) = mpsc::channel();
+        let second = scope.spawn(move || {
+            started.send(()).unwrap();
+            read()
+        });
+        second_caller.recv().unwrap();
+        reply_ready.wait();
+        let first = first.join().unwrap();
+        let second = second.join().unwrap();
+        assert_eq!(first.why, reason::HTTP_429);
+        assert_eq!(second.why, reason::HTTP_429);
+        assert_eq!(first.retry_until_ms, Some(req.now_ms + 60_000));
+        assert_eq!(second.retry_until_ms, first.retry_until_ms);
+    });
+    assert_eq!(gets(&fake).len(), 1);
+}
+
+#[test]
+fn separate_processes_observe_the_same_retry_deadline() {
+    const CHILD_ROOT: &str = "AMPLIHACK_TEST_USAGE_RETRY_ROOT";
+    const CHILD_PORT: &str = "AMPLIHACK_TEST_USAGE_RETRY_PORT";
+    const CHILD_STEP: &str = "AMPLIHACK_TEST_USAGE_RETRY_STEP";
+    const START: i64 = 1_800_000_000_000;
+    const UNTIL: i64 = START + 60_000;
+    const RENEWED: i64 = UNTIL + 30_000;
+    let reads = [
+        ("spare", START, Some(UNTIL), 1),
+        ("live", UNTIL - 1, Some(UNTIL), 1),
+        ("spare", UNTIL - 1, None, 2),
+        ("live", UNTIL, Some(RENEWED), 3),
+        ("live", RENEWED - 1, Some(RENEWED), 3),
+        ("live", RENEWED + 1, None, 4),
+    ];
+
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let root = PathBuf::from(root);
+        let port = std::env::var(CHILD_PORT).unwrap().parse::<u16>().unwrap();
+        let step = std::env::var(CHILD_STEP).unwrap().parse::<usize>().unwrap();
+        let (slot, now_ms, expected, _) = reads[step];
+        let base = format!("http://127.0.0.1:{port}");
+        let token_url = format!("{base}{TOKEN_PATH}");
+        let (ep, warnings) = Endpoints::resolve(Some(base.as_ref()), Some(token_url.as_ref()));
+        assert!(warnings.is_empty());
+        let dir = root.join(slot);
+        let req = Request {
+            creds_dir: &dir,
+            journals: &[],
+            allow_refresh: false,
+            cancel: &NO_CANCEL,
+            timeout: Duration::from_secs(5),
+            now_ms,
+        };
+        let clock = VirtualClock::new();
+        let counter = AtomicUsize::new(0);
+        let ctx = Ctx::new(&clock, &counter, HANG_GUARD);
+        let result = read_on(&ep, &req, &ctx, Some(&root));
+        if let Some(until) = expected {
+            let failure = result.unwrap_err();
+            assert_eq!(failure.why, reason::HTTP_429);
+            assert_eq!(failure.retry_until_ms, Some(until));
+        } else {
+            let report = result.unwrap().report;
+            assert_eq!(report.week_all.unwrap().used_percentage, 55.0);
+        }
+        return;
+    }
+
+    let l = login();
+    let root = &l.root;
+    let live = root.join("live");
+    fs::create_dir(&live).unwrap();
+    let replacement = json!({"claudeAiOauth": {"accessToken": NEW_ACCESS}});
+    let initial = json!({"claudeAiOauth": {"accessToken": ACCESS, "refreshToken": REFRESH}});
+    fs::write(l.path(), initial.to_string()).unwrap();
+    let renewed_date = chrono::DateTime::from_timestamp_millis(RENEWED)
+        .unwrap()
+        .format("%a, %d %b %Y %T GMT")
+        .to_string();
+    let success = json!({"seven_day": {
+        "utilization": 55.0,
+        "resets_at": iso(START / 1000 + 86_400),
+    }});
+    let fake = FakeHttp::start(move |seen, count| {
+        if seen.path != USAGE_PATH {
+            return Reply::raw(404, "");
+        }
+        match count {
+            0 => Reply::raw(429, "").header("Retry-After", "60"),
+            2 => Reply::raw(429, "").header("Retry-After", &renewed_date),
+            _ => Reply::json(200, &success),
+        }
+    });
+    let base = fake.base();
+    let port = base.rsplit_once(':').unwrap().1;
+    let (_, tests) = module_path!().split_once("::").unwrap();
+    let name = format!("{tests}::separate_processes_observe_the_same_retry_deadline");
+    for (step, (_, _, _, count)) in reads.into_iter().enumerate() {
+        if step == 1 {
+            fs::rename(l.path(), live.join(CREDS)).unwrap();
+            fs::write(l.path(), replacement.to_string()).unwrap();
+            fs::set_permissions(l.path(), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name])
+            .env_clear()
+            .env("HOME", root)
+            .env("TMPDIR", root)
+            .env(CHILD_ROOT, root)
+            .env(CHILD_PORT, port)
+            .env(CHILD_STEP, step.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child read {step} failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(gets(&fake).len(), count);
+    }
+    for (request, access) in gets(&fake).iter().zip([ACCESS, NEW_ACCESS, ACCESS, ACCESS]) {
+        assert_eq!(bearer(request), Some(format!("Bearer {access}").as_str()));
+    }
+}
+
+#[test]
+fn no_usable_retry_time_leaves_the_next_caller_eligible() {
+    let l = login();
+    let clock = VirtualClock::new();
+    let fake = FakeHttp::scripted(|_, n| match n {
+        0 => Reply::raw(429, ""),
+        1 => Reply::raw(429, "").header("Retry-After", "invalid"),
+        2 => Reply::raw(429, "").header("Retry-After", "0"),
+        _ => Reply::json(200, &body_100_55()),
+    });
+    let ep = endpoints(&fake);
+    let req = request(&l, &[], false);
+    let counter = AtomicUsize::new(0);
+    let ctx = Ctx::new(&clock, &counter, HANG_GUARD).with_transport(&fake);
+    let read = || read_on(&ep, &req, &ctx, Some(l._tmp.path()));
+    for _ in 0..3 {
+        let failure = read().unwrap_err();
+        assert_eq!(failure.why, reason::HTTP_429);
+        assert_eq!(failure.retry_until_ms, None);
+    }
+    assert!(read().is_ok());
+    assert_eq!(gets(&fake).len(), 4);
 }
 
 /// Usage answers 200 to the new token and 401 to anything else; the token

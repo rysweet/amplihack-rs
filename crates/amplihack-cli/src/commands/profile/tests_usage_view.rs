@@ -92,6 +92,8 @@ fn row(name: &str, rep: UsageReport) -> Row {
         raw: None,
         source: None,
         direct_failure: None,
+        retry_until_ms: None,
+        cached: None,
         spend: Spend::NotApplicable,
         extra_shape: None,
     }
