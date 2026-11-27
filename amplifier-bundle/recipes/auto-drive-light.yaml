@@ -49,6 +49,7 @@ context:
   autodrive_state_dir: ""
   autodrive_dry_run: "false"
   no_merge: "true"
+  checks_watch_interval: ""
   # #1888: as in auto-drive-to-merge; empty leaves the choice to the
   # repository's own allowed methods.
   merge_method: ""
@@ -458,6 +459,7 @@ steps:
     recipe: "autodrive-goal-loop"
     condition: "build_result.merged_before_run != 'true'"
     context:
+      checks_watch_interval: "{{checks_watch_interval}}"
       goal_tool: "autodrive_pr_goal.sh"
       goal_file: "skills/auto-drive-to-merge/goal-merge-pr.md"
       goal_notes: "{{light_eligibility}}"

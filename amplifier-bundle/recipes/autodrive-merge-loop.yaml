@@ -37,6 +37,7 @@ context:
   sync_loop_outcome: ""
   handoff_result: ""
   no_merge: "true"
+  checks_watch_interval: ""
   autodrive_invocation_file: ""
   autodrive_authorization: ""
   autodrive_finalization: ""
@@ -47,6 +48,7 @@ steps:
     type: "recipe"
     recipe: "autodrive-goal-loop"
     context:
+      checks_watch_interval: "{{checks_watch_interval}}"
       goal_tool: "autodrive_pr_goal.sh"
       goal_file: "skills/auto-drive-to-merge/goal-merge-pr.md"
       goal_once: "false"

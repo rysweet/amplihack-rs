@@ -702,7 +702,7 @@ request without `default-workflow`'s publish phase, and one route runs
 | Path | `base_branch`, `forbidden_base_branches` | `strict_delivery` |
 | ---- | ---------------------------------------- | ----------------- |
 | `quick-change`, and `auto-drive-light` for a new change | Cleared in the call to `workflow-worktree`. The `quick/` branch starts from `origin/HEAD`, and the pull request targets the branch `origin/HEAD` names, so the two agree. A `base_branch` from the caller is not used. | Left as inherited. Step-04 refuses to create a branch when it is `"true"`, so a strict run stops before any agent runs. |
-| `smart-orchestrator`, task split into parallel workstreams | Not forwarded. `launch-parallel-round-1` passes only `create_issue` to `amplihack orch run`. Each development workstream runs `default-workflow` in its own process, whose declared defaults replace any inherited value, so each branch starts from, and each pull request targets, the remote default branch. | Never split. `activate-workflow` keeps the run on one workstream when `strict_delivery` is anything but empty or `"false"`, and says so on stderr. |
+| `smart-orchestrator`, task split into parallel workstreams | Each development workstream uses the `default-workflow` default for `base_branch`. Each branch starts from the remote default branch, and each pull request targets it. | Never split. `activate-workflow` keeps the run on one workstream when `strict_delivery` is anything but empty or `"false"`, and says so on stderr. |
 
 The runner merges a sub-recipe's context back into its caller's. Once
 `quick-change` or `auto-drive-light` has called `workflow-worktree`,

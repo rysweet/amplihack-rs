@@ -8,6 +8,7 @@
 //! description, and the run merges). They share `support`. Linux only; no
 //! sleeps, timers or timeouts.
 
+mod checks_watch_interval;
 mod contract;
 mod drive;
 mod goal_tool;

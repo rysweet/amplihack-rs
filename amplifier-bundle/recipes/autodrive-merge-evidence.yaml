@@ -20,6 +20,7 @@ context:
   autodrive_qa_evidence: ""
   autodrive_round_label: "round"
   no_merge: "true"
+  checks_watch_interval: ""
   autodrive_dry_run: "false"
   autodrive_tools_dir: ""
   autodrive_base_branch: ""
@@ -31,6 +32,7 @@ steps:
     type: "recipe"
     recipe: "autodrive-goal-loop"
     context:
+      checks_watch_interval: "{{checks_watch_interval}}"
       goal_tool: "autodrive_pr_goal.sh"
       goal_file: "skills/auto-drive-to-merge/goal-merge-pr.md"
       goal_once: "true"
