@@ -202,26 +202,40 @@ fn the_replay_does_not_swap_on_an_old_reading_when_the_block_is_missing() {
 
 #[test]
 fn a_target_with_no_room_for_a_confirming_read_is_not_taken_unconfirmed() {
+    use crate::commands::profile::ProfileError;
+    use crate::commands::profile::rotate::decide::Decision;
+    use crate::commands::profile::rotate::observe::{Measurement, Snap};
+
+    fn measure(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+        let measurement = stub(ctx, snap)?;
+        assert!(
+            matches!(&measurement.decision, Decision::Swap { to, .. } if to.as_str() == "held")
+        );
+        Ok(measurement)
+    }
+
+    fn unexpected_reread(_: &Ctx, _: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
+        panic!("a candidate whose probe already failed cannot be confirmed this cycle");
+    }
+
     // The live login is full and the only candidate's probe failed with a
-    // label, so its old figure stands in and ranks it; no swap is made
-    // without a confirming read, and it is rejected.
+    // label, so its old figure ranks it. The failed probe rules out the
+    // candidate at the confirmation step.
     for (label, s) in BOTH {
         let f = fleet(&["held"], &[]);
         f.history("held", 2000, 0, 33);
-        let labels = [("held", ProbeLabel::Http429)];
-        let out = run(&f, s(), exh(100.0, 44.0), &[("held", unread())], &labels);
-        let log = f.log();
-        assert_ne!(out, CycleOutcome::Swapped, "{label}: {log}");
-        assert!(f.live_is("work"), "{label}: {log}");
-        assert!(
-            log.contains("held:unknown, HTTP 429, last s=0%,w=33%"),
-            "{label}: {log}"
+        let out = run_full(
+            &f,
+            s(),
+            exh(100.0, 44.0),
+            &[("held", unread())],
+            &[("held", ProbeLabel::Http429)],
+            Mode::Watch,
+            Some(unexpected_reread),
+            measure,
         );
-        assert!(
-            log.contains("reject: held reading unknown (HTTP 429)"),
-            "{label}: {log}"
-        );
-        assert!(!log.contains("unconfirmed ("), "{label}: {log}");
+        assert_ne!(out, CycleOutcome::Swapped, "{label}");
+        assert!(f.live_is("work"), "{label}");
     }
 }
 
