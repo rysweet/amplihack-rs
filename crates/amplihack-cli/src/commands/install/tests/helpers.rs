@@ -43,6 +43,7 @@ pub(super) fn create_source_repo(root: &Path) {
     }
     fs::write(bundle.join("tools/statusline.sh"), "echo hi\n").unwrap();
     write_compatible_recipe_bundle(&bundle.join("recipes"));
+    write_workflow_skills(&bundle);
 }
 
 pub(super) fn create_minimal_staged_assets(root: &Path) {
@@ -84,6 +85,7 @@ pub(super) fn create_bundle_only_source_repo(root: &Path) {
     }
     fs::write(bundle.join("tools/statusline.sh"), "echo hi\n").unwrap();
     write_compatible_recipe_bundle(&bundle.join("recipes"));
+    write_workflow_skills(&bundle);
     fs::write(root.join("CLAUDE.md"), "root\n").unwrap();
     // Crucially: NO `.claude/` directory anywhere — that's the bug condition
     // for issue #416.
@@ -215,4 +217,20 @@ pub(super) fn build_canonical_native_hook_settings(hooks_bin: &Path) -> serde_js
         limit_resume: true,
     };
     serde_json::json!({ "hooks": hook_block::block(&target) })
+}
+
+fn write_workflow_skills(bundle: &Path) {
+    for name in [
+        "dev-orchestrator",
+        "default-workflow",
+        "investigation-workflow",
+    ] {
+        let dir = bundle.join("skills").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Run the workflow recipe.\n---\n# {name}\n\nRun the corresponding workflow recipe.\n"),
+        )
+        .unwrap();
+    }
 }

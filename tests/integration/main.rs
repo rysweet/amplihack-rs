@@ -26,6 +26,8 @@ mod investigation_workflow_decomposition;
 mod isolated_amplihack;
 #[path = "isolated_amplihack_scan.rs"]
 mod isolated_amplihack_scan;
+#[path = "issue_3416_release_preflight_test.rs"]
+mod issue_3416_release_preflight;
 // Issue #2658: the real-runner tests build or reuse recipe-runner-rs at the
 // pinned revision instead of using whatever the host has installed.
 #[path = "../support/pinned_runner.rs"]

@@ -184,6 +184,10 @@ fn write_copilot_config(home: &Path) -> Vec<u8> {
 /// `config.json` byte-identical and writes no backup of either.
 #[test]
 fn implicit_upgrade_restage_never_writes_settings_json() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = Fixture::new();
     fx.write_user_settings();
     let copilot = write_copilot_config(&fx.home);
@@ -229,6 +233,10 @@ fn implicit_upgrade_restage_never_writes_settings_json() {
 /// With no settings.json at all, an implicit re-stage does not create one.
 #[test]
 fn implicit_restage_does_not_create_settings_json() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = Fixture::new();
     version_stamp::write_installed_version(&older_version()).unwrap();
 
@@ -248,6 +256,10 @@ fn implicit_restage_does_not_create_settings_json() {
 /// the kept binaries replace them.
 #[test]
 fn implicit_restage_without_a_stamp_keeps_installed_binaries_and_stamps_them_unknown() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = Fixture::new();
     fx.write_user_settings();
     let installed = fx.plant_installed_hooks();
@@ -280,6 +292,10 @@ fn implicit_restage_without_a_stamp_keeps_installed_binaries_and_stamps_them_unk
 /// an installed one, even when this build is newer than the stamp.
 #[test]
 fn implicit_restage_never_replaces_hooks_with_a_path_copy() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let mut fx = Fixture::new();
     fx._env.unset("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let installed = fx.plant_installed_hooks();
@@ -339,6 +355,10 @@ fn implicit_restage_never_replaces_hooks_with_a_path_copy() {
 /// re-stages nor replaces a binary.
 #[test]
 fn pre_502_state_restages_once_then_stops() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = Fixture::new();
     let installed = fx.plant_installed_hooks();
     let installs = std::cell::Cell::new(0);
@@ -380,6 +400,10 @@ fn pre_502_state_restages_once_then_stops() {
 /// installed binary stays.
 #[test]
 fn implicit_restage_at_the_stamped_version_keeps_installed_binaries() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = Fixture::new();
     let installed = fx.plant_installed_hooks();
     version_stamp::write_installed_version(crate::VERSION).unwrap();
@@ -393,6 +417,10 @@ fn implicit_restage_at_the_stamped_version_keeps_installed_binaries() {
 /// machine's first launch still ends up with working hooks.
 #[test]
 fn implicit_restage_without_a_stamp_fills_an_empty_bin_dir() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = Fixture::new();
 
     fx.install(InstallMode::Implicit);
@@ -408,6 +436,10 @@ fn implicit_restage_without_a_stamp_fills_an_empty_bin_dir() {
 /// the stamp says (a deliberate downgrade) and merges hooks into settings.json.
 #[test]
 fn explicit_install_still_replaces_binaries_and_writes_settings() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = Fixture::new();
     fx.write_user_settings();
     fx.plant_installed_hooks();
@@ -436,6 +468,10 @@ fn explicit_install_still_replaces_binaries_and_writes_settings() {
 /// still finds the hook registrations and the kept binaries.
 #[test]
 fn implicit_restage_carries_forward_manifest_entries_it_did_not_write() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = Fixture::new();
     fx.write_user_settings();
     fx.install(InstallMode::Explicit);
@@ -476,6 +512,10 @@ fn implicit_restage_carries_forward_manifest_entries_it_did_not_write() {
 /// keys survive.
 #[test]
 fn implicit_restage_registers_copilot_plugin_only_when_absent() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = Fixture::new();
     fs::create_dir_all(fx.home.join(".copilot")).unwrap();
     fs::write(
@@ -496,6 +536,10 @@ fn implicit_restage_registers_copilot_plugin_only_when_absent() {
 /// `amplihack install` still rewrites an existing entry.
 #[test]
 fn explicit_install_still_refreshes_copilot_config() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = Fixture::new();
     let copilot = write_copilot_config(&fx.home);
 

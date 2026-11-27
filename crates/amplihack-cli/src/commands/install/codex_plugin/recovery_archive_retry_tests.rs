@@ -13,6 +13,10 @@ fn intents(f: &Fixture) -> Vec<PathBuf> {
 
 #[test]
 fn intent_publication_sync_failure_stops_install_and_keeps_recovery_evidence() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     let bytes = f.orphan();
     let ownership = fs::read(f.root.join("ownership.json")).unwrap();
@@ -44,6 +48,10 @@ fn intent_publication_sync_failure_stops_install_and_keeps_recovery_evidence() {
 
 #[test]
 fn post_rename_sync_failure_leaves_intent_and_retry_finishes_same_archive() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     let bytes = f.orphan();
     let result = with_archive_stamp(|| {
@@ -85,6 +93,10 @@ fn post_rename_sync_failure_leaves_intent_and_retry_finishes_same_archive() {
 
 #[test]
 fn completion_sync_failure_retains_receipt_before_returning_error() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     let bytes = f.orphan();
     let result = storage::testing::with_sync_hook(
@@ -119,6 +131,10 @@ fn completion_sync_failure_retains_receipt_before_returning_error() {
 
 #[test]
 fn conflicting_or_missing_archive_after_failed_sync_keeps_next_startup_blocked() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     for conflict in ["changed", "missing", "pending-reappeared"] {
         let f = Fixture::new();
         let bytes = f.orphan();
@@ -157,6 +173,10 @@ fn conflicting_or_missing_archive_after_failed_sync_keeps_next_startup_blocked()
 
 #[test]
 fn source_identity_and_raw_content_are_rechecked_before_rename() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     for change in ["bytes", "inode"] {
         let f = Fixture::new();
         let bytes = f.orphan();
@@ -199,6 +219,10 @@ fn source_identity_and_raw_content_are_rechecked_before_rename() {
 
 #[test]
 fn destination_created_after_intent_is_never_overwritten() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     let bytes = f.orphan();
     let destination = f.root.join(format!("pending.json.stale-{STAMP}"));
@@ -230,6 +254,10 @@ fn destination_created_after_intent_is_never_overwritten() {
 
 #[test]
 fn retry_rejects_escaping_or_unsupported_archival_intent() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     for invalid in ["destination", "version"] {
         let f = Fixture::new();
         let bytes = f.orphan();

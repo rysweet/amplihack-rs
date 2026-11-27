@@ -218,8 +218,7 @@ fn ensure_local_bin_on_shell_path_creates_export() {
     let _lock = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let prev_home = std::env::var_os("HOME");
-    let prev_shell = std::env::var_os("SHELL");
+    let _env = crate::test_support::EnvGuard::capture(&["HOME", "SHELL"]);
     unsafe { std::env::set_var("HOME", tmp.path().as_os_str()) };
     unsafe { std::env::set_var("SHELL", "/bin/bash") };
     ensure_local_bin_on_shell_path().unwrap();
@@ -233,14 +232,6 @@ fn ensure_local_bin_on_shell_path_creates_export() {
     let content2 = std::fs::read_to_string(tmp.path().join(".bashrc")).unwrap();
     let count = content2.matches("export PATH").count();
     assert_eq!(count, 1, "should not duplicate the export line");
-    match prev_shell {
-        Some(v) => unsafe { std::env::set_var("SHELL", v) },
-        None => unsafe { std::env::remove_var("SHELL") },
-    }
-    match prev_home {
-        Some(v) => unsafe { std::env::set_var("HOME", v) },
-        None => unsafe { std::env::remove_var("HOME") },
-    }
 }
 
 // Native Windows is not a published release target (owner decision: no

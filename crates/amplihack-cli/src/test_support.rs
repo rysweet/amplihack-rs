@@ -28,6 +28,10 @@ pub(crate) fn home_env_lock() -> &'static Mutex<()> {
     env_lock()
 }
 
+#[path = "test_support/install_process.rs"]
+pub(crate) mod install_process;
+pub(crate) use install_process::isolated_install_test;
+
 /// A `PATH` that still holds this host's real directories, for a test that
 /// starts a program resolved through it.
 ///
@@ -499,33 +503,18 @@ impl Drop for AgentBinaryEnv {
     }
 }
 
-/// Point `HOME` at `path`, returning the prior value for [`restore_home`].
+/// Point `HOME` at `path`, restoring it and profile overrides on drop.
 ///
-/// This also fires [`claude_profile_isolation::purge_inherited`] (issue
-/// #2922), so an inherited `CLAUDE_CONFIG_DIR` cannot send a settings write
-/// out of `path`. The purge has no restore, which is why this function cannot
-/// offer one: its `Option<OsString>` return is unwound by `restore_home` at
-/// call sites that have no guard to hang a restore on. A fixture that needs
-/// the six profile variables put back afterwards takes a [`HomeGuard`]
-/// instead, or a [`claude_profile_isolation::ClaudeProfileIsolation`] of its
-/// own.
+/// Existing callers can restore early with [`restore_home`]. If a test panics
+/// first, the guard still restores the environment before its lock drops.
 ///
 /// The caller must hold `env_lock()`.
-pub(crate) fn set_home(path: &Path) -> Option<std::ffi::OsString> {
-    claude_profile_isolation::purge_inherited();
-    let previous = std::env::var_os("HOME");
-    unsafe {
-        std::env::set_var("HOME", path);
-    }
-    previous
+pub(crate) fn set_home(path: &Path) -> HomeGuard {
+    HomeGuard::set(path)
 }
 
-pub(crate) fn restore_home(previous: Option<std::ffi::OsString>) {
-    if let Some(value) = previous {
-        unsafe { std::env::set_var("HOME", value) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
+pub(crate) fn restore_home(previous: HomeGuard) {
+    drop(previous);
 }
 
 pub(crate) fn set_cwd(path: &Path) -> std::io::Result<std::path::PathBuf> {

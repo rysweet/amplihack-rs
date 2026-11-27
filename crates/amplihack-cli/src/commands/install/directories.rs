@@ -187,27 +187,7 @@ pub(super) fn copytree_manifest(
     // folder, so the source must not carry that name inside the bundle. It is
     // still staged as `$AMPLIHACK_HOME/CLAUDE.md`. `source_root/CLAUDE.md`
     // stays as a fallback for a bundle from an earlier release.
-    let parent_dir = source_root
-        .parent()
-        .context("source root missing parent for CLAUDE.md lookup")?;
-    let candidates = [
-        source_root.join("context/AMPLIHACK_HOME_CLAUDE.md"),
-        source_root.join("CLAUDE.md"),
-        parent_dir.join("CLAUDE.md"),
-    ];
-    let Some(chosen_source) = candidates.iter().find(|path| path.exists()).cloned() else {
-        anyhow::bail!(
-            "CLAUDE.md not found in source repo. Searched: {}, {} and {}. \
-             A valid amplihack-rs checkout must ship the source of CLAUDE.md \
-             at `amplifier-bundle/context/AMPLIHACK_HOME_CLAUDE.md` (bundle \
-             layout), `amplifier-bundle/CLAUDE.md` (earlier bundle layout) or \
-             the repo root (legacy layout). Without it the install verifier \
-             will report `$AMPLIHACK_HOME/CLAUDE.md` missing.",
-            candidates[0].display(),
-            candidates[1].display(),
-            candidates[2].display()
-        );
-    };
+    let chosen_source = super::release_preflight::home_instructions_source(source_root)?;
     let target_claude_md = claude_dir
         .parent()
         .context("target .claude dir missing parent")?
@@ -231,7 +211,7 @@ pub(super) fn copytree_manifest(
     Ok(copied)
 }
 
-fn required_source_dir(source_root: &Path, src_rel: &str) -> Result<PathBuf> {
+pub(super) fn required_source_dir(source_root: &Path, src_rel: &str) -> Result<PathBuf> {
     let source_dir = source_root.join(src_rel);
     let metadata = fs::symlink_metadata(&source_dir).with_context(|| {
         format!(

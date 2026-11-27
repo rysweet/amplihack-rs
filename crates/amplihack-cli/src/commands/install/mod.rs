@@ -24,6 +24,7 @@ mod mermaid_cli;
 pub(crate) mod paths;
 mod recipe_runner;
 pub(crate) mod release_layout;
+mod release_preflight;
 mod settings;
 mod stale_wrappers;
 pub(crate) mod tag_fetch;
@@ -48,6 +49,7 @@ use binary::{deploy_binaries_into, find_hooks_binary};
 /// The same choice, with whether it is the deployed copy, and the build
 /// directory test a local-model launch applies to a fallback.
 pub(crate) use binary::{looks_like_build_artifact, stable_hooks_binary_with_origin};
+#[cfg(test)]
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{FrameworkRootQuery, find_bundled_framework_root};
 use directories::*;
@@ -136,15 +138,27 @@ pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: boo
     )
 }
 
-/// Repair generic assets without reconciling an unrelated optional provider.
-pub(crate) fn repair_framework_assets() -> Result<()> {
-    run_install_scoped(
+/// Resolve and validate repair input before an outer installation lock can
+/// create destination state. The returned closure owns any fetched source.
+pub(crate) fn prepare_framework_repair() -> Result<impl FnOnce() -> Result<()>> {
+    let binary = framework_source::BinaryIdentity::current();
+    let source = acquire_install_source(
         None,
         false,
-        false,
-        crate::freshness::codex_selected(),
         InstallMode::Implicit,
-    )
+        &binary,
+        &tag_fetch::ReleaseTagFetcher::production(),
+    )?;
+    let reconcile_codex = crate::freshness::codex_selected();
+    Ok(move || {
+        install_acquired_source(
+            source,
+            false,
+            reconcile_codex,
+            InstallMode::Implicit,
+            &binary,
+        )
+    })
 }
 
 fn run_install_scoped(
@@ -177,7 +191,17 @@ fn run_install_with_fetcher(
     binary: &framework_source::BinaryIdentity,
     fetcher: &dyn tag_fetch::TagFetcher,
 ) -> Result<()> {
-    let _notice = crate::list_notice::begin();
+    let source = acquire_install_source(local, force_refresh, mode, binary, fetcher)?;
+    install_acquired_source(source, interactive, reconcile_codex, mode, binary)
+}
+
+fn acquire_install_source(
+    local: Option<PathBuf>,
+    force_refresh: bool,
+    mode: InstallMode,
+    binary: &framework_source::BinaryIdentity,
+    fetcher: &dyn tag_fetch::TagFetcher,
+) -> Result<framework_source::AcquiredSource> {
     let local = local
         .map(|local_path| -> Result<PathBuf> {
             // Validate and canonicalize the --local path
@@ -209,10 +233,24 @@ fn run_install_with_fetcher(
         binary,
         fetcher,
         &|candidate| {
-            validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
+            release_preflight::inspect(candidate)
+                .map(|_| ())
+                .map_err(|err| format!("{err:#}"))
         },
     )?;
 
+    release_preflight::inspect(&source.root)?;
+    Ok(source)
+}
+
+fn install_acquired_source(
+    source: framework_source::AcquiredSource,
+    interactive: bool,
+    reconcile_codex: bool,
+    mode: InstallMode,
+    binary: &framework_source::BinaryIdentity,
+) -> Result<()> {
+    let _notice = crate::list_notice::begin();
     // Run the interactive wizard if --interactive was passed.
     // The wizard produces an optional config; if None, we proceed with defaults.
     let wizard_config = interactive::maybe_run_wizard(interactive)?;
@@ -468,10 +506,10 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
 /// [`ensure_framework_installed`], writing the #1526 refusal warning to
 /// `notice` (stderr in the binary).
 pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W) -> Result<()> {
-    ensure_framework_installed_using(
+    ensure_framework_installed_prepared(
         notice,
         framework_restage_needed_now,
-        repair_framework_assets,
+        prepare_framework_repair,
     )
 }
 
@@ -497,9 +535,10 @@ fn framework_restage_needed_now() -> Result<bool> {
 /// re-reads the stamp, runs Guard #2 and asks `needed` again, so a launch that
 /// waited for another launch's re-stage finds nothing to do. `install` runs
 /// only on that second "yes", with the lock held.
+#[cfg(test)]
 fn restage_framework_if_needed<W, N, I>(
     notice: &mut W,
-    mut needed: N,
+    needed: N,
     install: I,
 ) -> Result<crate::self_heal::LockedRestage>
 where
@@ -507,9 +546,24 @@ where
     N: FnMut() -> Result<bool>,
     I: FnOnce() -> Result<()>,
 {
+    restage_framework_if_needed_prepared(notice, needed, || Ok(install))
+}
+
+fn restage_framework_if_needed_prepared<W, N, P, I>(
+    notice: &mut W,
+    mut needed: N,
+    prepare: P,
+) -> Result<crate::self_heal::LockedRestage>
+where
+    W: std::io::Write,
+    N: FnMut() -> Result<bool>,
+    P: FnOnce() -> Result<I>,
+    I: FnOnce() -> Result<()>,
+{
     if !needed()? {
         return Ok(crate::self_heal::LockedRestage::NotNeeded);
     }
+    let install = prepare()?;
     crate::self_heal::restage_under_install_lock(
         notice,
         move |_stamp: Option<&str>| needed(),
@@ -522,10 +576,25 @@ where
 
 /// The launch bootstrap, with the re-stage check and the installer injected so
 /// tests can drive it without a real install.
+#[cfg(test)]
 fn ensure_framework_installed_using<W, N, I>(notice: &mut W, needed: N, install: I) -> Result<()>
 where
     W: std::io::Write,
     N: FnMut() -> Result<bool>,
+    I: FnOnce() -> Result<()>,
+{
+    ensure_framework_installed_prepared(notice, needed, || Ok(install))
+}
+
+fn ensure_framework_installed_prepared<W, N, P, I>(
+    notice: &mut W,
+    needed: N,
+    prepare: P,
+) -> Result<()>
+where
+    W: std::io::Write,
+    N: FnMut() -> Result<bool>,
+    P: FnOnce() -> Result<I>,
     I: FnOnce() -> Result<()>,
 {
     use crate::self_heal::LockedRestage;
@@ -553,7 +622,7 @@ where
 
     // Issue #1582: a newer install that finished while this launch waited for
     // the install lock stops the bootstrap here, as Guard #1 does above.
-    match restage_framework_if_needed(notice, needed, install)? {
+    match restage_framework_if_needed_prepared(notice, needed, prepare)? {
         LockedRestage::NewerInstalled => return Ok(()),
         LockedRestage::NotNeeded | LockedRestage::Installed => {}
     }
@@ -695,6 +764,9 @@ fn local_install_scoped(
     reconcile_codex: bool,
     mode: InstallMode,
 ) -> Result<()> {
+    // Reject incomplete source input before the lock creates installation
+    // state, release allocation, binary deployment or staging touches it.
+    let (source_root, layout) = release_preflight::inspect(repo_root)?;
     // Issue #1954 D6: every install holds the install lock for its whole
     // run, so an explicit install, the post-update install and a self-heal
     // never stage or switch at the same time. Re-entrant on this thread, so
@@ -748,16 +820,6 @@ fn local_install_scoped(
 
     ensure_dirs(&claude_dir)?;
     let pre_dirs = all_rel_dirs(&claude_dir)?;
-
-    let (source_root, layout) = find_source_root(repo_root)?;
-    if layout == SourceLayout::Bundle {
-        validate_framework_bundle_compatibility(&source_root).with_context(|| {
-            format!(
-                "source amplifier-bundle at {} is incompatible",
-                source_root.display()
-            )
-        })?;
-    }
 
     println!();
     println!("📦 Staging amplifier-bundle (recipes, modules, tools):");

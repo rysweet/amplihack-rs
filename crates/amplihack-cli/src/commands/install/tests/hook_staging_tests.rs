@@ -100,6 +100,10 @@ fn bundle_source_tree_no_longer_ships_ported_python_shims() {
 
 #[test]
 fn local_install_does_not_stage_ported_python_shims() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Inverted contract for issue #522: after `local_install`, none of the
     // 7 ported `.py` shims may appear under the staged hooks directory.
     // The hooks dir may still exist (e.g., for README.md), but every .py
@@ -114,6 +118,7 @@ fn local_install_does_not_stage_ported_python_shims() {
     let bin_dir = temp.path().join("stub_bin");
     fs::create_dir_all(&bin_dir).unwrap();
     let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    create_exe_stub(&bin_dir, "recipe-runner-rs");
 
     let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let prev_path = std::env::var_os("PATH");
@@ -163,6 +168,10 @@ fn local_install_does_not_stage_ported_python_shims() {
 
 #[test]
 fn local_install_wires_settings_json_to_native_binary_subcommands() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Inverted contract for issue #522: every former-Python event in the
     // staged settings.json must invoke `amplihack-hooks <subcmd>`, never
     // a `.py` script path.
@@ -176,6 +185,7 @@ fn local_install_wires_settings_json_to_native_binary_subcommands() {
     let bin_dir = temp.path().join("stub_bin");
     fs::create_dir_all(&bin_dir).unwrap();
     let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    create_exe_stub(&bin_dir, "recipe-runner-rs");
 
     let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let prev_path = std::env::var_os("PATH");
@@ -243,14 +253,17 @@ fn local_install_wires_settings_json_to_native_binary_subcommands() {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&[
+pub(super) fn fixture_environment() -> crate::test_support::EnvGuard {
+    let mut saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
         "AMPLIHACK_SKIP_MMDC",
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
         "HOME",
         "PATH",
     ]);
+    for name in crate::test_support::claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS {
+        saved.clear(name);
+    }
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe {
         std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");

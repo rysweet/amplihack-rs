@@ -5,6 +5,10 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 #[test]
 fn archive_preserves_exact_bytes_inode_and_restrictive_permissions_with_utc_name() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     let bytes = f.orphan();
     let pending = f.root.join("pending.json");
@@ -27,6 +31,10 @@ fn archive_preserves_exact_bytes_inode_and_restrictive_permissions_with_utc_name
 
 #[test]
 fn collision_suffix_preserves_regular_file_directory_and_dangling_symlink() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     let bytes = f.orphan();
     let base = format!("pending.json.stale-{STAMP}");
@@ -48,6 +56,10 @@ fn collision_suffix_preserves_regular_file_directory_and_dangling_symlink() {
 
 #[test]
 fn archive_does_not_grant_ownership_of_foreign_packages() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     f.orphan();
     let package = f.root.join("market/plugin/skills/marker");
@@ -64,6 +76,10 @@ fn archive_does_not_grant_ownership_of_foreign_packages() {
 
 #[test]
 fn disappearing_marketplace_or_ledger_alone_never_proves_orphaning() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     for missing in ["ownership.json", "market/.agents/plugins/marketplace.json"] {
         let f = Fixture::new();
         assert!(f.install().unwrap());
@@ -76,6 +92,10 @@ fn disappearing_marketplace_or_ledger_alone_never_proves_orphaning() {
 
 #[test]
 fn strict_recovery_never_archives_even_when_targets_disappeared() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     let bytes = f.orphan();
     let error = recover_install(&f.root, &f.binary, &f.codex).unwrap_err();
@@ -128,6 +148,10 @@ fn explicit_separator_preserves_native_reset_spelling() {
 
 #[test]
 fn disappearance_of_recorded_empty_file_is_distinct_from_legitimate_absence() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     fs::write(f.codex.join("config.toml"), b"").unwrap();
     let bytes = f.plan();

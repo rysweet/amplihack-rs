@@ -49,10 +49,16 @@ fn install_alias(explicit: bool) {
 
 #[test]
 fn stable_deeper_home_alias_install_and_update_preserve_lexical_scope() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     install_alias(false);
 }
 
 #[test]
 fn stable_deeper_explicit_codex_alias_install_and_update_preserve_lexical_scope() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     install_alias(true);
 }

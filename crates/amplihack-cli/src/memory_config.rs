@@ -323,16 +323,6 @@ mod tests {
         assert!(config.node_options.contains("--trace-warnings"));
     }
 
-    /// Restores HOME when dropped, so a panicking test cannot leave HOME
-    /// pointing at a deleted temporary directory.
-    struct HomeRestore(Option<std::ffi::OsString>);
-
-    impl Drop for HomeRestore {
-        fn drop(&mut self) {
-            restore_home(self.0.take());
-        }
-    }
-
     // Issue #1992: the first-launch consent save writes a private file under
     // a fresh HOME without an fsync on the launch path.
     #[cfg(unix)]
@@ -343,7 +333,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = tempfile::tempdir().unwrap();
-        let restore = HomeRestore(set_home(home.path()));
+        let restore = set_home(home.path());
         let before = crate::user_config::edit::sync_count();
 
         save_user_preference(true);
@@ -381,7 +371,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = tempfile::tempdir().unwrap();
-        let restore = HomeRestore(set_home(home.path()));
+        let restore = set_home(home.path());
         let dir = home.path().join(".amplihack");
         fs::create_dir_all(&dir).unwrap();
         fs::write(
@@ -409,7 +399,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = tempfile::tempdir().unwrap();
-        let restore = HomeRestore(set_home(home.path()));
+        let restore = set_home(home.path());
         let dir = home.path().join(".amplihack");
         fs::create_dir_all(&dir).unwrap();
         // What a crash on a mount without auto_da_alloc can leave behind.

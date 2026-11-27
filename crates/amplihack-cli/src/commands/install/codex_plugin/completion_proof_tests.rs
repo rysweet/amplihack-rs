@@ -4,6 +4,10 @@ use super::*;
 
 #[test]
 fn completed_reconcile_records_versioned_hashes_and_increasing_generation() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     assert!(f.install().unwrap());
     let first = f.ledger();
@@ -46,6 +50,10 @@ fn completed_reconcile_records_versioned_hashes_and_increasing_generation() {
 
 #[test]
 fn pending_expected_ledger_is_durable_before_completed_ownership_publication() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     assert!(f.install().unwrap());
     let previous = fs::read(f.root.join("ownership.json")).unwrap();
@@ -82,6 +90,10 @@ fn pending_expected_ledger_is_durable_before_completed_ownership_publication() {
 
 #[test]
 fn pending_upgrade_carries_base_evidence_and_preserves_legacy_schema_versions() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     assert!(f.install().unwrap());
     f.upgrade(b"planned");
@@ -111,6 +123,10 @@ fn pending_upgrade_carries_base_evidence_and_preserves_legacy_schema_versions() 
 
 #[test]
 fn generation_overflow_refuses_before_creating_a_new_transaction() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = Fixture::new();
     assert!(f.install().unwrap());
     let mut ledger = f.ledger();

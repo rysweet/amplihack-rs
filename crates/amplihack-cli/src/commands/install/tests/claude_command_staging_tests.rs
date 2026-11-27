@@ -92,6 +92,7 @@ fn install_into_temp_home(temp: &Path) -> std::path::PathBuf {
     let bin_dir = temp.join("stub_bin");
     fs::create_dir_all(&bin_dir).unwrap();
     let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    create_exe_stub(&bin_dir, "recipe-runner-rs");
 
     let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let prev_path = std::env::var_os("PATH");
@@ -135,6 +136,10 @@ fn install_into_temp_home(temp: &Path) -> std::path::PathBuf {
 
 #[test]
 fn local_install_stages_claude_slash_commands_from_the_source_directory() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -176,6 +181,10 @@ fn local_install_stages_claude_slash_commands_from_the_source_directory() {
 
 #[test]
 fn local_install_stages_every_source_command_for_claude() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -236,6 +245,10 @@ fn entry_names(dir: &Path) -> Vec<String> {
 
 #[test]
 fn local_install_stages_the_same_command_set_for_claude_and_copilot() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // The two surfaces must not drift: whatever the Copilot plugin advertises,
     // a Claude session must be able to invoke. Names alone cannot fail this —
     // both sides read one source through a content-only transform — so the
@@ -294,6 +307,10 @@ fn local_install_stages_the_same_command_set_for_claude_and_copilot() {
 /// was destroyed under a green `✅ Claude Code staged 23 command(s)`.
 #[test]
 fn local_install_preserves_a_users_own_file_in_the_claude_command_namespace() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -327,6 +344,10 @@ fn local_install_preserves_a_users_own_file_in_the_claude_command_namespace() {
 /// time as `/amplihack.staging:<name>`.
 #[test]
 fn local_install_leaves_no_scratch_namespace_under_claudes_command_root() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -347,6 +368,10 @@ fn local_install_leaves_no_scratch_namespace_under_claudes_command_root() {
 
 #[test]
 fn uninstall_removes_the_claude_slash_command_directory() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -378,6 +403,10 @@ fn uninstall_removes_the_claude_slash_command_directory() {
 /// while it still hashes to what install recorded.
 #[test]
 fn uninstall_preserves_a_claude_command_namespace_the_user_has_added_to() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -409,6 +438,10 @@ fn uninstall_preserves_a_claude_command_namespace_the_user_has_added_to() {
 /// Uninstall must also take the amplihack-private scratch root with it.
 #[test]
 fn uninstall_removes_the_command_staging_scratch_root() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -433,14 +466,17 @@ fn uninstall_removes_the_command_staging_scratch_root() {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&[
+pub(super) fn fixture_environment() -> crate::test_support::EnvGuard {
+    let mut saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
         "AMPLIHACK_SKIP_MMDC",
         "HOME",
         "PATH",
     ]);
+    for name in crate::test_support::claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS {
+        saved.clear(name);
+    }
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe {
         std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");
