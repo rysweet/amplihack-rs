@@ -25,7 +25,7 @@
 //! it was piped as `merge-subject` and `merge-body` ([`Harness::merge_message`]).
 //! `mss` overrides the merge state GitHub reports, `protection.json` is
 //! what classic branch protection's required status checks return, and
-//! `policy403` makes both policy endpoints refuse with a 403. Tests that
+//! `policy403` makes all policy endpoints refuse with a 403. Tests that
 //! pause a CI wait block the stand-in sleep on `$GH_STATE/release.fifo`.
 //! A test releases it (`fifo_release`), and if the
 //! run exits early the harness's watcher opens the FIFO itself, so nothing
@@ -208,6 +208,9 @@ case "${1:-} ${2:-}" in
           '{state:"open",head:{sha:$head,ref:$branch,repo:{full_name:"o/r"}}}')" ;;
       repos/o/r/commits/*/check-runs\?*)
         decline core check-runs
+        if [ -f "$G/decline-core-after-checks" ]; then
+          mv "$G/decline-core-after-checks" "$G/decline-core"
+        fi
         conditional=true
         if [[ "$endpoint" == *'&page=2' ]]; then
           http 200 "$(cat "$G/checks-page-2.json")"
@@ -219,7 +222,8 @@ case "${1:-} ${2:-}" in
         http 200 "$(jq -Rn '[inputs | split("\t") | {name:.[0], html_url:.[3], app:{id:((.[4] | tonumber?) // null)},
           status:(if .[1] == "pending" then "in_progress" else "completed" end),
           conclusion:(if .[1] == "pending" then null elif .[1] == "pass" then "success"
-            elif .[1] == "skipping" then "skipped" else "failure" end)}] | {check_runs:.}' < "$G/checks")" ;;
+            elif .[1] == "skipping" then "skipped" elif .[1] == "neutral" then "neutral"
+            else "failure" end)}] | {check_runs:.}' < "$G/checks")" ;;
       repos/o/r/commits/*/status\?*)
         conditional=true
         http 200 "$(cat "$G/statuses.json" 2>/dev/null || echo '{"statuses":[]}')" ;;
@@ -237,6 +241,10 @@ case "${1:-} ${2:-}" in
         elif [ -e "$G/classic404" ]; then http 404 "Not Found"
         elif [ -e "$G/protection.json" ]; then http 200 "$(cat "$G/protection.json")" "${args[@]}"
         else http 404 "Branch not protected"; fi ;;
+      repos/o/r/branches/*)
+        if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
+        elif [ -e "$G/branch.json" ]; then http 200 "$(cat "$G/branch.json")"
+        else http 404 "Not Found"; fi ;;
       repos/*) http 200 "$(settings)" "${args[@]}" ;;
       *) echo "stand-in gh: unexpected api call: ${args[*]}" >&2; exit 1 ;;
     esac ;;
@@ -509,7 +517,7 @@ impl Harness {
         fs::write(self.gh.join("protection.json"), v.to_string()).unwrap();
     }
 
-    /// Both policy endpoints (rules and classic protection) refuse with a 403.
+    /// Rules, classic protection, and the branch itself refuse with a 403.
     pub fn policy_unreadable(&self) {
         fs::write(self.gh.join("policy403"), "").unwrap();
     }

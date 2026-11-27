@@ -96,7 +96,7 @@ which is why waiting is an action and not part of the agent step.
 | `repo` | Repository, worktree path, current branch, whether the worktree is clean, commits not yet pushed |
 | `merge_authority` | `no_merge`, dry run, and the effective authority |
 | `pr` | Head, base, `mergeable`, `mergeStateStatus`, draft, state |
-| `checks` | Check runs and commit statuses at the head, with counts and an overall `state`. `required` lists known required names. `required_checks` pairs each name with its expected GitHub App ID, or `null` for any source. `required_known` is true when both the rulesets and classic required-check policy are accounted for. `required_error` explains incomplete policy, in which case the reading counts all observed checks. A required check is pending until it reports from an allowed source. A head with no reported checks is also pending. |
+| `checks` | Check runs and commit statuses at the head, with counts and an overall `state`. `required` lists known required names. `required_checks` pairs each name with its expected GitHub App ID, or `null` for any source. A branch response that lists a name without its App policy adds `source_known: false`. `required_known` is true when both the rulesets and classic required names are accounted for. `required_error` explains incomplete policy, in which case the reading counts all observed checks. A required check with no result is pending, as is a head with no reported checks. `unverified_checks` gives the observed checks that cannot establish success and the reason for each. |
 | `reviews` | GitHub review verdicts and Crusty round verdicts, each with the head it was given at and the round's minor findings. Each minor finding is `{id, summary, outcome, evidence?, reason?}`, where `outcome` is `fixed`, `filed` or `open` (see [Minor review findings](#minor-review-findings)); a round whose record or minor findings could not be read is listed with its `error` |
 | `base` | Merge base, how far behind the PR is, conflicting files from `git merge-tree --write-tree`, and the files the base changed since the merge base that the PR also touches |
 | `repository` | Allowed merge methods; whether strict status checks are required (`strict_status_checks`, `strict_source`, `strict_unreadable`); `merge_state_behind` as evidence only |
@@ -108,8 +108,9 @@ which is why waiting is an action and not part of the agent step.
 | `turns_dir` | Path to the turn records |
 
 Strict status checks come from the rules endpoint, then classic branch
-protection where it can be read. A policy that was read wins, whether it is
-`true` or `false`. If neither can be read, `strict_status_checks` is `null` and
+protection. If the classic protection endpoint is unavailable, the regular
+branch endpoint can still supply required checks. When the available policy
+leaves strictness unknown, `strict_status_checks` is `null` and
 `strict_unreadable` gives the reason. `merge_state_behind` reports whether
 GitHub's `mergeStateStatus` is `BEHIND`, beside the policy and as evidence only:
 it never sets the policy, never overrides one that was read, and never fills in
@@ -431,12 +432,18 @@ Under `judge` and `file_all` the agent files each issue with
   immediately, then reads the check runs and commit statuses if the head is
   unchanged. While checks are pending, it sleeps for the configured interval
   before reading again. It rechecks the head before returning a completed
-  result. With `args.required: true` and a complete policy, it waits for the
-  required checks by name and expected App. A commit status without an App ID
-  can satisfy a requirement that allows any source. The wait uses all reported
-  checks when the policy has no required names or is incomplete. If a
-  required-only wait reaches completion with incomplete policy, it returns
-  `wait-error` with the reason.
+  result. A rate-limit retry during check collection or head revalidation
+  triggers a fresh check scan because a rerun can start at the same head.
+  With `args.required: true` and readable required names, the wait selects the
+  required checks by name and expected App. A commit status can satisfy a
+  requirement that allows any source. Skipped and neutral required jobs,
+  a completed commit status whose required App cannot be verified, and a
+  completed check whose required App policy is unreadable appear in
+  `unverified_checks`. If there is no pending or failing check, these
+  conditions produce `checks_state: unverified`. A result needs at least one
+  success to pass. The wait uses all reported checks when the policy has no
+  required names or is incomplete. If a required-only wait reaches completion
+  with incomplete policy, it returns `wait-error` with the reason.
 - A login with room. The runner's usage-limit wait (#2992) handles this, and
   limit-resume (#3112) restarts the run. The loop adds nothing.
 - The owner's answer. The waiting step arms a FIFO in the run's
@@ -451,11 +458,15 @@ The reading and the wait share cached REST responses. They send `If-None-Match`
 when a cached response has an ETag. A `304 Not Modified` reuses the response,
 including any links to later pages, without using the primary rate allowance.
 
-When GitHub declines a call because of a rate limit, the reading or wait looks
-up the limit with `gh api rate_limit`. It uses the applicable reset time and
-any `Retry-After` delay before retrying that call in the same turn. If GitHub
-provides no usable deadline, the operation stays pending until guidance or
-cancellation. Guidance allows the reading to retry and ends a CI wait.
+When GitHub declines a call because of a rate limit, the response's
+`Retry-After`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers
+determine the deadline when available. The `gh api rate_limit` lookup can
+supply a missing reset when its counter is exhausted. The turn sleeps once
+until the deadline and retries that call. If there is no future deadline, the
+operation stays pending until guidance or cancellation. The lookup can show
+a counter with room even though the original request was declined, leaving
+the turn waiting for guidance. Guidance allows the reading to retry and ends
+a CI wait.
 
 ### CI check interval
 
@@ -853,7 +864,7 @@ its actions:
 | Action | Outcomes |
 |--------|----------|
 | `review` | `reviewed`, `review-failed` |
-| `wait` | `checks-complete` with `checks_state` of `passed` or `failed`, `head-changed`, `guidance-arrived`, `wait-error` |
+| `wait` | `checks-complete` with `checks_state` of `passed`, `failed`, or `unverified`, `head-changed`, `guidance-arrived`, `wait-error` |
 | `merge` | `merged`, `not-authorised`, `authorization-unreadable`, `guidance-unknown`, `outcomes-unmet`, `outcomes-unreadable`, `checks-not-green`, `refused`, `not-open`, `message-unavailable`, `invalid-head`, `head-mismatch` |
 
 The shared outcomes are `continued`, `no-action`, `skipped-guidance`,

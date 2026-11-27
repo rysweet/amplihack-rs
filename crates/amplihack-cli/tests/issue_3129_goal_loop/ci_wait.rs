@@ -207,7 +207,8 @@ fn required_checks_wait_for_the_configured_apps_in_classic_protection_and_rules(
         reading["checks"]["required_checks"],
         json!([{"name":"build","app_id":23}, {"name":"integration","app_id":42}])
     );
-    assert_eq!(reading["checks"]["counts"]["pending"], 2);
+    assert_eq!(reading["checks"]["counts"]["pending"], 1);
+    assert_eq!(reading["checks"]["counts"]["unverified"], 1);
     assert_eq!(reading["checks"]["counts"]["passed"], 0);
     fake_sleep(
         &h,
@@ -218,6 +219,105 @@ printf 'build\tpass\t0\t\t23\nbuild\tfail\t0\t\t99\nintegration\tpass\t0\t\t42\n
     assert_eq!(result["outcome"], "checks-complete", "{result}");
     assert_eq!(result["checks_state"], "passed", "{result}");
     assert_eq!(sleeps(&h), [120]);
+}
+
+#[test]
+fn skipped_or_neutral_required_jobs_are_visible_as_unverified() {
+    for conclusion in ["skipping", "neutral"] {
+        let h = Harness::new();
+        h.classic_protection(&json!({"strict":false,"contexts":["build"]}));
+        h.set_checks(&format!("build\t{conclusion}\t0\noptional\tpass\t0\n"));
+        let reading = read_and_decide(&h, true);
+        assert_eq!(reading["checks"]["state"], "unverified", "{reading}");
+        assert_eq!(reading["checks"]["counts"]["passed"], 0);
+        assert_eq!(reading["checks"]["counts"]["skipped"], 1);
+        let result = wait(&h, "");
+        assert_eq!(result["outcome"], "checks-complete", "{result}");
+        assert_eq!(result["checks_state"], "unverified", "{result}");
+        assert_eq!(result["unverified_checks"][0]["name"], "build");
+        assert_eq!(
+            result["unverified_checks"][0]["unverified_reason"],
+            "skipped_or_neutral"
+        );
+
+        // The all-checks wait must also account for the known required job.
+        read_and_decide(&h, false);
+        assert_eq!(wait(&h, "")["checks_state"], "unverified");
+        assert!(sleeps(&h).is_empty());
+    }
+}
+
+#[test]
+fn a_readable_branch_policy_allows_required_waits_after_an_admin_404() {
+    let h = Harness::new();
+    fs::write(h.gh.join("classic404"), "").unwrap();
+    let branch = h.gh.join("branch.json");
+    fs::write(
+        &branch,
+        r#"{"protected":true,"protection":{"required_status_checks":{"contexts":["build"],"checks":[{"context":"build","app_id":23}]}}}"#,
+    )
+    .unwrap();
+    h.set_checks("build\tpass\t0\t\t23\noptional\tfail\t0\n");
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["checks"]["required_known"], true, "{reading}");
+    assert_eq!(
+        reading["checks"]["required_checks"],
+        json!([{"name":"build","app_id":23}])
+    );
+    assert!(reading["repository"]["strict_status_checks"].is_null());
+    let result = wait(&h, "");
+    assert_eq!(result["checks_state"], "passed", "{result}");
+
+    // GitHub's context-only branch response still gives the required name.
+    fs::write(
+        branch,
+        r#"{"protected":true,"protection":{"required_status_checks":{"enforcement_level":"non_admins","contexts":["build"]}}}"#,
+    )
+    .unwrap();
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["checks"]["required_known"], true, "{reading}");
+    assert_eq!(
+        reading["checks"]["required_checks"][0]["source_known"],
+        false
+    );
+    let result = wait(&h, "");
+    assert_eq!(result["outcome"], "checks-complete", "{result}");
+    assert_eq!(result["checks_state"], "unverified", "{result}");
+    assert_eq!(
+        result["unverified_checks"][0]["unverified_reason"],
+        "required_app_unreadable"
+    );
+    assert!(sleeps(&h).is_empty());
+}
+
+#[test]
+fn a_completed_app_bound_commit_status_without_app_evidence_is_unverified() {
+    let h = Harness::new();
+    fs::write(
+        h.gh.join("rules.json"),
+        r#"[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"external","integration_id":42}]}}]"#,
+    )
+    .unwrap();
+    fs::write(
+        h.gh.join("statuses.json"),
+        r#"{"statuses":[{"context":"external","state":"success","target_url":"https://ci.example.com/result"}]}"#,
+    )
+    .unwrap();
+    h.set_checks("external\tpass\t0\t\t99\n");
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["checks"]["state"], "unverified", "{reading}");
+    assert_eq!(reading["checks"]["counts"]["pending"], 0);
+    assert_eq!(reading["checks"]["counts"]["passed"], 0);
+    let result = wait(&h, "");
+    assert_eq!(result["outcome"], "checks-complete", "{result}");
+    assert_eq!(result["checks_state"], "unverified", "{result}");
+    let job = &result["unverified_checks"][0];
+    assert_eq!(job["name"], "external");
+    assert_eq!(job["unverified_reason"], "status_app_unverified");
+    assert_eq!(job["expected_app_ids"], json!([42]));
+    assert_eq!(job["observed_state"], "pass");
+    assert_eq!(job["link"], "https://ci.example.com/result");
+    assert!(sleeps(&h).is_empty());
 }
 
 #[test]
@@ -262,6 +362,29 @@ printf '%040d\n' 7 > "$GH_STATE/moved-head""#,
     let sleeps = sleeps(&h);
     assert_eq!(sleeps.len(), 1);
     assert!((21..=25).contains(&sleeps[0]), "{sleeps:?}");
+}
+
+#[test]
+fn a_rerun_at_the_same_head_discards_a_pass_during_the_final_rate_limit_sleep() {
+    let h = Harness::new();
+    let reading = read_and_decide(&h, false);
+    assert_eq!(reading["checks"]["state"], "passed", "{reading}");
+    fs::write(h.gh.join("decline-core-after-checks"), "1\n").unwrap();
+    fake_sleep(
+        &h,
+        r#"case "$(wc -l < "$GH_STATE/sleeps")" in
+  1) printf 'build\tpending\t0\n' > "$GH_STATE/checks" ;;
+  2) printf 'build\tfail\t0\n' > "$GH_STATE/checks" ;;
+  *) exit 2 ;;
+esac"#,
+    );
+    let result = wait(&h, "37");
+    assert_eq!(result["outcome"], "checks-complete", "{result}");
+    assert_eq!(result["checks_state"], "failed", "{result}");
+    let sleeps = sleeps(&h);
+    assert_eq!(sleeps.len(), 2);
+    assert!((21..=25).contains(&sleeps[0]), "{sleeps:?}");
+    assert_eq!(sleeps[1], 37);
 }
 
 #[test]

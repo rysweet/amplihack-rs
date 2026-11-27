@@ -48,7 +48,11 @@ CALLER_UMASK="$(umask)"; umask 077
 TD=""
 result() { jq -cn --arg o "$1" --arg s "$2" '{outcome:$o, summary:$s}' | goal_atomic_write "$TD/result.json"; }
 ci_result() {
-  jq -cn --arg state "$1" --arg summary "$2" '{outcome:"checks-complete", checks_state:$state, summary:$summary}' \
+  jq -c '{outcome:"checks-complete", checks_state:.state, summary:(
+      if .state == "passed" then "the checks at the head completed and passed"
+      elif .state == "failed" then "the checks at the head completed and at least one failed"
+      else "the checks at the head completed with unverified results" end)}
+    + (if (.unverified_checks | length) > 0 then {unverified_checks} else {} end)' "$1" \
     | goal_atomic_write "$TD/result.json"
 }
 need_pr() { goal_is_pr "$PR" || { result no-pr "no pull request number reached the goal tool (pr_number)"; exit 0; }; }
@@ -122,6 +126,7 @@ do_ci_wait() {
   # shellcheck source=workflow_gh_retry.sh
   . "$HERE/workflow_gh_retry.sh" || return 2
   local build_branch="${1:-}" head slug required required_only policy_error="" cache interval rc state=pending
+  local GH_READ_RETRIED=false
   local reading="$TD/reading.json"
   head="$(jq -r '.goal.pr.head // empty | strings' "$reading")"
   slug="$(goal_github_pr_repo "$(jq -r '.goal.pr.url // empty | strings' "$reading")" "$PR")"
@@ -129,11 +134,10 @@ do_ci_wait() {
     echo 'the reading has no usable pull request repository or head' >&2
     return 2
   fi
-  required='[]'
   required_only="$(jq -r '.args.required == true' "$TD/decision.json")" || return 2
-  if [ "$required_only" = true ]; then
-    if ! required="$(jq -ce '.goal.checks | select(.required_known == true) | .required_checks | arrays' "$reading")"; then
-      required='[]'
+  if ! required="$(jq -ce '.goal.checks | select(.required_known == true) | .required_checks | arrays' "$reading")"; then
+    required='[]'
+    if [ "$required_only" = true ]; then
       policy_error="$(jq -r '.goal.checks.required_error // empty | strings' "$reading")"
       policy_error="${policy_error:-the reading has no complete required-check policy}"
     fi
@@ -162,16 +166,18 @@ do_ci_wait() {
     fi
     [ "$(jq -r '.head.sha' "$GH_READ_BODY")" = "$head" ] || return 10
 
-    # A terminal check read may have waited out a rate limit on the old head.
-    if [ "$state" != pending ]; then
+    # A rate-limit retry can span a rerun even while the head stays the same.
+    # Read the checks again if any request since the start of the scan retried.
+    if [ "$state" != pending ] && [ "$GH_READ_RETRIED" = false ]; then
       if [ -n "$policy_error" ]; then
         printf 'the required-check policy is incomplete: %s\n' "$policy_error" >&2
         return 2
       fi
-      [ "$state" = passed ]
-      return $?
+      ci_result "$GH_READ_DIR/ci.json" || return 2
+      return 0
     fi
-    gh_head_checks "$slug" "$head" "$cache" "$required" > "$GH_READ_DIR/ci.json"
+    GH_READ_RETRIED=false
+    gh_head_checks "$slug" "$head" "$cache" "$required" "$required_only" > "$GH_READ_DIR/ci.json"
     rc=$?
     case "$rc" in
       75|79) return "$rc" ;;
@@ -180,7 +186,7 @@ do_ci_wait() {
     esac
     state="$(jq -r '.state' "$GH_READ_DIR/ci.json")"
     case "$state" in
-      passed|failed) ;; # Revalidate the head before using the result.
+      passed|failed|unverified) ;; # Revalidate the head before using the result.
       pending) gh_goal_command sleep "$interval" || return 2 ;;
       *) echo 'the CI read returned an unknown state' >&2; return 2 ;;
     esac
@@ -207,8 +213,7 @@ do_act_wait() {
   esac
   case "$code" in
     79|75) exit "$code" ;;
-    0) ci_result passed "the checks at the head completed and passed" ;;
-    1) ci_result failed "the checks at the head completed and at least one failed" ;;
+    0) return 0 ;; # The completed wait wrote result.json.
     10) result head-changed "the pull request head changed during the wait" ;;
     *) result wait-error "the CI wait exited ${code:-unknown}. $(tail -n 1 "$TD/wait.err" | goal_clean_line 300)" ;;
   esac

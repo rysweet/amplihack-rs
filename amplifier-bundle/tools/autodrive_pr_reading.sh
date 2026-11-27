@@ -211,11 +211,21 @@ else
   M=null
   if [ "$rc" -eq 0 ] && methods="$(jq -ce 'objects | {merge:.allow_merge_commit, squash:.allow_squash_merge, rebase:.allow_rebase_merge}' "$GH_READ_BODY" 2>/dev/null)"; then M="$methods"
   else RE="the allowed merge methods could not be read: ${GH_READ_ERROR:-unreadable response}"; fi
-  STRICT=null; SRC=""; RULES_READ=false
+  STRICT=null; SRC=""; STRICT_WHY=""; RULES_READ=false
   check_fields='
     def context: type == "string" and length > 0;
     def app_id: . == null or . == -1 or (type == "number" and . > 0 and floor == .);
     def source: if . == -1 then null else . end;
+    def classic($branch):
+      select((.strict | type) == "boolean" or ($branch and .strict == null))
+      | select((.contexts | type == "array") or (.checks | type == "array"))
+      | select((.contexts | . == null or (type == "array" and all(.[]; context)))
+           and (.checks | . == null or (type == "array" and all(.[]; (.context | context) and (.app_id | app_id)))))
+      | [(.checks // [])[] | {name:.context, app_id:(.app_id | source)}
+          + (if $branch and (has("app_id") | not) then {source_known:false} else {} end)] as $checks
+      | {strict, required:($checks + [(.contexts // [])[] as $name
+          | select(all($checks[]; .name != $name)) | {name:$name, app_id:null}
+          + (if $branch then {source_known:false} else {} end)])};
   '
   if ref_ok "$BASE"; then
     base_path="$(jq -nr --arg base "$BASE" '$base | @uri')"
@@ -234,27 +244,45 @@ else
       REQUIRED="$(jq -c '.required' <<< "$rules")"
       if jq -e '.strict' <<< "$rules" >/dev/null; then STRICT=true; SRC=rules; fi
     else WHY="rules endpoint: ${GH_READ_ERROR:-unreadable response}"; fi
+    protection=""; protection_source=protection
     gh_goal_read core true api --include "repos/$SLUG/branches/$base_path/protection/required_status_checks"; rc=$?; passup "$rc"
-    if [ "$rc" -eq 0 ] && protection="$(jq -sce "$check_fields"'
-      select(length == 1) | .[0] | objects | select(.strict | type == "boolean")
-      | select((.contexts | type == "array") or (.checks | type == "array"))
-      | select((.contexts | . == null or (type == "array" and all(.[]; context)))
-           and (.checks | . == null or (type == "array" and all(.[]; (.context | context) and (.app_id | app_id)))))
-      | [(.checks // [])[] | {name:.context, app_id:(.app_id | source)}] as $checks
-      | {strict, required:($checks + [(.contexts // [])[] as $name
-          | select(all($checks[]; .name != $name)) | {name:$name, app_id:null}])}
+    if [ "$rc" -ne 0 ] || ! protection="$(jq -sce "$check_fields"'
+      select(length == 1) | .[0] | objects | classic(false)
     ' "$GH_READ_BODY" 2>/dev/null)"; then
-      if [ "$STRICT" != true ]; then STRICT="$(jq -r '.strict' <<< "$protection")"; SRC=protection; fi
-      REQUIRED="$(jq -c --argjson rules "$REQUIRED" '$rules + .required' <<< "$protection")"
-    else
-      # A generic 404 can hide missing permissions. Require GitHub's
-      # explicit response that classic required checks are absent.
+      protection=""
       case "$GH_READ_STATUS:${GH_READ_ERROR% }" in
-        '404:gh: Branch not protected (HTTP 404)'|'404:gh: Required status checks not enabled (HTTP 404)') ;;
-        *) WHY="${WHY:+$WHY; }classic protection: ${GH_READ_ERROR:-unreadable response}" ;;
+        '404:gh: Branch not protected (HTTP 404)'|'404:gh: Required status checks not enabled (HTTP 404)')
+          protection='{"strict":false,"required":[]}'
+          protection_source="rules (no strict status check rule)" ;;
+        *)
+          classic_error="${GH_READ_ERROR:-unreadable response}"
+          # The administration endpoint may return a generic 404 to a
+          # non-admin. The regular branch object can still list the checks.
+          gh_goal_read core true api --include "repos/$SLUG/branches/$base_path"; rc=$?; passup "$rc"
+          if [ "$rc" -eq 0 ] && protection="$(jq -sce "$check_fields"'
+            select(length == 1) | .[0] | objects | select(.protected | type == "boolean")
+            | if .protected == false or .protection.enabled == false or
+                 .protection.required_status_checks.enforcement_level == "off" then
+                {strict:false, required:[]}
+              else .protection.required_status_checks | objects | classic(true) end
+          ' "$GH_READ_BODY" 2>/dev/null)"; then
+            protection_source=branch
+          else
+            WHY="${WHY:+$WHY; }classic protection: $classic_error; branch policy: ${GH_READ_ERROR:-unreadable response}"
+          fi ;;
       esac
     fi
-    if [ "$STRICT" = null ] && [ "$RULES_READ" = true ]; then STRICT=false; SRC="rules (no strict status check rule)"; fi
+    if [ -n "$protection" ]; then
+      REQUIRED="$(jq -c --argjson rules "$REQUIRED" '$rules + .required' <<< "$protection")"
+      if [ "$STRICT" != true ]; then
+        classic_strict="$(jq -r '.strict' <<< "$protection")"
+        if [ "$classic_strict" = null ]; then
+          STRICT_WHY="the branch policy did not report strict status checks"
+        elif [ "$classic_strict" = true ] || [ "$RULES_READ" = true ]; then
+          STRICT="$classic_strict"; SRC="$protection_source"
+        fi
+      fi
+    fi
   else WHY="the base name was refused"; fi
   # #3141: BEHIND is evidence beside the policy, never the policy. GitHub can
   # report BEHIND under a policy that does not require an up-to-date branch,
@@ -262,7 +290,7 @@ else
   # not. null: the pull request itself could not be read.
   BEHIND_EV=null
   [ "$PR_READ" != true ] || { if [ "$MSS" = BEHIND ]; then BEHIND_EV=true; else BEHIND_EV=false; fi; }
-  RJ="$(jq -cn --argjson m "$M" --argjson s "$STRICT" --arg src "$SRC" --arg why "$WHY" --argjson behind "$BEHIND_EV" \
+  RJ="$(jq -cn --argjson m "$M" --argjson s "$STRICT" --arg src "$SRC" --arg why "${WHY:+$WHY${STRICT_WHY:+; }}$STRICT_WHY" --argjson behind "$BEHIND_EV" \
     '{merge_methods:$m, strict_status_checks:$s, strict_source:(if $src == "" then null else $src end), strict_unreadable:(if $s == null then $why else null end),
       merge_state_behind:$behind}')"
 fi
@@ -321,6 +349,6 @@ jq -n --slurpfile repo "$S/repo.json" --slurpfile ma "$S/merge_authority.json" -
    summary:((if $p.error then "PR #" + $prn + ": the pull request could not be read (" + $p.error + ")" else
      "PR #" + $prn + " " + ($p.state // "?") + " at " + (($p.head // "?")[0:12]) + " (" + ($p.head_branch // "?") + " into " + ($p.base // "?") + "), mergeStateStatus " + ($p.merge_state // "?")
      + "; checks: " + (if $checks[0].error then "unreadable" elif $c.total == 0 then "pending (no checks reported)"
-        else "\($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending" end)
+        else "\($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending, \($c.unverified // 0) unverified" end)
      + "; base: " + (if $b.error then "unreadable" else "\($b.behind_by // "?") behind, \($b.conflict_files | length) conflicting files" end)
      + "; merging " + (if $ma[0].effective then "allowed" else "off" end) end) + "; minor findings: " + $mf)}' | goal_atomic_write "$TD/goal.json"

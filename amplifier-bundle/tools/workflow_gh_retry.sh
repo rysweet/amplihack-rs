@@ -574,6 +574,7 @@ _gh_goal_wait_for_reset() {
 # gh_goal_read <core|graphql> <include_headers true|false> <gh args...>
 # GH_READ_DIR is the caller's private scratch. GH_READ_BODY points to a file
 # valid until the next read. Only a rate-limit response retries the command.
+# GH_READ_RETRIED lets callers invalidate evidence across a retry.
 gh_goal_read() {
   local resource="$1" include_headers="$2" rc headers reported_at
   shift 2
@@ -604,6 +605,7 @@ gh_goal_read() {
         { [ "$(_gh_header "$headers" x-ratelimit-remaining)" = 0 ] ||
           [ -n "$(_gh_header "$headers" retry-after)" ]; }; } ||
       [ "$(classify_gh_error "$err" explicit)" = rate_limit ]; then
+      GH_READ_RETRIED=true
       reported_at="$(date +%s)" || return 1
       _gh_goal_wait_for_reset "$resource" "$headers" "$reported_at" || return $?
     else
@@ -679,13 +681,12 @@ gh_rest_pages() {
   done
 }
 
-# gh_head_checks <owner/repo> <sha> <cache_dir> <required_checks_json>
-# Requirements are {name, app_id}, with null allowing any source.
-# Pass [] to consider all checks. A missing required check is pending, as is
-# a head with no reported checks. The per-turn display is capped separately
-# from the counts and completion state.
+# gh_head_checks <owner/repo> <sha> <cache_dir> <required_checks_json> [<required_only>]
+# Requirements are {name, app_id}, with source_known:false when the branch
+# policy supplies the name alone. A missing required check and a head with
+# no reported checks are pending. The display is capped separately from counts.
 gh_head_checks() {
-  local commit="repos/$1/commits/$2" cache="$3" required="$4"
+  local commit="repos/$1/commits/$2" cache="$3" required="$4" required_only="${5:-true}"
   local rows="$GH_READ_DIR/checks.jsonl"
   gh_rest_pages "$commit/check-runs" "$cache" '
     (.check_runs | type == "array") and all(.check_runs[];
@@ -705,22 +706,41 @@ gh_head_checks() {
       (.context | type == "string" and length > 0) and
       (.state | . == "success" or . == "pending" or . == "failure" or . == "error"))
   ' '
-    .statuses[] | {name:.context, app_id:null, link:(.target_url // ""), state:(
+    .statuses[] | {name:.context, app_id:null, legacy_status:true, link:(.target_url // ""), state:(
       if .state == "success" then "pass" elif .state == "pending" then "pending" else "fail" end
     )}
   ' >> "$rows" || return $?
-  jq -c -s --argjson required "$required" '
+  jq -c -s --argjson required "$required" --argjson required_only "$required_only" '
     def matches($check): .name == $check.name and (.app_id == null or .app_id == $check.app_id);
+    def has_unattributed_status($checks):
+      . as $need | any($checks[]; .legacy_status and .name == $need.name);
     . as $all
-    | (if ($required | length) == 0 then $all else
-        [$all[] | . as $check | select(any($required[]; matches($check)))]
-        + [$required[] | select(. as $need | all($all[]; . as $check | $need | matches($check) | not))
-           | . + {state:"pending", link:""}]
-       end | map(. + {elapsed:""})) as $checks
+    | [$required[] | . as $need | select(all($all[]; . as $check | $need | matches($check) | not))] as $missing
+    | ([$all[] | . as $check
+        | [$required[] | select(matches($check))] as $matches
+        | [$missing[] | select(has_unattributed_status([$check])) | .app_id] as $expected_apps
+        | select(($required | length) == 0 or ($required_only | not) or
+                 ($matches | length) > 0 or ($expected_apps | length) > 0)
+        | if .state == "pending" then .
+          elif ($expected_apps | length) > 0 then
+            . + {observed_state:.state, state:"unverified", unverified_reason:"status_app_unverified", expected_app_ids:$expected_apps}
+          elif any($matches[]; .source_known == false) then
+            . + {observed_state:.state, state:"unverified", unverified_reason:"required_app_unreadable"}
+          elif .state == "skipping" and ($matches | length) > 0 then
+            . + {unverified_reason:"skipped_or_neutral"}
+          else . end]
+       + [$missing[] | select(has_unattributed_status($all) | not) | . + {state:"pending", link:""}]
+       | map(del(.legacy_status) + {elapsed:""})) as $checks
     | ($checks | group_by(.state) | map({key:.[0].state, value:length}) | from_entries) as $n
-    | {checks:$checks[:200], counts:{total:($checks | length), passed:($n.pass // 0),
+    | (if ($n.pass // 0) == 0 then
+         $checks | map(if .state == "skipping" then . + {unverified_reason:"skipped_or_neutral"} else . end)
+       else $checks end) as $display
+    | [$display[] | select(.unverified_reason)] as $unverified
+    | {checks:$display[:200], unverified_checks:$unverified[:200],
+       counts:{total:($checks | length), passed:($n.pass // 0), unverified:($unverified | length),
         failing:(($n.fail // 0) + ($n.cancel // 0)), pending:($n.pending // 0), skipped:($n.skipping // 0)}}
     | .state = (if .counts.total == 0 or .counts.pending > 0 then "pending"
-        elif .counts.failing > 0 then "failed" else "passed" end)
+        elif .counts.failing > 0 then "failed"
+        elif .counts.unverified > 0 then "unverified" else "passed" end)
   ' "$rows"
 }
