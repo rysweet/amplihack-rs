@@ -111,23 +111,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".amplihack/.claude")).unwrap();
         let _cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
-        let previous_home = env::var_os("HOME");
-        let previous_root = env::var_os("AMPLIHACK_ROOT");
+        let _env = crate::test_support::EnvGuard::capture(&["HOME", "AMPLIHACK_ROOT"]);
         unsafe {
             env::set_var("HOME", dir.path());
             env::remove_var("AMPLIHACK_ROOT");
         }
 
         let found = find_uvx_installation_path();
-
-        match previous_home {
-            Some(value) => unsafe { env::set_var("HOME", value) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-        match previous_root {
-            Some(value) => unsafe { env::set_var("AMPLIHACK_ROOT", value) },
-            None => unsafe { env::remove_var("AMPLIHACK_ROOT") },
-        }
 
         assert_eq!(
             found.as_deref(),

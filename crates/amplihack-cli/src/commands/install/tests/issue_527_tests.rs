@@ -88,66 +88,27 @@ pub(super) fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
-    let previous_home = crate::test_support::set_home(temp.path());
-
+    let _home = crate::test_support::HomeGuard::set(temp.path());
+    let mut env = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+        "PATH",
+        "AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL",
+        "RECIPE_RUNNER_RS_PATH",
+        "CARGO_HOME",
+    ]);
     let bin_dir = temp.path().join("stub_bin");
     fs::create_dir_all(&bin_dir).unwrap();
     helpers::create_exe_stub(&bin_dir, "python3");
     let hooks_stub = helpers::create_exe_stub(&bin_dir, "amplihack-hooks");
-
-    let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
-    let prev_path = std::env::var_os("PATH");
-    let prev_skip = std::env::var_os("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL");
-    let prev_rr_path = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_cargo_home = std::env::var_os("CARGO_HOME");
-    // Locate /usr/bin/sh + /usr/bin (cargo-install needs basic tools); we
-    // include them but deliberately exclude any directory that may already
-    // contain a real recipe-runner-rs (~/.cargo/bin, ~/.local/bin) so the
-    // BUG 2 bail test is reliably hermetic on developer machines.
-    let safe_system_dirs = ["/usr/local/bin", "/usr/bin", "/bin"];
-    let new_path = {
-        let mut entries = vec![bin_dir.display().to_string()];
-        entries.extend(safe_system_dirs.iter().map(|s| (*s).to_string()));
-        entries.join(":")
-    };
-    unsafe {
-        std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
-        std::env::set_var("PATH", &new_path);
-        // Tests must never touch the network. The env hatch short-circuits
-        // the cargo-install branch; the present-check still runs.
-        std::env::set_var("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
-        // Make sure no leaked RECIPE_RUNNER_RS_PATH from a prior test
-        // accidentally satisfies the present-check.
-        std::env::remove_var("RECIPE_RUNNER_RS_PATH");
-        // $CARGO_HOME/bin is probed too; CI sets CARGO_HOME to a real one.
-        std::env::remove_var("CARGO_HOME");
-    }
-
-    let result = f(temp.path(), &bin_dir);
-
-    unsafe {
-        if let Some(v) = prev_hooks {
-            std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v);
-        } else {
-            std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
-        }
-        if let Some(v) = prev_path {
-            std::env::set_var("PATH", v);
-        }
-        if let Some(v) = prev_skip {
-            std::env::set_var("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", v);
-        } else {
-            std::env::remove_var("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL");
-        }
-        if let Some(v) = prev_rr_path {
-            std::env::set_var("RECIPE_RUNNER_RS_PATH", v);
-        }
-        if let Some(v) = prev_cargo_home {
-            std::env::set_var("CARGO_HOME", v);
-        }
-    }
-    crate::test_support::restore_home(previous_home);
-    result
+    env.assign("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+    env.assign(
+        "PATH",
+        format!("{}:/usr/local/bin:/usr/bin:/bin", bin_dir.display()),
+    );
+    env.assign("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
+    env.clear("RECIPE_RUNNER_RS_PATH");
+    env.clear("CARGO_HOME");
+    f(temp.path(), &bin_dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +117,10 @@ pub(super) fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
 
 #[test]
 fn install_stages_claude_md_from_bundle_path() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Issue #527 / BUG 1 — RED phase.
     //
     // Pre-fix: `directories.rs` only checks `source_root.parent()/CLAUDE.md`
@@ -202,6 +167,10 @@ fn install_stages_claude_md_from_bundle_path() {
 
 #[test]
 fn install_bails_when_claude_md_absent_from_all_known_locations() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Issue #527 / BUG 1 — install-completeness invariant.
     //
     // Pre-fix: when CLAUDE.md is missing at every candidate location, the
@@ -247,6 +216,10 @@ fn install_bails_when_claude_md_absent_from_all_known_locations() {
 
 #[test]
 fn install_succeeds_when_recipe_runner_stub_is_on_path() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Issue #527 / BUG 2 — happy path.
     //
     // When `recipe-runner-rs` is already on PATH, the recipe-runner phase
@@ -277,6 +250,10 @@ fn install_succeeds_when_recipe_runner_stub_is_on_path() {
 
 #[test]
 fn install_bails_when_recipe_runner_missing_and_install_skipped() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Issue #527 / BUG 2 — install-completeness invariant.
     //
     // Pre-fix: the recipe-runner phase prints "❌ recipe-runner-rs not
@@ -344,6 +321,10 @@ fn install_bails_when_recipe_runner_missing_and_install_skipped() {
 /// created, or `amplihack uninstall` leaves them behind.
 #[test]
 fn reinstall_keeps_the_first_installs_directories_in_the_manifest() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     with_install_env(|home, bin_dir| {
         stage_recipe_runner_stub(bin_dir);
         let repo = home.join("repo");
@@ -370,8 +351,8 @@ fn reinstall_keeps_the_first_installs_directories_in_the_manifest() {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&[
+pub(super) fn fixture_environment() -> crate::test_support::EnvGuard {
+    let mut saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
         "AMPLIHACK_SKIP_MMDC",
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
@@ -381,6 +362,9 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
         "PATH",
         "RECIPE_RUNNER_RS_PATH",
     ]);
+    for name in crate::test_support::claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS {
+        saved.clear(name);
+    }
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe {
         std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");

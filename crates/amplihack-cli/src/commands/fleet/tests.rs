@@ -842,7 +842,7 @@ fn run_add_task_creates_default_queue_file() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("HOME", home.path()) };
 
     let result = run_add_task(
@@ -854,11 +854,6 @@ fn run_add_task_creates_default_queue_file() {
         50,
         false,
     );
-
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
 
     assert!(result.is_ok());
 
@@ -1025,7 +1020,7 @@ fn run_project_add_persists_dashboard_and_projects_toml() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("HOME", home.path()) };
 
     let result = run_project_add(
@@ -1034,11 +1029,6 @@ fn run_project_add_persists_dashboard_and_projects_toml() {
         "high",
         "custom-name",
     );
-
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
 
     assert!(result.is_ok());
 
@@ -1064,16 +1054,11 @@ fn run_project_remove_only_updates_dashboard() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("HOME", home.path()) };
 
     run_project_add("https://github.com/org/my-repo", "", "medium", "my-repo").unwrap();
     let result = run_project_remove("my-repo");
-
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
 
     assert!(result.is_ok());
 
@@ -2042,7 +2027,7 @@ fn fleet_tui_ui_state_tracks_project_selection() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("HOME", home.path()) };
     let dashboard_path = home.path().join(".amplihack/fleet/dashboard.json");
     fs::create_dir_all(dashboard_path.parent().unwrap()).unwrap();
@@ -2103,11 +2088,6 @@ fn fleet_tui_ui_state_tracks_project_selection() {
         ui_state.selected_project_repo.as_deref(),
         Some("https://github.com/org/repo-b")
     );
-
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
 }
 
 #[test]
@@ -2120,7 +2100,7 @@ fn projects_tab_sync_surfaces_corrupt_dashboard_load() {
     fs::create_dir_all(&fleet_dir).unwrap();
     fs::write(fleet_dir.join("dashboard.json"), "{broken dashboard").unwrap();
 
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("HOME", home.path()) };
 
     let state = FleetState::new(PathBuf::from("azlin"));
@@ -2130,11 +2110,6 @@ fn projects_tab_sync_surfaces_corrupt_dashboard_load() {
     };
 
     ui_state.sync_to_state(&state);
-
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
 
     assert!(ui_state.selected_project_repo.is_none());
     assert!(
@@ -3749,15 +3724,11 @@ exit 1
     let mut ui_state = FleetTuiUiState::default();
     ui_state.sync_to_state(&state);
 
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("HOME", home.path()) };
     let result = run_tui_adopt_selected_session(&azlin, &state, &mut ui_state);
     let queue =
         TaskQueue::load(Some(home.path().join(".amplihack/fleet/task_queue.json"))).unwrap();
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
 
     assert!(result.is_ok());
     assert_eq!(queue.tasks.len(), 1);
@@ -3824,14 +3795,10 @@ fn run_tui_adopt_selected_session_rejects_duplicate_active_assignment() {
     queue.tasks.push(task);
     queue.save().unwrap();
 
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("HOME", home.path()) };
     let result = run_tui_adopt_selected_session(Path::new("azlin"), &state, &mut ui_state);
     let reloaded = TaskQueue::load(Some(queue_path)).unwrap();
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
 
     assert!(result.is_ok());
     assert_eq!(reloaded.tasks.len(), 1);
@@ -3847,7 +3814,7 @@ fn render_tui_projects_view_uses_dashboard_file() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("HOME", home.path()) };
     let dashboard_path = home.path().join(".amplihack/fleet/dashboard.json");
     fs::create_dir_all(dashboard_path.parent().unwrap()).unwrap();
@@ -3881,11 +3848,6 @@ fn render_tui_projects_view_uses_dashboard_file() {
     };
     let rendered = render_tui_frame(&state, 20, &ui_state).unwrap();
 
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
-
     assert!(rendered.contains("[projects]"));
     assert!(rendered.contains("Fleet Projects (1)"));
     assert!(rendered.contains("https://github.com/org/repo"));
@@ -3898,7 +3860,7 @@ fn run_tui_add_and_remove_project_updates_dashboard_file() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("HOME", home.path()) };
 
     let mut ui_state = FleetTuiUiState {
@@ -3919,11 +3881,6 @@ fn run_tui_add_and_remove_project_updates_dashboard_file() {
     let dashboard = FleetDashboardSummary::load(Some(default_dashboard_path())).unwrap();
     assert!(dashboard.projects.is_empty());
     assert!(ui_state.selected_project_repo.is_none());
-
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
 }
 
 #[test]
@@ -3932,7 +3889,7 @@ fn render_tui_projects_view_shows_inline_add_prompt() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("HOME", home.path()) };
 
     let mut ui_state = FleetTuiUiState {
@@ -3948,11 +3905,6 @@ fn render_tui_projects_view_shows_inline_add_prompt() {
 
     let rendered = render_tui_frame(&FleetState::new(PathBuf::from("azlin")), 20, &ui_state)
         .expect("rendered projects view");
-
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
 
     assert!(rendered.contains("Add project repo > https_"));
     assert!(rendered.contains("Enter add | Esc cancel | Backspace delete"));
@@ -3994,7 +3946,7 @@ exit 1
     fs::write(home.path().join(".config/gh/config.yml"), "config").unwrap();
 
     let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("AZLIN_PATH", &azlin) };
     unsafe { env::set_var("HOME", home.path()) };
 
@@ -4003,10 +3955,6 @@ exit 1
     match previous_azlin {
         Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
         None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
     }
 
     assert!(result.is_ok());
@@ -4038,7 +3986,7 @@ exit 1
     );
 
     let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("AZLIN_PATH", &azlin) };
     unsafe { env::set_var("HOME", home.path()) };
 
@@ -4049,10 +3997,6 @@ exit 1
     match previous_azlin {
         Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
         None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
     }
 
     assert!(result.is_ok());
@@ -4094,7 +4038,7 @@ exit 1
     );
 
     let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("AZLIN_PATH", &azlin) };
     unsafe { env::set_var("HOME", home.path()) };
 
@@ -4103,10 +4047,6 @@ exit 1
     match previous_azlin {
         Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
         None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
     }
 
     assert!(result.is_ok());
@@ -4402,7 +4342,7 @@ exit 1
     );
 
     let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("AZLIN_PATH", &azlin) };
     unsafe { env::set_var("HOME", home.path()) };
 
@@ -4411,10 +4351,6 @@ exit 1
     match previous_azlin {
         Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
         None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
     }
 
     assert_eq!(command_error::exit_code(&error), Some(1));
@@ -4452,7 +4388,7 @@ exit 1
     );
 
     let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_home = env::var_os("HOME");
+    let _home = crate::test_support::EnvGuard::capture(&["HOME"]);
     unsafe { env::set_var("AZLIN_PATH", &azlin) };
     unsafe { env::set_var("HOME", home.path()) };
 
@@ -4461,10 +4397,6 @@ exit 1
     match previous_azlin {
         Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
         None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
     }
 
     assert!(result.is_ok());
@@ -4909,12 +4841,9 @@ exit 1
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let prev_home = env::var_os("HOME");
-    let prev_queue = env::var_os("AMPLIHACK_QUEUE_PATH");
-    unsafe {
-        env::set_var("HOME", home.path());
-        env::remove_var("AMPLIHACK_QUEUE_PATH");
-    }
+    let mut fixture_env = crate::test_support::EnvGuard::capture(&[]);
+    fixture_env.assign("HOME", home.path());
+    fixture_env.clear("AMPLIHACK_QUEUE_PATH");
 
     let mut ui = FleetTuiUiState {
         fleet_subview: FleetSubview::AllSessions,
@@ -4926,16 +4855,7 @@ exit 1
 
     let result = run_tui_adopt_selected_session(&azlin, &state, &mut ui);
 
-    unsafe {
-        match prev_home {
-            Some(v) => env::set_var("HOME", v),
-            None => env::remove_var("HOME"),
-        }
-        match prev_queue {
-            Some(v) => env::set_var("AMPLIHACK_QUEUE_PATH", v),
-            None => env::remove_var("AMPLIHACK_QUEUE_PATH"),
-        }
-    }
+    drop(fixture_env);
 
     result.unwrap();
 

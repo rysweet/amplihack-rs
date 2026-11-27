@@ -69,8 +69,9 @@ fn files_named(root: &Path, name: &str) -> Vec<PathBuf> {
 }
 
 struct InstalledHome {
-    _guard: std::sync::MutexGuard<'static, ()>,
+    // Fields drop in declaration order. Restore HOME before unlocking.
     _env: crate::test_support::EnvGuard,
+    _guard: std::sync::MutexGuard<'static, ()>,
     temp: tempfile::TempDir,
 }
 
@@ -112,6 +113,7 @@ fn installed_home() -> InstalledHome {
     env.assign("AMPLIHACK_SKIP_MMDC", "1");
     let bin_dir = temp.path().join("stub_bin");
     let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    create_exe_stub(&bin_dir, "recipe-runner-rs");
     env.assign("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs = vec![bin_dir];
@@ -137,6 +139,10 @@ fn installed_home() -> InstalledHome {
 
 #[test]
 fn install_writes_one_line_for_each_bundle_skill_and_agent() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let home = installed_home();
     home.install();
 
@@ -160,6 +166,9 @@ fn install_writes_one_line_for_each_bundle_skill_and_agent() {
             ("agent", "meta-fixture"),
             ("skill", "alpha-fixture"),
             ("skill", "beta-fixture"),
+            ("skill", "default-workflow"),
+            ("skill", "dev-orchestrator"),
+            ("skill", "investigation-workflow"),
             ("skill", "nested-fixture"),
         ]
     );
@@ -168,7 +177,7 @@ fn install_writes_one_line_for_each_bundle_skill_and_agent() {
     assert_eq!(entries[4].description, "Spreadsheet formulas.");
     assert_eq!(entries[2].description, "Meta agent.");
     assert!(
-        entries[5]
+        entries[8]
             .path
             .ends_with("skills/group/nested-fixture/SKILL.md")
     );
@@ -194,6 +203,10 @@ fn install_writes_one_line_for_each_bundle_skill_and_agent() {
 
 #[test]
 fn two_installs_of_the_same_bundle_write_the_same_bytes() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let home = installed_home();
     home.install();
     let first = fs::read(home.index()).unwrap();
@@ -203,6 +216,10 @@ fn two_installs_of_the_same_bundle_write_the_same_bytes() {
 
 #[test]
 fn directory_reads_the_index_install_wrote_when_amplihack_home_is_elsewhere() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     use crate::commands::directory::{DirectoryCommands, run_for_test};
     let home = installed_home();
     home.install();
@@ -226,6 +243,10 @@ fn directory_reads_the_index_install_wrote_when_amplihack_home_is_elsewhere() {
 
 #[test]
 fn uninstall_removes_the_index() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let home = installed_home();
     home.install();
     assert!(

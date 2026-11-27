@@ -7,6 +7,10 @@ use std::fs;
 
 #[test]
 fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Issue #243: the dev-orchestrator skill's required execution path
     // (`amplihack recipe run smart-orchestrator`) is unreachable unless
     // amplihack install stages the amplifier-bundle recipes
@@ -21,6 +25,7 @@ fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
     let bin_dir = temp.path().join("stub_bin");
     fs::create_dir_all(&bin_dir).unwrap();
     let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    create_exe_stub(&bin_dir, "recipe-runner-rs");
 
     let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let prev_path = std::env::var_os("PATH");
@@ -120,6 +125,10 @@ fn uninstall_removes_staged_amplifier_bundle() {
 
 #[test]
 fn local_install_writes_manifest() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -130,6 +139,7 @@ fn local_install_writes_manifest() {
     let bin_dir = temp.path().join("stub_bin");
     fs::create_dir_all(&bin_dir).unwrap();
     let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    create_exe_stub(&bin_dir, "recipe-runner-rs");
 
     let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let prev_path = std::env::var_os("PATH");
@@ -493,6 +503,10 @@ fn install_then_copilot_stage_preserves_real_bundle_readmes_deterministically() 
 
 #[test]
 fn local_install_writes_manifest_with_all_four_fields() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -504,6 +518,7 @@ fn local_install_writes_manifest_with_all_four_fields() {
     fs::create_dir_all(&bin_dir).unwrap();
     create_exe_stub(&bin_dir, "python3");
     let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    create_exe_stub(&bin_dir, "recipe-runner-rs");
 
     let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let prev_path = std::env::var_os("PATH");
@@ -567,6 +582,10 @@ fn local_install_writes_manifest_with_all_four_fields() {
 
 #[test]
 fn run_install_with_local_path_skips_git_clone() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -578,6 +597,7 @@ fn run_install_with_local_path_skips_git_clone() {
     fs::create_dir_all(&bin_dir).unwrap();
     create_exe_stub(&bin_dir, "python3");
     let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    create_exe_stub(&bin_dir, "recipe-runner-rs");
 
     let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let prev_path = std::env::var_os("PATH");
@@ -622,6 +642,10 @@ fn run_install_with_local_path_skips_git_clone() {
 
 #[test]
 fn run_install_with_nonexistent_local_path_returns_err() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let nonexistent = std::path::PathBuf::from("/nonexistent/amplihack-repo/does-not-exist");
     let result = run_install(Some(nonexistent), false, false);
     assert!(
@@ -1073,6 +1097,10 @@ fn issue_734_copy_rejects_stale_monolithic_smart_orchestrator_without_overwritin
 
 #[test]
 fn issue_734_run_install_skips_stale_amplihack_home_and_stages_compatible_cwd_bundle() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     with_install_env(|home| {
         let stale_home = home.join("stale-amplihack-home");
         issue_734_create_bundle_repo(&stale_home, issue_734_stale_monolithic_smart_orchestrator());
@@ -1129,46 +1157,27 @@ fn issue_734_run_install_skips_stale_amplihack_home_and_stages_compatible_cwd_bu
 
 /// Helper: stage env (HOME, hooks binary, PATH) like the existing install
 /// tests do, run `f`, restore env. Avoids ~50 lines of boilerplate per test.
-fn with_install_env<R>(f: impl FnOnce(&Path) -> R) -> R {
+pub(super) fn with_install_env<R>(f: impl FnOnce(&Path) -> R) -> R {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
-    let previous = crate::test_support::set_home(temp.path());
-
+    let _home = crate::test_support::HomeGuard::set(temp.path());
+    let mut env =
+        crate::test_support::EnvGuard::capture(&["AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", "PATH"]);
     let bin_dir = temp.path().join("stub_bin");
     fs::create_dir_all(&bin_dir).unwrap();
     helpers::create_exe_stub(&bin_dir, "python3");
     let hooks_stub = helpers::create_exe_stub(&bin_dir, "amplihack-hooks");
-
-    let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
-    let prev_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
-        let new_path = format!(
-            "{}:{}",
-            bin_dir.display(),
-            prev_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        );
-        std::env::set_var("PATH", &new_path);
-    }
-
-    let result = f(temp.path());
-
-    if let Some(v) = prev_hooks {
-        unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
-    } else {
-        unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
-    }
-    if let Some(v) = prev_path {
-        unsafe { std::env::set_var("PATH", v) };
-    }
-    crate::test_support::restore_home(previous);
-    result
+    helpers::create_exe_stub(&bin_dir, "recipe-runner-rs");
+    env.assign("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+    let mut paths = vec![bin_dir];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    env.assign("PATH", std::env::join_paths(paths).unwrap());
+    f(temp.path())
 }
 
 /// Bundle essentials that must be staged into ~/.amplihack/.claude/ when the
@@ -1187,6 +1196,10 @@ const BUNDLE_ESSENTIAL_DESTS: &[&str] = &[
 
 #[test]
 fn local_install_fails_when_copilot_plugin_registration_fails() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Issue #577 readiness: once Copilot CLI is present, plugin registration
     // is part of the hook integration contract. Config parse failures must
     // block install instead of producing success-shaped output with no plugin.
@@ -1215,6 +1228,10 @@ fn local_install_fails_when_copilot_plugin_registration_fails() {
 
 #[test]
 fn local_install_registers_copilot_plugin_and_native_hooks_idempotently() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // PR #579 readiness: when Copilot CLI is present, a local install must wire
     // both Copilot plugin hooks and native Claude hooks, and rerunning install
     // must refresh them without duplicate registration.
@@ -1334,6 +1351,10 @@ fn local_install_registers_copilot_plugin_and_native_hooks_idempotently() {
 
 #[test]
 fn local_install_replaces_managed_bundle_dirs_without_deleting_unmanaged_files() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Issue #578 readiness: mapped framework directories are managed trees.
     // Re-install must remove stale files inside them while preserving unrelated
     // files outside the managed mapping.
@@ -1370,6 +1391,10 @@ fn local_install_replaces_managed_bundle_dirs_without_deleting_unmanaged_files()
 
 #[test]
 fn local_install_from_bundle_only_source_copies_all_essentials() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Issue #416 regression: a clean amplihack-rs checkout has NO top-level
     // `.claude/` (gitignored). Install must read framework assets from
     // `amplifier-bundle/` and stage them under ~/.amplihack/.claude/.
@@ -1404,6 +1429,10 @@ fn local_install_from_bundle_only_source_copies_all_essentials() {
 
 #[test]
 fn local_install_with_no_source_assets_returns_err() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Empty source root (no .claude AND no amplifier-bundle) must hard-error.
     // Pre-fix: `find_source_claude_dir` returns Err — already failing today.
     // Post-fix: must STILL fail (negative regression guard).
@@ -1430,6 +1459,10 @@ fn local_install_with_no_source_assets_returns_err() {
 
 #[test]
 fn local_install_hard_errors_when_no_dirs_copied() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Per design D3: an empty `copied_dirs` is now a hard error
     // (was a println! warning at mod.rs:348-354). Triggered by a source repo
     // whose detected layout has no copyable essentials.
@@ -1452,6 +1485,10 @@ fn local_install_hard_errors_when_no_dirs_copied() {
 
 #[test]
 fn legacy_claude_source_layout_still_installs() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Backward-compat: the hybrid `create_source_repo` fixture (which ships
     // both .claude/ and amplifier-bundle/) must keep installing successfully.
     // After #416 the bundle layout is preferred, so destinations are bundle
@@ -1475,6 +1512,10 @@ fn legacy_claude_source_layout_still_installs() {
 
 #[test]
 fn missing_framework_paths_recognises_bundle_layout_install() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // After a bundle-only install, missing_framework_paths must NOT report
     // legacy-only entries (e.g. `commands/amplihack`, `workflow`, `templates`)
     // as missing — those are intentionally absent from the bundle layout.
@@ -1513,6 +1554,10 @@ fn missing_framework_paths_recognises_bundle_layout_install() {
 #[cfg(unix)]
 #[test]
 fn find_source_root_rejects_symlinked_amplifier_bundle() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Defense-in-depth: a symlinked amplifier-bundle/ root must be rejected
     // by the source-root probe (per design's is_real_dir contract). This is
     // the same defense as `copy_amplifier_bundle_rejects_symlinked_source_root`
@@ -1535,6 +1580,10 @@ fn find_source_root_rejects_symlinked_amplifier_bundle() {
 
 #[test]
 fn install_writes_layout_marker_atomically() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Per design: install writes a `.layout` marker (`bundle` or `legacy`)
     // via temp-file + rename. After a successful install, the marker must
     // exist with the expected content and no `.layout.tmp` may linger.
@@ -1595,6 +1644,10 @@ fn marker_missing_defaults_to_legacy_layout() {
 
 #[test]
 fn malformed_layout_marker_is_handled_gracefully() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Per design strict-parse table: a malformed .layout (not 'bundle' or
     // 'legacy' post-trim) must be tolerated (warn + default to LegacyClaude),
     // never panic.
@@ -1623,6 +1676,10 @@ fn malformed_layout_marker_is_handled_gracefully() {
 
 #[test]
 fn run_install_force_refresh_true_with_local_path_still_uses_local() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Contract: `--local` takes priority over `force_refresh`. Even when
     // `force_refresh=true`, a valid `--local` path must be used directly
     // (no network download). This ensures the explicit user override is
@@ -1648,6 +1705,10 @@ fn run_install_force_refresh_true_with_local_path_still_uses_local() {
 
 #[test]
 fn run_install_force_refresh_true_nonexistent_local_path_errors() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Contract: `force_refresh` must not change `--local` path validation.
     // A non-existent `--local` path must still return Err regardless of
     // the force_refresh value.
@@ -1661,6 +1722,10 @@ fn run_install_force_refresh_true_nonexistent_local_path_errors() {
 
 #[test]
 fn run_install_force_refresh_false_uses_bundled_root_when_available() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Contract: `force_refresh=false` preserves the existing behavior —
     // `find_bundled_framework_root()` is consulted and its result is used
     // when available. In the test environment (running inside the
@@ -1688,6 +1753,10 @@ fn run_install_force_refresh_false_uses_bundled_root_when_available() {
 
 #[test]
 fn run_install_force_refresh_true_skips_bundled_root() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Contract (issue #675, as changed by #1955): with `force_refresh=true` and
     // no `AMPLIHACK_HOME`, the install must not use the bundled root it would
     // find in this workspace. It goes to the release tag instead.
@@ -1719,8 +1788,8 @@ fn run_install_force_refresh_true_skips_bundled_root() {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&[
+pub(super) fn fixture_environment() -> crate::test_support::EnvGuard {
+    let mut saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
         "AMPLIHACK_SKIP_MMDC",
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
@@ -1728,14 +1797,15 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
         "HOME",
         "PATH",
     ]);
+    for name in crate::test_support::claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS {
+        saved.clear(name);
+    }
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe {
         std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");
         // Optional Mermaid delivery has dedicated fake-command tests.
         std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
     };
-    // A session's own AMPLIHACK_HOME is a source install would now refuse (#1955).
-    unsafe { std::env::remove_var("AMPLIHACK_HOME") };
     saved
 }
 
@@ -1744,6 +1814,10 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
 /// and the published bundle link, exactly as the previous install left them.
 #[test]
 fn failed_bundle_staging_leaves_claude_trees_on_the_old_version() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     use crate::commands::install::directories::staging_hook::with_staging_hook;
 
     fn files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
@@ -1776,6 +1850,7 @@ fn failed_bundle_staging_leaves_claude_trees_on_the_old_version() {
 
     let bin_dir = temp.path().join("stub_bin");
     let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    create_exe_stub(&bin_dir, "recipe-runner-rs");
     let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let prev_path = std::env::var_os("PATH");
     unsafe {

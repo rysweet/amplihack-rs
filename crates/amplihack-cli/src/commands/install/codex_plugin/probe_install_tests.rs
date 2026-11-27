@@ -63,6 +63,10 @@ impl InstallFixture {
 
 #[test]
 fn selected_codex_with_plugin_support_reports_probe_exit_not_update_advice() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _env_lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -82,6 +86,10 @@ fn selected_codex_with_plugin_support_reports_probe_exit_not_update_advice() {
 
 #[test]
 fn selected_codex_without_plugin_subcommand_keeps_update_advice() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _env_lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -99,6 +107,10 @@ fn selected_codex_without_plugin_subcommand_keeps_update_advice() {
 
 #[test]
 fn selected_codex_with_invalid_inventory_reports_parse_failure() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _env_lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -118,6 +130,10 @@ fn selected_codex_with_invalid_inventory_reports_parse_failure() {
 // optional plugin and never runs the capability check.
 #[test]
 fn unselected_codex_probe_failure_skips_without_capability_check() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _env_lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());

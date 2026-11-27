@@ -92,6 +92,13 @@ fn cmd_with_failing_python_shims(bin: &PathBuf, shim_dir: &Path, python_log: &Pa
     cmd
 }
 
+/// Shell probes launch the CLI as a grandchild, so isolate the shell too.
+fn probe_command(script: &Path, fixture: &crate::isolated_amplihack::PrivateEnv) -> Command {
+    let mut command = fixture.command("bash");
+    command.arg(script).env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
+    command
+}
+
 fn write_executable(path: &Path, content: &str) {
     fs::write(path, content).unwrap_or_else(|error| {
         panic!("failed to write executable {path:?}: {error}");
@@ -845,8 +852,8 @@ fn probe_script_uses_valid_amplihack_probe_bin_without_internal_build_even_relea
         ),
     );
 
-    let output = Command::new("bash")
-        .arg(&script)
+    let fixture = crate::isolated_amplihack::private_env_in(std::env::temp_dir());
+    let output = probe_command(&script, &fixture)
         .arg("--release")
         .env("AMPLIHACK_PROBE_BIN", &fake_amplihack)
         .env("PATH", prepend_path(&bin_dir))
@@ -932,8 +939,8 @@ exit 0
         ),
     );
 
-    let output = Command::new("bash")
-        .arg(&script)
+    let fixture = crate::isolated_amplihack::private_env_in(std::env::temp_dir());
+    let output = probe_command(&script, &fixture)
         .env("AMPLIHACK_PROBE_BIN", test_root.join("missing-amplihack"))
         .env("PATH", prepend_path(&bin_dir))
         .output()
@@ -991,8 +998,8 @@ fn probe_script_exits_zero_and_covers_tc04_through_tc08() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
-    let output = Command::new("bash")
-        .arg(&script)
+    let fixture = crate::isolated_amplihack::private_env_in(std::env::temp_dir());
+    let output = probe_command(&script, &fixture)
         .env("AMPLIHACK_PROBE_BIN", &bin)
         .output()
         .expect("failed to run probe script");

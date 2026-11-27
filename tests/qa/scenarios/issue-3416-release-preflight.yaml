@@ -1,0 +1,16 @@
+name: Local installation preserves a complete release when replacement input is incomplete
+description: Install the checkout's release assets into a disposable home, then reject recipe-free and skill-free bundles without changing installed files, links or staging leftovers.
+version: "1.0.0"
+environment:
+  requires: [cargo]
+steps:
+  - name: Install complete assets and reject incomplete replacements
+    action: execute_command
+    target: cargo test --locked -p amplihack --test integration issue_3416_release_preflight::local_install_accepts_release_and_preserves_it_when_input_is_incomplete -- --exact --nocapture
+assertions:
+  - Complete release assets install successfully.
+  - A replacement without recipes fails without changing the existing installation.
+  - A replacement with recipes and marker-only skills fails without changing the existing installation.
+metadata:
+  tags: [cli, install, regression, issue-3416]
+  priority: critical
