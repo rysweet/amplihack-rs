@@ -37,12 +37,8 @@ patterns=(
 regex=$(IFS='|'; echo "${patterns[*]}")
 command_regex="$regex|\.claude/[A-Za-z0-9_./-]+\.py"
 
-scan() {
-    rg -n "$1" "$2" || [[ $? -eq 1 ]]
-}
-
-skill_violations="$(scan "$regex" amplifier-bundle/skills)"
-command_violations="$(scan "$command_regex" docs/claude/commands)"
+skill_violations="$(rg -n "$regex" amplifier-bundle/skills || true)"
+command_violations="$(rg -n "$command_regex" docs/claude/commands || true)"
 
 if [[ -n "$skill_violations" || -n "$command_violations" ]]; then
     cat >&2 <<EOF
@@ -52,10 +48,15 @@ Python language examples are allowed. Instructions that run helpers must use
 native helpers, shell/JS helpers that exist in the bundle, Rust CLI commands, or
 explicit manual steps.
 
-Violations:
 EOF
-    [[ -z "$skill_violations" ]] || printf '%s\n' "$skill_violations" >&2
-    [[ -z "$command_violations" ]] || printf '%s\n' "$command_violations" >&2
+    if [[ -n "$skill_violations" ]]; then
+        printf '%s\n' 'Violations in amplifier-bundle/skills:' >&2
+        printf '%s\n' "$skill_violations" >&2
+    fi
+    if [[ -n "$command_violations" ]]; then
+        printf '%s\n' 'Violations in docs/claude/commands:' >&2
+        printf '%s\n' "$command_violations" >&2
+    fi
     exit 1
 fi
 
