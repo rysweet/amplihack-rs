@@ -2728,11 +2728,13 @@ and the variable in
   do inherit `AMPLIHACK_USE_DOCKER`. If it is set to a true value in a
   profiled session and the Docker daemon is running, every nested launch is
   refused. Unset it before starting the run.
-- `amplihack recipe run` and `amplihack multitask` started from a plain shell
-  use the inherited `CLAUDE_CONFIG_DIR` or `~/.claude` for agent steps without
-  a profile. A successful `profile switch` changes the login in `~/.claude`.
-  To select a profile for a run, start it from inside a profiled
-  `amplihack claude` session or set `AMPLIHACK_CLAUDE_PROFILE=<name>`.
+- Agent steps in `amplihack recipe run` and recipe-mode `amplihack multitask`
+  use the inherited `CLAUDE_CONFIG_DIR` or `~/.claude` when no profile is
+  selected. A successful `profile switch` changes the login in `~/.claude`.
+  Classic multitask launches started from a plain shell still read the
+  default pointer when no profile is selected. To select a profile for a
+  run, start it from inside a profiled `amplihack claude` session or set
+  `AMPLIHACK_CLAUDE_PROFILE=<name>`.
 - Removing a profile while sessions pinned to it are running makes their later
   nested launches fail closed with the inherited-profile error.
 - Fleet and remote VM launches do not pass the profile on. An

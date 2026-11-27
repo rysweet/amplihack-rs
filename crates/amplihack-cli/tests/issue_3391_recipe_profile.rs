@@ -42,35 +42,34 @@ fn recipe_step(f: &Fixture) -> Command {
     cmd
 }
 
-fn run_through_host_swap(f: &Fixture, cmd: &mut Command) -> (Output, Option<u32>) {
+fn run_through_host_swap(f: &Fixture, cmd: &mut Command) -> (Output, Vec<u32>) {
     // X still has its own login files, so its default pointer would send an
     // ordinary launch to the dedicated directory even with X also live.
     copy_login_to_host(f, "X");
     write_cycle(&f.profiles, "X", OLD_CYCLE);
 
-    // Notifications synchronize fixture writes with the wait. Assertions
-    // use the stand-in's calls and exit status.
+    // Record how many attempts the stand-in made before each fixture event.
+    // An immediate retry would leave this empty, even if the step succeeded.
     let progress = format!("{WAIT_PREFIX}progress ");
-    let mut notifications = 0;
-    let mut attempts_after_swap = None;
+    let mut attempts_before_events = Vec::new();
     let out = f.run_watching(cmd, |line| {
         if !line.starts_with(&progress) {
             return;
         }
-        notifications += 1;
-        match notifications {
-            1 => {
+        match attempts_before_events.len() {
+            0 => {
+                attempts_before_events.push(f.count("0"));
                 copy_login_to_host(f, "Y");
                 write_cycle(&f.profiles, "Y", real_now());
             }
-            2 => {
-                attempts_after_swap = Some(f.count("0"));
+            1 => {
+                attempts_before_events.push(f.count("0"));
                 toggle_login(&f.profiles.join("X"));
             }
             _ => {}
         }
     });
-    (out, attempts_after_swap)
+    (out, attempts_before_events)
 }
 
 fn assert_live_host_attempt(f: &Fixture, attempt: u32) {
@@ -83,12 +82,12 @@ fn assert_live_host_attempt(f: &Fixture, attempt: u32) {
 #[test]
 fn implicit_recipe_uses_live_host_config_and_retries_after_a_host_swap() {
     let f = with_host_default();
-    let (out, attempts_after_swap) = run_through_host_swap(&f, &mut recipe_step(&f));
+    let (out, attempts_before_events) = run_through_host_swap(&f, &mut recipe_step(&f));
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 2);
     assert_live_host_attempt(&f, 1);
     assert_live_host_attempt(&f, 2);
-    assert_eq!(attempts_after_swap, None, "{}", describe(&out));
+    assert_eq!(attempts_before_events, [1], "{}", describe(&out));
 }
 
 #[test]
@@ -96,9 +95,9 @@ fn explicit_profile_wait_survives_host_swap_and_retries_on_its_own_login_change(
     let f = with_host_default();
     let mut cmd = recipe_step(&f);
     cmd.env("AMPLIHACK_CLAUDE_PROFILE", "X");
-    let (out, attempts_after_swap) = run_through_host_swap(&f, &mut cmd);
+    let (out, attempts_before_events) = run_through_host_swap(&f, &mut cmd);
     assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(attempts_after_swap, Some(1), "{}", describe(&out));
+    assert_eq!(attempts_before_events, [1, 1], "{}", describe(&out));
     assert_eq!(f.count("0"), 2);
     for attempt in [1, 2] {
         assert_eq!(

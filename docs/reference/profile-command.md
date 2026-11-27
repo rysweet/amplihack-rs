@@ -4574,11 +4574,12 @@ AMPLIHACK_CLAUDE_PROFILE=work amplihack recipe run default-workflow
 A stale export in a shell startup file acts as a per-shell default that beats
 the pointer; `unset AMPLIHACK_CLAUDE_PROFILE` removes it.
 
-`amplihack recipe run` and `amplihack multitask` do not resolve a profile
-themselves. Agent steps without an explicit or inherited profile use the
-inherited `CLAUDE_CONFIG_DIR` or `~/.claude`. A successful `profile switch`
-changes the login used by steps on `~/.claude`. Start a run from inside a
-profiled `amplihack claude` session, or set
+Agent steps in `amplihack recipe run` and recipe-mode `amplihack multitask`
+without an explicit or inherited profile use the inherited `CLAUDE_CONFIG_DIR`
+or `~/.claude`. A successful `profile switch` changes the login used by steps
+on `~/.claude`. Classic multitask launches started from a plain shell still
+read the default pointer when no profile is selected. Start a run from inside
+a profiled `amplihack claude` session, or set
 `AMPLIHACK_CLAUDE_PROFILE` as above, to pin one profile for the whole run.
 
 Fleet and remote VM launches do not pass the profile on, so nested launches
