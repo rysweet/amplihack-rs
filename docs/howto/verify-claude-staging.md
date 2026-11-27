@@ -34,7 +34,7 @@ After running `amplihack copilot` (or any command), you should see:
 
 ```
 Staging amplihack to ~/.amplihack/.claude/...
-✓ Agents staged (38 agents)
+✓ Agents staged (37 agents)
 ✓ Skills staged (73 skills)
 ✓ Tools staged (24 commands)
 ✓ Hooks staged
@@ -98,7 +98,7 @@ chmod -R u+w ~/.amplihack/
 
 The staging process copies:
 
-- **Agents** (38): `~/.amplihack/.claude/agents/`
+- **Agents** (37): `~/.amplihack/.claude/agents/`
 - **Skills** (73): `~/.amplihack/.claude/skills/`
 - **Commands** (24): `~/.amplihack/.claude/commands/`
 - **Tools**: `~/.amplihack/.claude/tools/`

@@ -35,7 +35,7 @@ impl Install {
         let staged = self.home.path().join(".amplihack/.claude");
         fs::create_dir_all(self.index().parent().unwrap()).unwrap();
         fs::write(self.index(), format!(
-            "skill\tcode-visualizer\t{}/skills/code-visualizer/SKILL.md\tDraw code\nagent\tguide\t{}/agents/core/guide.md\tGuide\n",
+            "skill\tdesign-patterns-expert\t{}/skills/design-patterns-expert/SKILL.md\tDraw code\nagent\tguide\t{}/agents/core/guide.md\tGuide\n",
             staged.display(), staged.display()
         )).unwrap();
         fs::write(
@@ -66,7 +66,7 @@ impl Install {
         self.write_index();
         let staged = self.home.path().join(".amplihack/.claude");
         for name in std::iter::once("pdf".to_owned())
-            .chain(std::iter::once("code-visualizer".to_owned()))
+            .chain(std::iter::once("design-patterns-expert".to_owned()))
             .chain((0..10).map(|number| format!("extra-{number}")))
         {
             let directory = staged.join("skills").join(&name);
@@ -89,16 +89,16 @@ fn edited_skills_are_named_and_preserved_without_failing_list_changes() {
     let install = Install::new();
     install.register_claude();
     let skills = install.home.path().join(".claude/skills");
-    let edited: Vec<_> = std::iter::once("code-visualizer".to_owned())
+    let edited: Vec<_> = std::iter::once("design-patterns-expert".to_owned())
         .chain((0..9).map(|number| format!("extra-{number}")))
         .collect();
     for name in &edited {
         fs::write(skills.join(name).join("SKILL.md"), "personal changes\n").unwrap();
     }
     for args in [
-        vec!["directory", "enable", "skill:code-visualizer"],
+        vec!["directory", "enable", "skill:design-patterns-expert"],
         vec!["config", "set", "lists.set", "default"],
-        vec!["directory", "disable", "skill:code-visualizer"],
+        vec!["directory", "disable", "skill:design-patterns-expert"],
         vec!["config", "set", "lists.set", "all"],
     ] {
         let result = install.run(&args);
@@ -107,7 +107,7 @@ fn edited_skills_are_named_and_preserved_without_failing_list_changes() {
         for name in &edited {
             // Once narrowing drops an edited skill's ownership record, later
             // publication only reports it when that skill is selected again.
-            if args[1] != "disable" || name == "code-visualizer" {
+            if args[1] != "disable" || name == "design-patterns-expert" {
                 assert!(
                     warning.contains(name),
                     "{args:?}: missing {name}: {warning}"
@@ -147,7 +147,7 @@ fn wrapper_and_returned_publication_errors_still_fail_list_changes() {
         .path()
         .join(".amplihack/.claude/install/claude-skills-manifest.json");
     fs::write(&manifest, "invalid manifest\n").unwrap();
-    let result = install.run(&["directory", "enable", "skill:code-visualizer"]);
+    let result = install.run(&["directory", "enable", "skill:design-patterns-expert"]);
     assert!(!result.status.success(), "{result:?}");
     assert_eq!(fs::read(&manifest).unwrap(), b"invalid manifest\n");
     assert_eq!(fs::read(&wrapper).unwrap(), b"personal wrapper changes\n");
@@ -166,14 +166,14 @@ fn list_settings_report_defaults_and_read_typed_extensions() {
     let index = fs::read(install.index()).unwrap();
     fs::write(
         install.config(),
-        "[lists]\nenabled = ['skill:code-visualizer', 'agent:core/guide']\n",
+        "[lists]\nenabled = ['skill:design-patterns-expert', 'agent:core/guide']\n",
     )
     .unwrap();
     let result = install.run(&["config", "get", "lists.enabled"]);
     assert!(result.status.success(), "{result:?}");
     let output = String::from_utf8(result.stdout).unwrap();
     assert!(output.contains("agent:core/guide"));
-    assert!(output.contains("skill:code-visualizer"));
+    assert!(output.contains("skill:design-patterns-expert"));
     assert_eq!(fs::read(install.index()).unwrap(), index);
 }
 
@@ -186,7 +186,7 @@ fn config_set_lists_enabled_fails_without_writing() {
         "config",
         "set",
         "lists.enabled",
-        r#"["skill:code-visualizer"]"#,
+        r#"["skill:design-patterns-expert"]"#,
     ]);
     assert!(!result.status.success(), "{result:?}");
     assert_eq!(fs::read(install.config()).unwrap(), original);
@@ -238,7 +238,7 @@ fn directory_mutations_accept_qualified_names_without_installing_another_tool() 
     install.write_index();
     let config = install.run(&["config", "get", "lists.enabled"]).stdout;
     let index = fs::read(install.index()).unwrap();
-    for name in ["amplihack:code-visualizer", "amplihack:core:guide"] {
+    for name in ["amplihack:design-patterns-expert", "amplihack:core:guide"] {
         for _ in 0..2 {
             let result = install.run(&["directory", "enable", name]);
             assert!(result.status.success(), "{result:?}");
@@ -281,7 +281,7 @@ fn deferred_configuration_writes_do_not_attempt_tool_publication() {
     .unwrap();
     fs::write(
         install.config(),
-        "[lists]\nset = 'all'\nenabled = ['skill:code-visualizer']\n",
+        "[lists]\nset = 'all'\nenabled = ['skill:design-patterns-expert']\n",
     )
     .unwrap();
     for args in [
@@ -296,7 +296,7 @@ fn deferred_configuration_writes_do_not_attempt_tool_publication() {
         .command(&["config", "edit"])
         .env(
             "VISUAL",
-            "printf '[lists]\\nset = \"all\"\\nenabled = [\"skill:code-visualizer\"]\\n' >",
+            "printf '[lists]\\nset = \"all\"\\nenabled = [\"skill:design-patterns-expert\"]\\n' >",
         )
         .output()
         .unwrap();
@@ -321,8 +321,8 @@ fn stale_installation_rejects_applying_commands_before_configuration_changes() {
     let config = fs::read(install.config()).unwrap();
     let index = fs::read(install.index()).unwrap();
     for args in [
-        vec!["directory", "enable", "skill:code-visualizer"],
-        vec!["directory", "disable", "skill:code-visualizer"],
+        vec!["directory", "enable", "skill:design-patterns-expert"],
+        vec!["directory", "disable", "skill:design-patterns-expert"],
         vec!["config", "set", "lists.set", "all"],
     ] {
         let result = install.run(&args);

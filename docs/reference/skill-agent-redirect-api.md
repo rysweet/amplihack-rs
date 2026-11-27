@@ -32,13 +32,13 @@ static AMPLIHACK_AGENTS: &[&str] = &[
     "analyzer",
     "api-designer",
     "architect",
-    // ... 38 unique names total, sorted ...
+    // ... 37 unique names total, sorted ...
     "worktree-manager",
     "xpia-defense",
 ];
 ```
 
-The registry contains the **38 unique** agent names sourced from `amplifier-bundle/agents/**/*.md`. The duplicate `guide.md` basename is deduplicated so the slice stays unique and sorted.
+The registry contains the **37 unique** agent names sourced from `amplifier-bundle/agents/**/*.md`. The duplicate `guide.md` basename is deduplicated so the slice stays unique and sorted.
 
 ### Functions
 
@@ -62,7 +62,7 @@ assert!(is_amplihack_agent("prompt-writer"));
 assert!(is_amplihack_agent("architect"));
 assert!(!is_amplihack_agent("default-workflow")); // that's a skill
 assert!(!is_amplihack_agent(""));
-assert_eq!(agent_count(), 38);
+assert_eq!(agent_count(), 37);
 ```
 
 ### Registry Consistency Test

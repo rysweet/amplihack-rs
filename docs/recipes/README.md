@@ -650,7 +650,7 @@ The recipe version is canonical because it cannot skip steps.
 
 ### Existing Agents
 
-Recipes reference agents by their filename (without `.md`) from `~/.amplihack/.claude/agents/amplihack/`. All 38 agents work with the Recipe Runner:
+Recipes reference agents by their filename (without `.md`) from `~/.amplihack/.claude/agents/amplihack/`. All 37 agents work with the Recipe Runner:
 
 - Core agents: `architect`, `builder`, `reviewer`, `tester`
 - Specialized agents: `security`, `database`, `optimizer`, `cleanup`, `analyzer`

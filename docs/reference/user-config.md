@@ -309,7 +309,7 @@ framework and directory index remain available in both modes.
 a time; `config set lists.enabled` is not supported:
 
 ```sh
-amplihack directory enable skill:code-visualizer
+amplihack directory enable skill:design-patterns-expert
 amplihack directory enable agent:core/guide
 amplihack config get lists.enabled
 ```

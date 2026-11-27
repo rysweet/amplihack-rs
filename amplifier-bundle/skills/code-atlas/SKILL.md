@@ -13,11 +13,10 @@ description: |
   hunting structural bugs, setting up CI/CD diagram refresh, or publishing to GitHub Pages/mkdocs.
 invokes:
   skills:
-    - code-visualizer
     - mermaid-diagram-generator
     - lsp-setup
   agents:
-    - visualization-architect
+    - architect
     - analyzer
     - reviewer
 ---
@@ -71,6 +70,7 @@ code-atlas (this skill)
   Responsibilities:
     - Atlas layer orchestration (all 8 layers)
     - Language-agnostic code exploration
+    - Python import reading for compile-deps and service-components (see reference.md)
     - Three-pass bug-hunting workflow
     - Staleness detection triggers
     - Density management (split, not prompt)
@@ -78,12 +78,11 @@ code-atlas (this skill)
 
   Delegates to:
     compile-deps / service-components analyzer (language-pluggable; mode label always visible):
-      code-visualizer skill     Python repos ONLY: Python AST module analysis (optional adapter)
       cargo metadata + rust-analyzer/ripgrep   Rust repos: dependency + module static approximation
       analyzer agent            Any other language: static-approximation dep/module mapping
     mermaid-diagram-generator   Mermaid syntax generation and formatting
     lsp-setup skill             Layer ast-lsp-bindings: LSP-assisted symbol queries (optional)
-    visualization-architect     Complex DOT graph rendering and cross-layer layouts
+    architect                   Complex DOT graph rendering and cross-layer layouts
     analyzer agent              Deep codebase investigation and dependency mapping
     reviewer agent              Contradiction hunting (Passes 1, 2, 3)
 ```
@@ -203,7 +202,7 @@ Layer ast-lsp-bindings operates in one of two modes, always labelled on line 1 o
 | Mode                   | Trigger                             | Mechanism                       |
 | ---------------------- | ----------------------------------- | ------------------------------- |
 | `lsp-assisted`         | lsp-setup reports active LSP server | Delegates symbol queries to LSP |
-| `static-approximation` | LSP unavailable                     | ripgrep + code-visualizer AST   |
+| `static-approximation` | LSP unavailable                     | ripgrep + source inspection     |
 
 The mode label is never absent, never defaulted silently.
 
@@ -253,7 +252,7 @@ labelled (mirroring ast-lsp-bindings):
 
 | Mode                   | Trigger                       | Mechanism                                            |
 | ---------------------- | ----------------------------- | ---------------------------------------------------- |
-| `python-ast`           | Python repo detected          | Delegates to `code-visualizer` (optional adapter)    |
+| `python-ast`           | Python repo detected          | Reads imports using [reference.md](reference.md#reading-import-edges) |
 | `rust-cargo-metadata`  | Rust repo detected            | `cargo metadata` + rust-analyzer/ripgrep approximation |
 | `static-approximation` | Any other language / fallback | ripgrep + `analyzer` agent static mapping            |
 
@@ -365,7 +364,7 @@ A complete atlas satisfies:
 - **Not a static analysis tool**: Uses grep, AST, config parsing -- not a compiler
 - **Staleness is heuristic**: Git diff pattern matching, not semantic analysis
 - **Language-pluggable analyzer**: compile-deps/service-components analysis uses a per-language
-  adapter (`python-ast` via code-visualizer, `rust-cargo-metadata`, or `static-approximation`).
+  mode (`python-ast`, `rust-cargo-metadata`, or `static-approximation`).
   Python is not required for non-Python repos; the active mode is always labelled.
 - **SVG rendering requires Graphviz/Mermaid CLI**: CI environments need these installed
 - **Bug hunting is probabilistic**: Human review required before filing
