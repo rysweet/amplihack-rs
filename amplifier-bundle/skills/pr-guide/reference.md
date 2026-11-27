@@ -756,5 +756,5 @@ different reviewers. For example, "Rewrite authentication and add OAuth"
 becomes one pull request that makes the existing authentication modular, and a
 second that adds OAuth on top of it.
 
-The description of a pull request that is ready to merge follows the
-[merge-ready template](../merge-ready/pr-description-template.md).
+The description of a pull request that is ready to merge follows
+`pr-description-template.md` in the `merge-ready` skill.

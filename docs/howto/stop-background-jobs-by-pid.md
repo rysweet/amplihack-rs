@@ -183,8 +183,8 @@ whatever the runner version.
 | Location | Wording |
 | --- | --- |
 | `amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md`, next to the guidance on waiting (quoted in [System Prompt Append](../SYSTEM_PROMPT_APPEND.md)) | Fragment bullet |
-| `amplifier-bundle/skills/`: `auto-drive-to-merge`, `default-workflow`, `smart-test` | Full wording |
-| `docs/claude/skills/`: `auto-drive-to-merge`, `default-workflow` | Full wording |
+| `amplifier-bundle/skills/`: `default-workflow`, `smart-test` | Full wording |
+| `docs/claude/skills/`: `default-workflow` | Full wording |
 | Recipe agent steps, listed below | Recipe paragraph |
 
 `smart-test` has no copy under `docs/claude/skills/`; the bundle is its only
@@ -192,7 +192,7 @@ home. To list every file that carries the full wording:
 
 ```bash
 grep -rl 'Stop a background job you started by the PID' amplifier-bundle/skills docs/claude/skills
-# Output: three files under amplifier-bundle/skills, two under docs/claude/skills
+# Output: two files under amplifier-bundle/skills, one under docs/claude/skills
 ```
 
 The recipe paragraph appears in these ten agent steps:
