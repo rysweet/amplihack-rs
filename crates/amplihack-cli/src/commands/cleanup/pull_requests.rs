@@ -22,7 +22,6 @@ const UPDATED_FILTERS: [&str; 3] = ["state=all", "sort=updated", "direction=desc
 #[derive(PartialEq, Eq, Hash)]
 pub(super) struct Repository {
     name: String,
-    use_default_host: bool,
 }
 
 #[derive(Default)]
@@ -42,17 +41,21 @@ impl Remote {
 }
 
 /// Resolve the checkout's GitHub repository without contacting its remotes.
-/// Honor GH_REPO. For checkout remotes, require a known public host before
-/// honoring gh repo set-default. Without a saved selection, the remotes must
-/// agree on a single public repository. GH_HOST applies unless GH_REPO names
-/// a host explicitly. Diagnostics omit selection values.
+/// Honor GH_REPO when it explicitly selects public GitHub. For checkout
+/// remotes, require a known public host before honoring gh repo set-default.
+/// Without a saved selection, the remotes must agree on a single public
+/// repository. Diagnostics omit selection values.
 pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repository> {
     if let Some(value) = std::env::var_os("GH_REPO").filter(|value| !value.is_empty()) {
         let value = value.to_str().context("GH_REPO is not UTF-8")?;
-        let (name, use_default_host) = match value.split('/').count() {
+        let name = match value.split('/').count() {
             2 => {
-                check_gh_host()?;
-                (value, true)
+                ensure!(
+                    std::env::var_os("GH_HOST")
+                        .is_some_and(|host| host.eq_ignore_ascii_case("github.com")),
+                    "bare GH_REPO requires GH_HOST=github.com"
+                );
+                value
             }
             3 => {
                 let (host, name) = value.split_once('/').context("invalid GH_REPO")?;
@@ -60,13 +63,12 @@ pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repos
                     host.eq_ignore_ascii_case("github.com"),
                     "unsupported GH_REPO host"
                 );
-                (name, false)
+                name
             }
             _ => bail!("unsupported GH_REPO format"),
         };
         return Ok(Repository {
             name: public_repository_name(name).context("invalid GH_REPO repository")?,
-            use_default_host,
         });
     }
     check_gh_host()?;
@@ -108,10 +110,7 @@ pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repos
         "checkout has a remote with an unrecognized PR repository"
     );
     if let Some(name) = configured_repository(checkout, git_timeout, &remotes_by_name)? {
-        return Ok(Repository {
-            name,
-            use_default_host: false,
-        });
+        return Ok(Repository { name });
     }
     let mut names = remotes_by_name
         .into_values()
@@ -123,10 +122,7 @@ pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repos
         names.all(|other| other == name),
         "checkout has several GitHub repositories"
     );
-    Ok(Repository {
-        name,
-        use_default_host: false,
-    })
+    Ok(Repository { name })
 }
 
 fn is_local_remote(url: &str) -> bool {
@@ -225,34 +221,25 @@ fn public_repository_name(value: &str) -> Option<String> {
 }
 
 fn public_github_repository(url: &str) -> Option<String> {
-    // The shared identity parser also accepts provider subdomains, arbitrary
-    // ports and PR web URLs. This listing targets the public GitHub API.
-    let (authority, path, default_port) = if let Some((scheme, rest)) = url.split_once("://") {
-        let default_port = match scheme {
-            "https" => "443",
-            "http" => "80",
-            "ssh" => "22",
-            "git" => "9418",
-            _ => return None,
-        };
-        let (authority, path) = rest.split_once('/')?;
-        (authority, path, Some(default_port))
-    } else {
-        let (authority, path) = url.split_once(':')?;
-        (authority, path, None)
+    // GitHub CLI translates SSH and SCP-style hosts using ssh configuration.
+    // Only accept schemes whose literal URL identifies the public host.
+    let (scheme, rest) = url.split_once("://")?;
+    let default_port = match scheme {
+        "https" => "443",
+        "http" => "80",
+        "git" => "9418",
+        _ => return None,
     };
+    let (authority, path) = rest.split_once('/')?;
     let host_port = authority.rsplit('@').next()?;
     let (host, port) = host_port
         .split_once(':')
         .map_or((host_port, None), |(host, port)| (host, Some(port)));
     let host = host.strip_suffix('.').unwrap_or(host);
     let public =
-        host.eq_ignore_ascii_case("github.com") && (port.is_none() || port == default_port);
-    let alternate_ssh = host.eq_ignore_ascii_case("ssh.github.com")
-        && url.starts_with("ssh://")
-        && port == Some("443");
+        host.eq_ignore_ascii_case("github.com") && (port.is_none() || port == Some(default_port));
     let path = path.strip_suffix('/').unwrap_or(path);
-    if !(public || alternate_ssh) || path.contains(['?', '#']) || path.split('/').count() != 2 {
+    if !public || path.contains(['?', '#']) || path.split('/').count() != 2 {
         return None;
     }
     github_repository_from_remote_url(url).map(|name| name.to_ascii_lowercase())
@@ -281,7 +268,7 @@ impl Listing {
         // Creation order keeps PRs in place when they close, reopen, or
         // receive updates, so this listing can safely span multiple pages.
         for page in 1..=MAX_PAGES {
-            let response = read_page(repository, &endpoint, &HISTORY_FILTERS, page)
+            let response = read_page(&endpoint, &HISTORY_FILTERS, page)
                 .with_context(|| format!("PR history page {page}"))?;
             advertised_last = advertised_last.max(response.last_page.unwrap_or(1));
             ensure!(
@@ -294,7 +281,7 @@ impl Listing {
             // Leave room for both narrower requests. Incomplete pages are
             // rejected above, even when a narrower query would fit.
             if advertised_last > MAX_PAGES && page <= MAX_PAGES - 2 {
-                listing.read_open_and_recent(repository, &endpoint, now, keep)?;
+                listing.read_open_and_recent(&endpoint, now, keep)?;
                 return Ok(listing);
             }
             ensure!(
@@ -321,12 +308,11 @@ impl Listing {
 
     fn read_open_and_recent(
         &mut self,
-        repository: &Repository,
         endpoint: &str,
         now: DateTime<Utc>,
         keep: Duration,
     ) -> Result<()> {
-        let open = read_page(repository, endpoint, &OPEN_FILTERS, 1).context("open PR listing")?;
+        let open = read_page(endpoint, &OPEN_FILTERS, 1).context("open PR listing")?;
         ensure!(!open.has_next, "open PR listing requires multiple pages");
         ensure!(
             open.rows.iter().all(|row| row.state == "open"),
@@ -338,8 +324,7 @@ impl Listing {
         // between these requests appear among the recent updates either way.
         // Neither filtered nor update-ordered evidence can safely cross an
         // offset boundary, since a state change or update can move rows.
-        let recent =
-            read_page(repository, endpoint, &UPDATED_FILTERS, 1).context("recent PR listing")?;
+        let recent = read_page(endpoint, &UPDATED_FILTERS, 1).context("recent PR listing")?;
         let mut oldest_update = None;
         for row in &recent.rows {
             let updated = row.updated_at.context("PR is missing its update time")?;
@@ -418,13 +403,8 @@ struct Page {
     last_page: Option<usize>,
 }
 
-fn read_page(
-    repository: &Repository,
-    endpoint: &str,
-    filters: &[&str],
-    page: usize,
-) -> Result<Page> {
-    let body = request_page(repository, endpoint, filters, page)?;
+fn read_page(endpoint: &str, filters: &[&str], page: usize) -> Result<Page> {
+    let body = request_page(endpoint, filters, page)?;
     let (payload, has_next, last_page) = response_page(&body, endpoint, filters, page)?;
     let rows: Vec<RawPr> = serde_json::from_str(payload).context("cannot parse PR listing")?;
     ensure!(rows.len() <= PAGE_SIZE, "PR listing exceeds the page size");
@@ -443,19 +423,10 @@ fn read_page(
     })
 }
 
-fn request_page(
-    repository: &Repository,
-    endpoint: &str,
-    filters: &[&str],
-    page: usize,
-) -> Result<Vec<u8>> {
+fn request_page(endpoint: &str, filters: &[&str], page: usize) -> Result<Vec<u8>> {
     let mut command = Command::new("gh");
     amplihack_git::scrub(&mut command);
-    command.arg("api");
-    // Bare GH_REPO names use gh's configured default, including GH_HOST.
-    if !repository.use_default_host {
-        command.args(["--hostname", "github.com"]);
-    }
+    command.args(["api", "--hostname", "github.com"]);
     command.args(["--include", "--method", "GET"]).arg(endpoint);
     for filter in filters {
         command.args(["-f", filter]);

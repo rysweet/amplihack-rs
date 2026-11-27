@@ -933,10 +933,13 @@ older or interrupted runs, a worktree is **eligible** in either of these cases:
 
 In report and apply mode, `amplihack cleanup` matches pull requests by exact
 head branch name. It reads `GH_REPO` before the checkout's `gh repo set-default`
-selection. Without either selection, all remotes that could supply a PR
-repository must identify the same public GitHub repository. An unrecognized
-fetch URL, such as a GitHub Enterprise upstream, leaves the PR repository
-unresolved. A local fetch URL can also be ambiguous if the remote has a
+selection. Use `GH_REPO=github.com/owner/repo` or set `GH_HOST=github.com`
+alongside a bare `GH_REPO=owner/repo`. Without either selection, all remotes
+that could supply a PR repository must identify the same public GitHub
+repository. An unrecognized fetch URL, such as a GitHub Enterprise upstream,
+leaves the PR repository unresolved. SSH and SCP-style fetch URLs also leave
+it unresolved because SSH configuration can redirect the literal host.
+A local fetch URL can also be ambiguous if the remote has a
 nonlocal push URL. A saved selection for a dotted remote name is also
 ambiguous because GitHub CLI reads the part before the first dot as the
 remote name. Checkouts of the same repository share REST evidence.
@@ -2026,7 +2029,8 @@ feature. Record it with `amplihack_run_owned.sh record`, or remove it yourself.
 check `gh auth status` for github.com. Cleanup keeps dependent items when
 the required PR evidence is unavailable or exceeds the request limit.
 
-**Skipped with `cannot identify repository`.** Check `GH_REPO` if set.
+**Skipped with `cannot identify repository`.** If you set `GH_REPO`, include
+the `github.com` host or set `GH_HOST=github.com`.
 Otherwise, check the worktree's remote URLs with `git remote -v`.
 For a checkout with a fork and an upstream remote, use `gh repo set-default`
 to select its PR repository.

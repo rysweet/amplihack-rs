@@ -525,7 +525,7 @@ fn conflicting_repository_identities_keep_the_worktree_without_a_listing() {
         &[
             "config",
             "remote.other.url",
-            "git@github.com:fixture-owner/second.git",
+            "https://github.com/fixture-owner/second.git",
         ],
     );
 
@@ -585,6 +585,50 @@ fn local_fetch_with_an_unrecognized_push_keeps_the_worktree() {
 }
 
 #[test]
+fn uncertain_ssh_host_keeps_the_worktree_without_requesting_a_listing() {
+    let fx = Fx::new();
+    let wt = seed_worktree(&fx, &fx.repo, "first", "ssh-remote");
+    fx.git_ok(&fx.repo, &["remote", "remove", "github"]);
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        1,
+        false,
+        &json!([open_pr(1, "unrelated")]).to_string(),
+    );
+
+    for url in [
+        "git@github.com:fixture-owner/first.git",
+        "ssh://git@github.com/fixture-owner/first.git",
+        "ssh://git@ssh.github.com:443/fixture-owner/first.git",
+    ] {
+        fx.git_ok(&fx.repo, &["remote", "set-url", "origin", url]);
+        let report = fx.cleanup_json(&["--apply"]);
+        assert_kept(&report, &wt);
+        assert!(fx.gh_calls().is_empty());
+    }
+}
+
+#[test]
+fn uncertain_bare_gh_repo_keeps_the_worktree_without_requesting_a_listing() {
+    let fx = Fx::new();
+    let wt = seed_worktree(&fx, &fx.repo, "first", "default-host");
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        1,
+        false,
+        &json!([open_pr(1, "unrelated")]).to_string(),
+    );
+
+    // The default host could be Enterprise. A one-page response without a
+    // continuation gives cleanup no evidence of which host served it.
+    let report = fx.cleanup_json_with(&["--apply"], |c| {
+        c.env("GH_REPO", DEFAULT_REPOSITORY).env_remove("GH_HOST");
+    });
+    assert_kept(&report, &wt);
+    assert!(fx.gh_calls().is_empty());
+}
+
+#[test]
 fn unsupported_gh_host_keeps_worktrees_without_requesting_a_listing() {
     let fx = Fx::new();
     let wt = seed_worktree(&fx, &fx.repo, "first", "old-worktree");
@@ -619,7 +663,7 @@ fn configured_github_repository_selects_the_upstream_of_a_fork() {
         &[
             "config",
             "remote.upstream.url",
-            "git@github.com:fixture-owner/second.git",
+            "https://github.com/fixture-owner/second.git",
         ],
     );
     fx.gh_page(
@@ -671,8 +715,11 @@ fn dotted_saved_remote_keeps_the_upstream_worktree_without_querying_the_fork() {
     let fx = Fx::new();
     let wt = seed_worktree(&fx, &fx.repo, "first", "upstream-open");
     for (remote, url) in [
-        ("upstream", "git@github.com:fixture-owner/second.git"),
-        ("upstream.fork", "git@github.com:fixture-owner/first.git"),
+        ("upstream", "https://github.com/fixture-owner/second.git"),
+        (
+            "upstream.fork",
+            "https://github.com/fixture-owner/first.git",
+        ),
     ] {
         fx.git_ok(&fx.repo, &["remote", "add", remote, url]);
     }
@@ -705,21 +752,18 @@ fn gh_repo_override_keeps_the_upstream_pr_open_in_a_fork_checkout() {
         &json!([open_pr(1, "upstream-open")]).to_string(),
     );
 
-    for (selector, hostname) in [
-        ("Fixture-Owner/Second", false),
-        ("github.com/fixture-owner/second", true),
+    for (selector, host) in [
+        ("Fixture-Owner/Second", "github.com"),
+        ("github.com/fixture-owner/second", "ghe.example"),
     ] {
         let report = fx.cleanup_json_with(&["--apply"], |c| {
-            c.env("GH_REPO", selector);
-            if hostname {
-                c.env("GH_HOST", "ghe.example");
-            }
+            c.env("GH_REPO", selector).env("GH_HOST", host);
         });
         assert_kept(&report, &wt);
         let calls = fx.take_gh_calls();
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert!(calls[0].contains("repos/fixture-owner/second/pulls"));
-        assert_eq!(calls[0].contains("--hostname github.com"), hostname);
+        assert!(calls[0].contains("--hostname github.com"));
     }
 
     for selector in ["ghe.example/fixture-owner/second", "fixture-owner/"] {
