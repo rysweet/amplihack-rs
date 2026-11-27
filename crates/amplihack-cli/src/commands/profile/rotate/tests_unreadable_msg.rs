@@ -158,7 +158,7 @@ fn ordinary_arguments_are_shown_as_they_are() {
         "tailscaled",
         "be-child",
         "ssh",
-        "--remote-ip=100.64.0.7",
+        "--remote-ip=192.0.2.10",
         "amplihack recipe run wait",
     ];
     assert_eq!(command(&tailscale), tailscale.join(" "));

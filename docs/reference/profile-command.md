@@ -552,8 +552,8 @@ It is not shown by `--raw`: the row's raw block stays
 lines to stderr:
 
 ```
-note: profile "mistt": direct read gave usage credits on; windows direct, spend from claude
-note: profile "mistt": extra_usage: object; keys: currency, is_enabled, monthly_limit, org_id, used_credits; is_enabled: bool true
+note: profile "example-org": direct read gave usage credits on; windows direct, spend from claude
+note: profile "example-org": extra_usage: object; keys: currency, is_enabled, monthly_limit, org_id, used_credits; is_enabled: bool true
 ```
 
 The first line ends in one of three ways:
@@ -2003,17 +2003,17 @@ amplihack profile usage --table --spend
 ```
 
 ```
-PROFILE   MARKS                                STATE              SESSION           SESSION RESETS                     WEEK  WEEK RESETS                        SPEND
-review    -                                    ok                 5%                2026-10-17T04:00:00Z               10%   2026-10-22T09:00:00Z               n/a
-work      * hosts:personal                     ok                 20%               2026-10-17T02:00:00Z               30%   2026-10-22T09:00:00Z               n/a
-weekly    -                                    ok                 no session limit  -                                  47%   2026-10-22T09:00:00Z               n/a
-mistt     -                                    ok                 35%               2026-10-17T03:00:00Z               52%   2026-10-22T09:00:00Z               ok
-credit    overflow (fallback)                  ok                 40%               Oct 16, 9pm (America/Los_Angeles)  61%   Oct 22, 2am (America/Los_Angeles)  ok
-org2      -                                    session_exhausted  100%              2026-10-16T22:10:00Z               71%   2026-10-22T09:00:00Z               limit_reached
-team      -                                    session_exhausted  100%              2026-10-16T23:50:00Z               55%   2026-10-22T09:00:00Z               n/a
-personal  leased→work                          not_logged_in      -                 -                                  -     -                                  unknown
-scratch   not signed in (no credentials file)  not_logged_in      -                 -                                  -     -                                  unknown
-spare     (fallback)                           timeout            -                 -                                  -     -                                  unknown
+PROFILE      MARKS                                STATE              SESSION           SESSION RESETS                     WEEK  WEEK RESETS                        SPEND
+review       -                                    ok                 5%                2026-10-17T04:00:00Z               10%   2026-10-22T09:00:00Z               n/a
+work         * hosts:personal                     ok                 20%               2026-10-17T02:00:00Z               30%   2026-10-22T09:00:00Z               n/a
+weekly       -                                    ok                 no session limit  -                                  47%   2026-10-22T09:00:00Z               n/a
+example-org  -                                    ok                 35%               2026-10-17T03:00:00Z               52%   2026-10-22T09:00:00Z               ok
+credit       overflow (fallback)                  ok                 40%               Oct 16, 9pm (America/Los_Angeles)  61%   Oct 22, 2am (America/Los_Angeles)  ok
+org2         -                                    session_exhausted  100%              2026-10-16T22:10:00Z               71%   2026-10-22T09:00:00Z               limit_reached
+team         -                                    session_exhausted  100%              2026-10-16T23:50:00Z               55%   2026-10-22T09:00:00Z               n/a
+personal     leased→work                          not_logged_in      -                 -                                  -     -                                  unknown
+scratch      not signed in (no credentials file)  not_logged_in      -                 -                                  -     -                                  unknown
+spare        (fallback)                           timeout            -                 -                                  -     -                                  unknown
 order: rotator pick (most room in the worse of session and week, then name)
 ```
 
@@ -2023,7 +2023,7 @@ order: rotator pick (most room in the worse of session and week, then name)
 Claude's own reset text. `team` is at its session limit and has used 55%
 of its week; the weekly figure is shown as reported. `spare` failed its
 direct read and its `claude` fallback timed out. The other rows came from
-passive or direct reads. `mistt` and `org2` have
+passive or direct reads. `example-org` and `org2` have
 [usage credits on](#usage-credits-on): their windows come from the direct
 read, and, because this run used `--spend`, the `SPEND` column comes from a
 [spend probe](#spend-probe) under the normal per-probe timeout, which found `org2`'s spend limit used up.
@@ -2215,7 +2215,7 @@ weekly window at 100%), the rows are followed by one line, in the bar view
 and in `--table`:
 
 ```
-running on overflow: ryan-mistt-org
+running on overflow: login-aw
 ```
 
 A live overflow row whose probe shows plan capacity left prints no footer:
@@ -2438,12 +2438,12 @@ work (live)  ███░░░░░░░  30%  11-05 09:00  ██░░░�
 times: Europe/London
 order: rotator pick (most room in the worse of session and week, then name)
 
-Codex accounts under /home/ryan/.codex-profiles
-ffarmer   signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
-ggrant    signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
+Codex accounts under /home/you/.codex-profiles
 hhale     signed in      credits 4200  plan team  read 19:09:00
 jjones    not signed in  read 19:09:00
 kkim      timed out      after 20s  read 19:09:00
+login-af  signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
+login-ag  signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
 mmoss     error: codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'  read 19:09:00
 ~/.codex  signed in      5h ████████░░  88% 11-06 20:15 in 1h 6m  7d ███████░░░  70% 11-09 03:00 in 55h 51m  plan plus  read 19:09:00
 ```
@@ -2480,7 +2480,7 @@ directory or has no subdirectories is not an error. The block is then one
 line, and `~/.codex` is still read:
 
 ```
-Codex: no accounts under /home/ryan/.codex-profiles
+Codex: no accounts under /home/you/.codex-profiles
 ```
 
 When `~/.codex` is signed in and the root has no accounts, the header line
@@ -2491,7 +2491,7 @@ prints one line on stderr. `~/.codex` is then not read either, and the block
 is the single `Codex: no accounts under` line:
 
 ```
-warning: cannot list Codex accounts under /home/ryan/.codex-profiles: Permission denied (os error 13)
+warning: cannot list Codex accounts under /home/you/.codex-profiles: Permission denied (os error 13)
 ```
 
 The exit status does not change, and `codex` in `--summary-json` is an
@@ -2696,10 +2696,10 @@ the two can disagree. The rule:
 5. The first candidate with room above `0` is marked. When there is none,
    no row is marked.
 
-In the example, `ggrant` (room 66) is chosen over `ffarmer` (59), `hhale`
+In the example, `login-ag` (room 66) is chosen over `login-af` (59), `hhale`
 (credits only, 0.5) and `~/.codex` (12). Two accounts with the same room
-are taken in descending path order, so `ggrant` would come before
-`ffarmer`. `codex-pick` also counts a signed-in account with no stored
+are taken in descending path order, so `login-ag` would come before
+`login-af`. `codex-pick` also counts a signed-in account with no stored
 reading as full; with live reads that case cannot arise, because a
 signed-in account always answers with its figures.
 
@@ -2837,7 +2837,7 @@ amplihack profile usage --json | jq -r '.[]
 ```
 
 ```
-ryan-mistt-org
+login-aw
 ```
 
 The weekly-only row from the [table example](#table-output) reads:
@@ -2872,14 +2872,40 @@ weekly
 
 Each row of `codex` in [`--summary-json`](#summary-json) is one
 [Codex account](#codex-accounts), in the same order as the text rows.
-[`--json`](#json-output) has no Codex rows. For the `ggrant`, `hhale` and `kkim` rows of the
+[`--json`](#json-output) has no Codex rows. For the `hhale`, `kkim` and `login-ag` rows of the
 [example](#codex-accounts):
 
 ```json
 [
   {
-    "account": "ggrant",
-    "path": "/home/ryan/.codex-profiles/ggrant",
+    "account": "hhale",
+    "path": "/home/you/.codex-profiles/hhale",
+    "state": "ok",
+    "error": null,
+    "windows": [],
+    "credits": { "has_credits": true, "balance": 4200.0 },
+    "plan_type": "team",
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  },
+  {
+    "account": "kkim",
+    "path": "/home/you/.codex-profiles/kkim",
+    "state": "timeout",
+    "error": "timed out after 20s",
+    "windows": [],
+    "credits": null,
+    "plan_type": null,
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  },
+  {
+    "account": "login-ag",
+    "path": "/home/you/.codex-profiles/login-ag",
     "state": "ok",
     "error": null,
     "windows": [
@@ -2897,32 +2923,6 @@ Each row of `codex` in [`--summary-json`](#summary-json) is one
     "ordinary_usage_allowed": true,
     "read_at": "2026-11-06T19:09:00Z",
     "next_choice": true
-  },
-  {
-    "account": "hhale",
-    "path": "/home/ryan/.codex-profiles/hhale",
-    "state": "ok",
-    "error": null,
-    "windows": [],
-    "credits": { "has_credits": true, "balance": 4200.0 },
-    "plan_type": "team",
-    "rate_limit_reached_type": null,
-    "ordinary_usage_allowed": null,
-    "read_at": "2026-11-06T19:09:00Z",
-    "next_choice": false
-  },
-  {
-    "account": "kkim",
-    "path": "/home/ryan/.codex-profiles/kkim",
-    "state": "timeout",
-    "error": "timed out after 20s",
-    "windows": [],
-    "credits": null,
-    "plan_type": null,
-    "rate_limit_reached_type": null,
-    "ordinary_usage_allowed": null,
-    "read_at": "2026-11-06T19:09:00Z",
-    "next_choice": false
   }
 ]
 ```
@@ -2960,7 +2960,7 @@ amplihack profile usage --summary-json | jq -r '.codex[] | select(.next_choice) 
 ```
 
 ```
-ggrant
+login-ag
 ```
 
 To list the Codex accounts that could not be read:
@@ -3723,7 +3723,7 @@ automatically.
 | `--dry-run` | Print each matching file and delete nothing. |
 
 The encoded home is `$HOME` with every character outside `A-Z`, `a-z`,
-`0-9` and `-` replaced by `-`: `/home/ryan` becomes `-home-ryan`. The
+`0-9` and `-` replaced by `-`: `/home/you` becomes `-home-you`. The
 default needs `HOME` to be set to an absolute path.
 
 **What is read.** Only files directly in the folder whose names end in
@@ -3776,8 +3776,8 @@ fields the rule does not read left out:
 **Output.** With `--dry-run`, one matching path per line on stdout:
 
 ```
-"/home/ryan/.claude/projects/-home-ryan/0b7c….jsonl"
-"/home/ryan/.claude/projects/-home-ryan/1f3a….jsonl"
+"/home/you/.claude/projects/-home-you/0b7c….jsonl"
+"/home/you/.claude/projects/-home-you/1f3a….jsonl"
 ```
 
 Without it, one line:
@@ -3794,7 +3794,7 @@ log content is ever printed, in output or in errors. A file that cannot be
 removed is reported on stderr and counted as kept:
 
 ```
-warning: could not remove "/home/ryan/.claude/projects/-home-ryan/0b7c….jsonl": Permission denied (os error 13)
+warning: could not remove "/home/you/.claude/projects/-home-you/0b7c….jsonl": Permission denied (os error 13)
 ```
 
 | Exit status | Meaning |
@@ -3805,7 +3805,7 @@ warning: could not remove "/home/ryan/.claude/projects/-home-ryan/0b7c….jsonl"
 
 ```
 error: prune-probe-logs needs an absolute HOME, or --dir
-error: no such directory: "/home/ryan/.claude/projects/-home-ryan"
+error: no such directory: "/home/you/.claude/projects/-home-you"
 ```
 
 A session that has so far run only `/usage` matches the rule, including an
@@ -4845,7 +4845,7 @@ with status 1 on error with the usual `error:`/`hint:` lines.
 enabled=on
 threshold=90
 exclude=review,shared
-overflow=ryan-mistt-org
+overflow=login-aw
 ```
 
 | Key | Values | Default |
@@ -5151,7 +5151,7 @@ started under a plan profile with capacity in the same way.
 ```json
 "statusLine": {
   "type": "command",
-  "command": "'/home/ryan/.local/bin/amplihack' profile statusline --root '/home/ryan/.claude-profiles' --owner 'work'",
+  "command": "'/home/you/.local/bin/amplihack' profile statusline --root '/home/you/.claude-profiles' --owner 'work'",
   "padding": 0
 }
 ```
@@ -5979,22 +5979,22 @@ there gives one source of truth for which profiles are skipped and when.
 What `add` prints for a new mark, with the cost note:
 
 ```
-overflow: added ryan-mistt-org (tier 1)
-note: ryan-mistt-org is used only when no measured plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account.
+overflow: added login-aw (tier 1)
+note: login-aw is used only when no measured plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account.
 note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap.
 ```
 
 The warnings `add` prints, on stderr:
 
 ```
-warning: ryan-mistt-org is in the auto-switch exclude list; excluded profiles are never used, even as overflow
-warning: the default profile is ryan-mistt-org; launches use it directly and spend credits whatever the rotator does (run: amplihack profile switch --none)
+warning: login-aw is in the auto-switch exclude list; excluded profiles are never used, even as overflow
+warning: the default profile is login-aw; launches use it directly and spend credits whatever the rotator does (run: amplihack profile switch --none)
 ```
 
 `overflow list` with one blocked profile:
 
 ```
-ryan-mistt-org  tier 1  marked  blocked until 2026-11-01T00:00:00Z (spend_limit)
+login-aw  tier 1  marked  blocked until 2026-11-01T00:00:00Z (spend_limit)
 team-credits  tier 1  marked
 old-credits  tier 1  marked  missing
 api-key  api-key tier  not marked (not used)
@@ -6010,7 +6010,7 @@ note: api-key is billed per token; it is used only when every plan login is meas
 `overflow list` after that `add`:
 
 ```
-ryan-mistt-org  tier 1  marked  blocked until 2026-11-01T00:00:00Z (spend_limit)
+login-aw  tier 1  marked  blocked until 2026-11-01T00:00:00Z (spend_limit)
 team-credits  tier 1  marked
 old-credits  tier 1  marked  missing
 api-key  api-key tier  marked
@@ -6029,7 +6029,7 @@ none and is never used. In `.auto-switch` an entry is written
 tiers existed reads the same:
 
 ```
-overflow=ryan-mistt-org,team-credits:2,api-key
+overflow=login-aw,team-credits:2,api-key
 ```
 
 Here `team-credits` is tier 2 and `api-key`, an API-key profile, is tier 10
@@ -6626,20 +6626,20 @@ The reporter's flags were `--session-at 85 --week-at 90 --margin 3
 `rrowan` reached 100% of its session at 05:56Z. Several logins had room:
 
 ```
-2026-11-22T05:56:57Z cycle live=rrowan rrowan:s=100%,w=67% aanderson:s=0%,w=100% eelsworth:s=96%,w=82% ffarmer:unknown, still running jjansport:s=90%,w=10% llarame:s=0%,w=95% qquinn:s=88%,w=20%
-2026-11-22T05:56:58Z swap rrowan->llarame live s=100% w=67% target s=0% w=95% reason=plan-room
+2026-11-22T05:56:57Z cycle live=rrowan rrowan:s=100%,w=67% login-aa:s=0%,w=100% login-ae:s=96%,w=82% login-af:unknown, still running login-aj:s=90%,w=10% login-al:s=0%,w=95% login-ar:s=88%,w=20%
+2026-11-22T05:56:58Z swap rrowan->login-al live s=100% w=67% target s=0% w=95% reason=plan-room
 ```
 
-`rrowan` has no room, so every eligible login qualifies. `aanderson` has a
-window at 100%, and `ffarmer` is unknown with no last good reading, so
-neither is eligible. `llarame` has room `5` and `jjansport`, `qquinn` and
-`eelsworth` have `10`, `12` and `4`, but `llarame` is the only login below
+`rrowan` has no room, so every eligible login qualifies. `login-aa` has a
+window at 100%, and `login-af` is unknown with no last good reading, so
+neither is eligible. `login-al` has room `5` and `login-aj`, `login-ar` and
+`login-ae` have `10`, `12` and `4`, but `login-al` is the only login below
 `--session-at`, so its tier ranks first. Its week use of 95% is at the
 ceiling, so it is eligible, and `reason=plan-room` records that the target
 is past `--week-at 90`. The cycle writes no ALERT, because a login has
 room. At 05:48Z, `rrowan` had read `s=86%,w=65%`, which is room `14`. A
-move needed `14 + 3`, and the most any other login had was `qquinn`'s `12`
-(`llarame` had `5`), so the rotator stayed. With every login in one
+move needed `14 + 3`, and the most any other login had was `login-ar`'s `12`
+(`login-al` had `5`), so the rotator stayed. With every login in one
 organisation the note reads:
 
 ```
@@ -6666,18 +6666,18 @@ login has no room, is never held: the rotator never waits to leave a login
 that cannot run work. A [projected](#projected-swap) swap is not held
 either.
 
-The third row is why `llarame` in the example above is not left again one
-cycle after the move. It has room `5` and `qquinn` has `12`, which would
-qualify against `5 + 3`, but `qquinn` is at `s=88%`, at or above
+The third row is why `login-al` in the example above is not left again one
+cycle after the move. It has room `5` and `login-ar` has `12`, which would
+qualify against `5 + 3`, but `login-ar` is at `s=88%`, at or above
 `--session-at`. While the hold lasts the cycle stays and writes the held note
 once:
 
 ```
-2026-11-22T05:57:58Z stay: held after last swap (60s of 3600s): qquinn is at s=88%, at or above --session-at
+2026-11-22T05:57:58Z stay: held after last swap (60s of 3600s): login-ar is at s=88%, at or above --session-at
 ```
 
 Once `--hold` seconds have passed since the swap, the next cycle swaps to
-`qquinn` if it still qualifies. The hold counts from the last swap, the
+`login-ar` if it still qualifies. The hold counts from the last swap, the
 ledger's `swapped_at`, which a rotator swap and a
 [`profile switch`](#rotate-switch) both write. A change made outside amplihack, such as a
 `/login` in `~/.claude`, writes none and starts no hold. After the clock was
@@ -6773,11 +6773,11 @@ the unknown probe alone keeps overflow out.
 A login's standing shows in the `cycle` line:
 
 ```
-2026-11-22T00:02:05Z cycle live=rrowan rrowan:s=100%,w=71% llarame:unknown, HTTP 429, last s=78%,w=92% 41m ago qquinn:unknown, HTTP 429 wwest:failed
+2026-11-22T00:02:05Z cycle live=rrowan rrowan:s=100%,w=71% login-al:unknown, HTTP 429, last s=78%,w=92% 41m ago login-ar:unknown, HTTP 429 login-bf:failed
 ```
 
-`llarame` is unknown and has a last good reading, so it can be a target.
-`qquinn` is unknown with no usable reading, so it is not. `wwest`'s token
+`login-al` is unknown and has a last good reading, so it can be a target.
+`login-ar` is unknown with no usable reading, so it is not. `login-bf`'s token
 has expired, so it is failed. The probe's own error is in the line, beside
 the login it was for.
 
@@ -6973,7 +6973,7 @@ The first cycle that sees an unreadable process of yours that mentions
 one line for it:
 
 ```
-2026-11-23T11:00:00Z unreadable process 41207 (tailscaled) "tailscaled be-child ssh --remote-ip=100.64.0.7 amplihack recipe run wait": not counted (not a Claude executable)
+2026-11-23T11:00:00Z unreadable process 41207 (tailscaled) "tailscaled be-child ssh --remote-ip=192.0.2.10 amplihack recipe run wait": not counted (not a Claude executable)
 ```
 
 The line gives the pid, the executable (the basename of `argv[0]`, or the
@@ -7353,20 +7353,20 @@ the swap away can make `work` a target again, under the existing decision
 rules. A different target waits for a subsequent cycle to be confirmed.
 
 For example, live `rrowan`
-is past `--week-at`, and `ggrant` has a stored reading from before it was
+is past `--week-at`, and `login-ag` has a stored reading from before it was
 last live:
 
 ```
-2026-11-02T13:09:09Z cycle live=rrowan rrowan:s=0%,w=97% ggrant:s=11%,w=85% hharkness:unknown, still running
-2026-11-02T13:09:10Z reread: ggrant reading stale s=11% w=85%; fresh s=43% w=100%
-2026-11-02T13:09:10Z reject: ggrant no room on a fresh reading
+2026-11-02T13:09:09Z cycle live=rrowan rrowan:s=0%,w=97% login-ag:s=11%,w=85% login-ah:unknown, still running
+2026-11-02T13:09:10Z reread: login-ag reading stale s=11% w=85%; fresh s=43% w=100%
+2026-11-02T13:09:10Z reject: login-ag no room on a fresh reading
 2026-11-02T13:09:10Z ALERT: no capacity known live=rrowan s=0% w=97% (candidates: 1 unknown (still running), 1 exhausted)
 ```
 
-On the stored reading `ggrant` has room `15` against the live login's `3`, so
-it qualifies. Without the gate this cycle would swap to `ggrant`, read it at
+On the stored reading `login-ag` has room `15` against the live login's `3`, so
+it qualifies. Without the gate this cycle would swap to `login-ag`, read it at
 `w=100%` on the next cycle, and swap away again. The fresh reading rejects
-`ggrant` for no room, so it is no longer eligible, and `hharkness` has no last
+`login-ag` for no room, so it is no longer eligible, and `login-ah` has no last
 good reading. No login is eligible, so the cycle writes the
 [no-target line](#rotate-no-target) and not the `no candidate confirmed`
 stay note, which is for a rejected login that is still eligible.
@@ -7407,37 +7407,37 @@ A damped login remains a plan login: it counts towards the
 [plan pool](#plan-pool) and the rules that keep the rotator off
 [overflow](#rotate-decision-order) as before.
 
-For example, in a separate case where `ggrant` and `hharkness` are the
+For example, in a separate case where `login-ag` and `login-ah` are the
 only plan logins and the rotator runs with `--hold 0`, the rotator leaves
-`ggrant` past `--session-at`. Sessions
-started while `ggrant` was live keep using its login, so its use goes on
+`login-ag` past `--session-at`. Sessions
+started while `login-ag` was live keep using its login, so its use goes on
 rising:
 
 ```
-2026-11-02T15:40:10Z swap ggrant->hharkness live s=86% w=70% target s=70% w=62% reason=threshold
+2026-11-02T15:40:10Z swap login-ag->login-ah live s=86% w=70% target s=70% w=62% reason=threshold
 ```
 
-On the next cycle, `ggrant`'s stored reading is the one taken at 15:40:09,
+On the next cycle, `login-ag`'s stored reading is the one taken at 15:40:09,
 before the swap, and on those figures it has room `14` against the live
 login's `8`, so it qualifies by `--margin`.
 That reading is not later than the `swapped_away` entry, so it is read
 again:
 
 ```
-2026-11-02T15:42:21Z cycle live=hharkness hharkness:s=92%,w=63% ggrant:s=86%,w=70%
-2026-11-02T15:42:22Z reread: ggrant reading stale s=86% w=70%; fresh s=93% w=71%
-2026-11-02T15:42:22Z damp: ggrant swapped away exhausted; no later reading shows room
+2026-11-02T15:42:21Z cycle live=login-ah login-ah:s=92%,w=63% login-ag:s=86%,w=70%
+2026-11-02T15:42:22Z reread: login-ag reading stale s=86% w=70%; fresh s=93% w=71%
+2026-11-02T15:42:22Z damp: login-ag swapped away exhausted; no later reading shows room
 2026-11-02T15:42:22Z stay: live room 8, best other login has room 7, a move needs 13
 ```
 
 With the default `--hold`, the [hold](#rotate-hold) would have kept the
-rotator on `hharkness` before the gate was reached, because `ggrant`'s
+rotator on `login-ah` before the gate was reached, because `login-ag`'s
 session is at or above `--session-at`.
 
 The ledger then holds:
 
 ```json
-"swapped_away": { "ggrant": 1793634010 }
+"swapped_away": { "login-ag": 1793634010 }
 ```
 
 The entry is kept between one-shot runs and across restarts. It holds only
@@ -8125,11 +8125,11 @@ whose fresh reading shows it full is rejected, and the decision runs again on
 the new figures:
 
 ```
-2026-11-02T19:52:37Z reread: hharkness reading stale s=74% w=73%; fresh s=100% w=73%
-2026-11-02T19:52:37Z reject: hharkness no room on a fresh reading
+2026-11-02T19:52:37Z reread: login-ah reading stale s=74% w=73%; fresh s=100% w=73%
+2026-11-02T19:52:37Z reject: login-ah no room on a fresh reading
 ```
 
-`hharkness` is then session-exhausted and is not chosen.
+`login-ah` is then session-exhausted and is not chosen.
 
 When no login is eligible, the cycle writes the
 [no-target line](#rotate-no-target), once and not every cycle. When logins
@@ -8138,41 +8138,41 @@ room but is not a target still counts as room for the
 [overflow](#overflow-decision) rules, so credits and the API key stay unused
 while it exists.
 
-**Example: a live login with no room.** Live `aanderson` has used its session.
-`bbuck` has room on paper but a week above the default ceiling of 95%, so it
-is not eligible. `ggrant` has no room. Of the other three, `ddrake` is below
+**Example: a live login with no room.** Live `login-aa` has used its session.
+`login-ab` has room on paper but a week above the default ceiling of 95%, so it
+is not eligible. `login-ag` has no room. Of the other three, `ddrake` is below
 both thresholds and has the most room:
 
 ```
-2026-10-30T19:42:56Z cycle live=aanderson aanderson:s=100%,w=60% bbuck:s=50%,w=97% above ceiling 95% ccapstone:s=11%,w=92% ddrake:s=0%,w=88% eelsworth:s=98%,w=17% ggrant:s=100%,w=100%
-2026-10-30T19:42:56Z swap aanderson->ddrake live s=100% w=60% target s=0% w=88% reason=threshold
+2026-10-30T19:42:56Z cycle live=login-aa login-aa:s=100%,w=60% ddrake:s=0%,w=88% login-ab:s=50%,w=97% above ceiling 95% login-ac:s=11%,w=92% login-ae:s=98%,w=17% login-ag:s=100%,w=100%
+2026-10-30T19:42:56Z swap login-aa->ddrake live s=100% w=60% target s=0% w=88% reason=threshold
 ```
 
-`ccapstone` and `ddrake` are both below `--session-at`, so both are in the
-first tier. `ddrake` has room `12` against `ccapstone`'s `8`. `eelsworth`
+`login-ac` and `ddrake` are both below `--session-at`, so both are in the
+first tier. `ddrake` has room `12` against `login-ac`'s `8`. `login-ae`
 has the most weekly room but its session is at 98%, so it ranks in the second
 tier, behind both.
 
 **Example: a target past the week threshold.** A login with a fresh session
 and a week that is nearly spent is still a target, up to the ceiling. With
-the live `aanderson` at `s=100%,w=60%` and `ccapstone` at `s=20%,w=93%`,
-`ccapstone` is past the default `--week-at 90` but at most 95, so the
+the live `login-aa` at `s=100%,w=60%` and `login-ac` at `s=20%,w=93%`,
+`login-ac` is past the default `--week-at 90` but at most 95, so the
 rotator moves to it:
 
 ```
-2026-10-31T08:20:05Z swap aanderson->ccapstone live s=100% w=60% target s=20% w=93% reason=plan-room
+2026-10-31T08:20:05Z swap login-aa->login-ac live s=100% w=60% target s=20% w=93% reason=plan-room
 ```
 
-**Example: a live login that keeps its place.** Live `aanderson` at
-`s=90%,w=80%` has room `10`. `bbuck` at `s=95%,w=60%` has room `5`, which is
+**Example: a live login that keeps its place.** Live `login-aa` at
+`s=90%,w=80%` has room `10`. `login-ab` at `s=95%,w=60%` has room `5`, which is
 below `10 + 5`, so it does not qualify:
 
 ```
-2026-10-31T08:10:05Z cycle live=aanderson aanderson:s=90%,w=80% bbuck:s=95%,w=60%
+2026-10-31T08:10:05Z cycle live=login-aa login-aa:s=90%,w=80% login-ab:s=95%,w=60%
 2026-10-31T08:10:05Z stay: live room 10, best other login has room 5, a move needs 15
 ```
 
-The cycle stays on `aanderson` and writes the stay note once. Because the
+The cycle stays on `login-aa` and writes the stay note once. Because the
 live login is below 100% on both windows, the note is
 [advisory](#rotate-advisory-alert), and the cycle records `stayed`. Later
 cycles with the same readings write no second line. Credits and the API key
@@ -8204,7 +8204,7 @@ the login the rotator chose is open as issue #3067.
 
 At `--session-at 95 --week-at 98`, every login below 95% of
 its session is in the first tier, so on readings like those of 22 November the
-rotator moves to a login below `--session-at` (qquinn, 88% and 20%) and records
+rotator moves to a login below `--session-at` (login-ar, 88% and 20%) and records
 room.
 
 #### Rotate decision order
@@ -8796,7 +8796,7 @@ every refresh made by a direct usage read, through `dir_private()` in
 `usage_direct.rs` (rotate measurement and `profile usage`). Issue #1962 widened it for all of
 these callers, not only for seeding: before, any group write bit was refused.
 This is a change to which credential directories are trusted. The reason is
-[the cause on candide](#cause-on-candide-issue-1962).
+[the cause on host-a](#cause-on-host-a-issue-1962).
 
 | Directory | Result |
 |-----------|--------|
@@ -8824,37 +8824,37 @@ or others can write it, whatever its group. The
 [swap's](#rotate-swap) `~/.claude` check and the
 [shared session](#shared-session-directories) checks do not read ACLs.
 
-#### Cause on candide (issue #1962)
+#### Cause on host-a (issue #1962)
 
-1.2.99 refused every rotate cycle on candide with `~/.claude could not be
+1.2.99 refused every rotate cycle on host-a with `~/.claude could not be
 read` and the identity alert. The cause was the directory mode, not an
 expired token, a 401 or a 429.
 
-- On candide the umask is `002`. `~/.claude` is mode `775`, owned by
-  `ryan:ryan`, where `ryan` is the user's own private group (gid 1000, no
+- On host-a the umask is `002`. `~/.claude` is mode `775`, owned by
+  `you:you`, where `you` is the user's own private group (gid 1000, no
   listed members) and the directory has no access ACL.
 - 1.2.99 refused any login directory with `mode & 0o022 != 0`. The identity
   read stopped in `stamp()` before any request was sent. A live refresh would
   have been refused by `dir_private()` in the same way.
-- That matches the candide log: the refusal and the alert, with no refresh,
+- That matches the host-a log: the refusal and the alert, with no refresh,
   401, 429 or expiry line. With an expired token, 1.2.99 also logs
   `refresh: expired login in ~/.claude not refreshed (refresh refused)`.
-  Candide's log has no such line, so the token was still valid and the
+  Host-a's log has no such line, so the token was still valid and the
   directory check alone explains the refusal. `profile verify` and 1.2.97 do
   not apply this check, which is why they read the same login.
 
-The reproduction is `crates/amplihack-cli/tests/issue_1962_candide_cause.rs`.
-It uses fake logins and a loopback endpoint, with `~/.claude` set to candide's
+The reproduction is `crates/amplihack-cli/tests/issue_1962_host_a_cause.rs`.
+It uses fake logins and a loopback endpoint, with `~/.claude` set to host-a's
 mode. Run against the 1.2.99 release binary (`AMPLIHACK_TEST_BINARY`), the two
-`775` tests fail with candide's lines, and the fake endpoint sees requests for
+`775` tests fail with host-a's lines, and the fake endpoint sees requests for
 the other profiles only, none for the live login. The `700` control passes.
 Against this build all three pass.
 
 The fix is the private-group case of the [rule above](#login-directory-rule).
 `chmod 700 ~/.claude` also clears the refusal on 1.2.99.
 
-The acceptance dry run on candide (#1962 item 5) is tracked in issue #1988.
-Candide stays on 1.2.97 until that run names the live login with no identity
+The acceptance dry run on host-a (#1962 item 5) is tracked in issue #1988.
+Host-a stays on 1.2.97 until that run names the live login with no identity
 alert.
 
 ### Rotate live profile
@@ -9394,7 +9394,7 @@ decided on [#1886](https://github.com/rysweet/amplihack-rs/issues/1886) on
   answers even with the network blocked;
 - usage reset times. Earlier builds of this fix compared the reset times of
   the usage windows, but accounts created together share them: on
-  3 November `nnorth` and `mmorrison` both reset at 14:40Z (session) and
+  3 November `login-ao` and `login-an` both reset at 14:40Z (session) and
   2026-11-06T05:00Z (week). Two such accounts read as one, and every swap
   onto one of them ended in the [only-login ALERT](#only-login-alert).
 
@@ -9839,10 +9839,10 @@ It prints one line for `~/.claude`, then one for each profile in name
 order:
 
 ```
-~/.claude (live ffarmer) -> ffarmer@mistt.com: ok
-ffarmer -> no login
-mmorrison -> no login
-nnorth -> mmorrison@mistt.com: MISMATCH, recorded for mmorrison
+~/.claude (live login-af) -> user-af@example.com: ok
+login-af -> no login
+login-an -> no login
+login-ao -> user-an@example.com: MISMATCH, recorded for login-an
 ```
 
 The account is the e-mail the server reports, or its uuid when it reports
@@ -9983,7 +9983,7 @@ stricter scan, which refuses on any failed read.
 | Has no record, and the read failed with any cause | Blocks the seed, naming the profile and cause. |
 
 **Two profiles with one e-mail.** Accounts are compared by uuid and
-organization, never e-mail alone. `ryan-mistt-personal` and `ryan-mistt-org` can
+organization, never e-mail alone. `login-ax` and `login-aw` can
 share `you@example.com` and still be told apart when their organizations differ.
 When they cannot be told apart, the cycle alerts and names them all, sorted:
 
@@ -10040,11 +10040,11 @@ token, starts `claude`, moves a login or writes a credentials file.
 Without `--write` it writes nothing:
 
 ```
-$ amplihack profile seed-record ryan-mistt-personal
-ryan-mistt-personal -> you@example.com, organization 00000000-0000-0000-0000-000000000000: no record; nothing written; run with --write to record it
+$ amplihack profile seed-record login-ax
+login-ax -> you@example.com, organization 00000000-0000-0000-0000-000000000000: no record; nothing written; run with --write to record it
 
-$ amplihack profile seed-record ryan-mistt-personal --write
-ryan-mistt-personal -> you@example.com, organization 00000000-0000-0000-0000-000000000000: recorded
+$ amplihack profile seed-record login-ax --write
+login-ax -> you@example.com, organization 00000000-0000-0000-0000-000000000000: recorded
 ```
 
 With `--write` it takes the rotate lock first and makes every check under it.
@@ -10571,7 +10571,7 @@ Ledger on credits, with one block on another overflow profile:
 ```json
 {
   "version": 1,
-  "live": "ryan-mistt-org",
+  "live": "login-aw",
   "account": "<accountUuid>",
   "since": 1792832405,
   "swapped_at": 1792832405,
@@ -10677,7 +10677,7 @@ run and prints their `reread:` lines; see
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. The line is written after the [live reading freshness](#freshest-live-reading) step, so the live entry shows the figures the cycle decided on, and carries `,cached=<n>s` (whole seconds) when those figures were read before this cycle's measurement began, for example `work:s=5%,w=95%,cached=612s`. Candidate entries show their figures as measured and never carry it. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe did not read it shows `<name>:unknown, <label>` when the cause is one of the [labelled kinds](#rotate-unknown-readings) (`HTTP 429`, `transport`, `timeout`, `still running`, `probe error`; a login whose identity could not be read is not probed, so it is not on this line and is counted in the [no-target line](#rotate-no-target)), and `<name>:failed` for every other cause, never a percentage: its usage is unknown, and it is probed again on the next cycle. When a [last good reading](#last-good-reading) is in use for an unknown candidate the entry ends `, last s=<n>%,w=<n>% <m>m ago`, for example `llarame:unknown, HTTP 429, last s=78%,w=92% 41m ago`; `<m>` is whole minutes, at most 300. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A measured profile that the [target rule](#rotate-target-choice) leaves out carries its reason after its figures: `above ceiling <n>%` when its week is above `--target-week-max`, or `blocked until <YYYY-MM-DDTHH:MMZ> (<kind>)` while it has a recorded block, where `<kind>` is the block's fixed label (`spend limit`, `session limit`, `week limit`, `credit limit`, `API key exhausted`, `API key revoked`, `API key rate limited`, or `a recorded limit` for any other recorded kind), for example `y:s=10%,w=40% blocked until 2026-11-26T00:00Z (week limit)`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A live profile in the auto-switch `exclude` list shows `<name>:excluded (not probed)`; see [Rotate excluded live profile](#rotate-excluded-live-profile). A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. The line is written after the [live reading freshness](#freshest-live-reading) step, so the live entry shows the figures the cycle decided on, and carries `,cached=<n>s` (whole seconds) when those figures were read before this cycle's measurement began, for example `work:s=5%,w=95%,cached=612s`. Candidate entries show their figures as measured and never carry it. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe did not read it shows `<name>:unknown, <label>` when the cause is one of the [labelled kinds](#rotate-unknown-readings) (`HTTP 429`, `transport`, `timeout`, `still running`, `probe error`; a login whose identity could not be read is not probed, so it is not on this line and is counted in the [no-target line](#rotate-no-target)), and `<name>:failed` for every other cause, never a percentage: its usage is unknown, and it is probed again on the next cycle. When a [last good reading](#last-good-reading) is in use for an unknown candidate the entry ends `, last s=<n>%,w=<n>% <m>m ago`, for example `login-al:unknown, HTTP 429, last s=78%,w=92% 41m ago`; `<m>` is whole minutes, at most 300. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A measured profile that the [target rule](#rotate-target-choice) leaves out carries its reason after its figures: `above ceiling <n>%` when its week is above `--target-week-max`, or `blocked until <YYYY-MM-DDTHH:MMZ> (<kind>)` while it has a recorded block, where `<kind>` is the block's fixed label (`spend limit`, `session limit`, `week limit`, `credit limit`, `API key exhausted`, `API key revoked`, `API key rate limited`, or `a recorded limit` for any other recorded kind), for example `y:s=10%,w=40% blocked until 2026-11-26T00:00Z (week limit)`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A live profile in the auto-switch `exclude` list shows `<name>:excluded (not probed)`; see [Rotate excluded live profile](#rotate-excluded-live-profile). A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|projected\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. The live figures carry ` cached=<n>s` under the same rule as the `cycle` line, for example `live s=5% w=95% cached=612s`; the target figures never do. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=projected` is a swap made because the live login's [projected session use](#projected-swap) reached `--session-at`, or because its last known reading was near `--session-at` when the live read failed or was stale and the stale reading would not itself have needed a swap (see [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)); the `live` figures are those the cycle decided on, as described in [Freshest live reading](#freshest-live-reading). A cycle that decides on a held reading at or above `--session-at` needs a swap on the reading itself, so it is labelled `reason=threshold`, not `reason=projected`. `reason=threshold` means the target is below both `--session-at` and `--week-at`; `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap), onto a target that has room but is at or above one of them. A `swap` line reports an `unconfirmed` suffix when blocked-login recovery used a recent reading; see [Rotate confirmation](#rotate-confirmation). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
@@ -10975,7 +10975,7 @@ hooks repaired: none in the last 24h
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
-After a step's spend limit blocked the live login `wwest`, the next
+After a step's spend limit blocked the live login `login-bf`, the next
 cycle has swapped to `spare`, and `status` lists the block:
 
 ```
@@ -10983,7 +10983,7 @@ live: spare
 last cycle: 2026-11-20T00:31:05Z swapped
 overflow: -
 api key: -
-blocked logins: wwest (blocked until 2026-11-24T14:00:00Z)
+blocked logins: login-bf (blocked until 2026-11-24T14:00:00Z)
 on overflow: no
 ```
 
@@ -11012,10 +11012,10 @@ rotate: running
 autostart: on (default)
 owner: none
 pid: 48213
-live: ryan-mistt-org
+live: login-aw
 last cycle: 2026-10-24T09:10:05Z stayed overflow=on
-overflow: ryan-mistt-org, team-credits (blocked until 2026-11-01T00:00:00Z)
-on overflow: yes (ryan-mistt-org)
+overflow: login-aw, team-credits (blocked until 2026-11-01T00:00:00Z)
+on overflow: yes (login-aw)
 hooks repaired: none in the last 24h
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
@@ -11198,29 +11198,29 @@ cycle decided. Lines are cleaned of control characters again before
 printing:
 
 ```
-live: ryan-ryansweet
+live: login-ay
 last cycle: 2026-10-27T03:17:05Z alerted
-note: ~/.claude holds the same account as profile ryan-mistt-org (ledger names ryan-ryansweet); nothing moved, the next cycle reads again
+note: ~/.claude holds the same account as profile login-aw (ledger names login-ay); nothing moved, the next cycle reads again
 ```
 
 A confirmed suspicion that the [only-login rule](#only-login-rule) refuses
 shows the ALERT and its `fix` lines instead:
 
 ```
-live: ryan-ryansweet
+live: login-ay
 last cycle: 2026-10-27T03:19:05Z alerted
-alert: ~/.claude holds the same account as profile ryan-mistt-org on two readings (ledger names ryan-ryansweet), but ryan-ryansweet has no login of its own, so recording ryan-mistt-org would leave ryan-ryansweet with no login anywhere; nothing moved, no swap
-alert: fix 1: if a /login in ~/.claude replaced ryan-ryansweet's login: close every claude session that uses ~/.claude, then run: mkdir -m 700 <dir> && mv -n <root>/ryan-mistt-org/.credentials.json <dir>/ && rm <ledger>; then run: amplihack profile login ryan-ryansweet
-alert: fix 2: if ryan-ryansweet and ryan-mistt-org are profiles of one account, run amplihack profile verify to see the account each folder holds, then remove one of the two profiles
+alert: ~/.claude holds the same account as profile login-aw on two readings (ledger names login-ay), but login-ay has no login of its own, so recording login-aw would leave login-ay with no login anywhere; nothing moved, no swap
+alert: fix 1: if a /login in ~/.claude replaced login-ay's login: close every claude session that uses ~/.claude, then run: mkdir -m 700 <dir> && mv -n <root>/login-aw/.credentials.json <dir>/ && rm <ledger>; then run: amplihack profile login login-ay
+alert: fix 2: if login-ay and login-aw are profiles of one account, run amplihack profile verify to see the account each folder holds, then remove one of the two profiles
 ```
 
 Recovery no longer adds profiles to `lost_login`; a `warning:` line appears
 only for an entry an earlier release wrote:
 
 ```
-live: ryan-mistt-org
+live: login-aw
 last cycle: 2026-10-27T03:22:05Z stayed
-warning: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login ryan-ryansweet
+warning: profile login-ay has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login login-ay
 ```
 
 ### Rotate autostart
@@ -13218,17 +13218,17 @@ record says room, so a step waiting on the login that was in `~/.claude`
 before the switch ends its wait, as it did before this rule. A `switched`
 record that states `live_room: false` does not.
 
-An example. A threshold swap puts `bbuck` live, with its session at 92%, and
-three steps are waiting on `aanderson`'s limit. The default `--session-at` is
-85, so `bbuck` has no room to run a step:
+An example. A threshold swap puts `login-ab` live, with its session at 92%, and
+three steps are waiting on `login-aa`'s limit. The default `--session-at` is
+85, so `login-ab` has no room to run a step:
 
 ```
-2026-11-19T20:31:07Z swap aanderson->bbuck live s=100% w=71% target s=92% w=64% reason=threshold
+2026-11-19T20:31:07Z swap login-aa->login-ab live s=100% w=71% target s=92% w=64% reason=threshold
 ```
 
 The cycle records `"outcome": "swapped"` with `"live_room": false`. It is
 capacity under the [capacity rule](#rotator-capacity-rule), and the login did
-change, but no wait ends. Hours later `bbuck`'s session window resets, a cycle
+change, but no wait ends. Hours later `login-ab`'s session window resets, a cycle
 stays on it and records `"live_room": true`, and the waits end together:
 
 ```
@@ -14718,12 +14718,12 @@ recorded account, the swap is refused with
 and the warning names `~/.claude` too, not the profile that happens to hold
 the same account.
 
-For example, `rssourcelabs` and `ryan-ryansweet` both hold the
-`ryan-ryansweet` account, and only `rssourcelabs` has a record that names
+For example, `login-au` and `login-ay` both hold the
+`login-ay` account, and only `login-au` has a record that names
 another account:
 
 ```
-profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login rssourcelabs' with the browser signed out of claude.ai or in a private window.
+profiles 'login-au' and 'login-ay' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login login-au' with the browser signed out of claude.ai or in a private window.
 ```
 
 `auto-switch status` prints it as a [status note](#status-notes) on stdout.
@@ -14878,7 +14878,7 @@ one warning on stderr for either kind of login, because Claude may prefer
 the key:
 
 ```
-warning: profile ryan-mistt has an oauth login and an API-key setting is also configured; Claude may bill per token. Set the kind to confirm: amplihack profile kind set ryan-mistt subscription
+warning: profile login-av has an oauth login and an API-key setting is also configured; Claude may bill per token. Set the kind to confirm: amplihack profile kind set login-av subscription
 ```
 
 An override silences the warning. Nothing is refused.
@@ -15079,10 +15079,10 @@ errors.
 
 ```
 $ amplihack profile kind list
-api-key         api-key       (detected: login file has no oauth login)
-ryan-mistt      subscription  (detected: oauth login)
-ryan-mistt-org  subscription  (detected: live in ~/.claude (oauth login))
-ryan-ryansweet  subscription  (detected: oauth login)
+api-key   api-key       (detected: login file has no oauth login)
+login-av  subscription  (detected: oauth login)
+login-aw  subscription  (detected: live in ~/.claude (oauth login))
+login-ay  subscription  (detected: oauth login)
 ```
 
 Setting the API-key kind prints a cost note:
@@ -15257,8 +15257,8 @@ profile is live in `~/.claude`, and `blocked: the API key until <time>
 ```
 $ amplihack profile usage
 PROFILE         WEEK             W-RESET      SESSION           S-RESET     STATE
-ryan-mistt      ██████░░░░  64%  11-01 02:00  ██████████ 100%   10-28 16:50 session_exhausted
-ryan-ryansweet  ███████░░░  71%  11-01 02:00  ██████████ 100%   10-28 17:20 session_exhausted
+login-av        ██████░░░░  64%  11-01 02:00  ██████████ 100%   10-28 16:50 session_exhausted
+login-ay        ███████░░░  71%  11-01 02:00  ██████████ 100%   10-28 17:20 session_exhausted
 api-key (live)  api-key (billed per token)                                  api_key
 live: work is running on the API key (billed per token)
 times: Europe/London
@@ -15269,10 +15269,10 @@ The same run with `--table`:
 
 ```
 $ amplihack profile usage --table
-PROFILE         MARKS              STATE              SESSION                     SESSION RESETS                  WEEK  WEEK RESETS                 SPEND
-ryan-mistt      -                  session_exhausted  100%                        Oct 28, 4:50pm (Europe/London)  64%   Nov 1, 2am (Europe/London)  n/a
-ryan-ryansweet  -                  session_exhausted  100%                        Oct 28, 5:20pm (Europe/London)  71%   Nov 1, 2am (Europe/London)  n/a
-api-key         live in ~/.claude  api_key            api-key (billed per token)  -                               -     -                           n/a
+PROFILE   MARKS              STATE              SESSION                     SESSION RESETS                  WEEK  WEEK RESETS                 SPEND
+login-av  -                  session_exhausted  100%                        Oct 28, 4:50pm (Europe/London)  64%   Nov 1, 2am (Europe/London)  n/a
+login-ay  -                  session_exhausted  100%                        Oct 28, 5:20pm (Europe/London)  71%   Nov 1, 2am (Europe/London)  n/a
+api-key   live in ~/.claude  api_key            api-key (billed per token)  -                               -     -                           n/a
 live: work is running on the API key (billed per token)
 order: rotator pick (most room in the worse of session and week, then name)
 ```
@@ -15356,7 +15356,7 @@ The full order is in [Rotate decision order](#rotate-decision-order):
 4. then the marked API-key profile, tier 10.
 
 `overflow add` stores the mark as the bare name, for example
-`overflow=ryan-mistt-org,api-key`, and reads it as tier 10. A hand-written
+`overflow=login-aw,api-key`, and reads it as tier 10. A hand-written
 `api-key:3` is read as the same mark, at tier 10. When more than one API-key profile is marked, the first by name
 is used and the others are listed as `not used (<first> comes first)`. When
 `.auto-switch` is corrupt, no API-key profile counts as marked.
@@ -15640,7 +15640,7 @@ Before the journal is written, the swap is refused when it would leave
 as `api-key`. A refusal leaves no journal, renames nothing and logs:
 
 ```
-ALERT: swap refused: ryan-ryansweet has no oauth login and is not an API-key profile
+ALERT: swap refused: login-ay has no oauth login and is not an API-key profile
 ```
 
 #### Log lines for a move onto the API key
@@ -15652,7 +15652,7 @@ line follow it:
 
 ```
 per-token api-key: no measured plan login below 100%, 0 not measured; earliest reset 2026-11-01T02:14:00Z beyond overflow_wait; marked overflow tier 10; login check passed (primaryApiKey set)
-swap iivanovich->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
+swap login-ai->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
 moved ~/.claude onto API key profile api-key (billed per token)
 ```
 
@@ -15679,7 +15679,7 @@ key value or a helper command.
 A swap off the API key logs:
 
 ```
-moved ~/.claude off API key profile api-key to ryan-mistt
+moved ~/.claude off API key profile api-key to login-av
 ```
 
 ### Several API-key profiles

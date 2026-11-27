@@ -21,12 +21,12 @@
 #      an unreadable `claude` naming no profile whose session file Claude
 #      Code wrote under `xxavier` (`sessions/<pid>.json`). The one-shot
 #      cycle names each unreadable process once, skips only `busy`, `held`
-#      and `xxavier`, and moves the spend-blocked live login to `wwest`;
+#      and `xxavier`, and moves the spend-blocked live login to `login-bf`;
 #   2. the same at 85/90;
 #   3. no secret reaches the log: an assignment and a `--token` value in an
 #      unreadable process's arguments are masked, and no process environment
 #      is logged;
-#   4. HTTP 429 for every candidate, with a last good reading of `wwest`: the
+#   4. HTTP 429 for every candidate, with a last good reading of `login-bf`: the
 #      spend-blocked live login still moves, `unconfirmed (HTTP 429)`, and the
 #      swap line says why the live login has no room and until when;
 #   5. the dry run names the same move and moves nothing;
@@ -36,9 +36,9 @@
 #      parks in its usage-limit wait on the blocked live login. Once its
 #      `start` line is written, the one-shot rotator cycle of cases 1 and 2
 #      moves the login, and the wait ends `rotator capacity`, at 95/98 and
-#      at 85/90; the retry runs on `wwest`. When the move is made on a last
+#      at 85/90; the retry runs on `login-bf`. When the move is made on a last
 #      good reading (case 4), the wait reads the move and stays, because no
-#      room was read (#2857). The next cycle, which reads `wwest` with room,
+#      room was read (#2857). The next cycle, which reads `login-bf` with room,
 #      ends it. The driver reacts to the step's own lines, read from a pipe;
 #      it adds no sleep or timer.
 #
@@ -151,12 +151,12 @@ exec 3<&-
 echo "stand-in listening on 127.0.0.1:$PORT"
 
 # --- The fleet -----------------------------------------------------------------
-# The live login is ggrant at 94% / 75%, as on 23 November at 11:00Z, with a
+# The live login is login-ag at 94% / 75%, as on 23 November at 11:00Z, with a
 # spend block written in each case. `busy` has the most room but an unreadable
 # `claude` names it; `held` is used by a readable `claude`. Every login is in
 # one organisation, so no move is a crossing.
-LIVE=ggrant
-FLEET=("busy 5 5" "held 10 10" "wwest 30 40" "xxavier 50 50")
+LIVE=login-ag
+FLEET=("busy 5 5" "held 10 10" "login-bf 30 40" "xxavier 50 50")
 ALL=("$LIVE")
 for row in "${FLEET[@]}"; do read -r n _ <<< "$row"; ALL+=("$n"); done
 RESET_SESSION="2026-11-23T15:00:00+00:00"
@@ -276,7 +276,7 @@ new_home() { # case name: a fresh HOME, every login stored, the live one in ~/.c
 # The processes of 19 and 23 November, in the current table.
 nov23_processes() {
   proc_entry 4200001 tailscaled - \
-    tailscaled be-child ssh --remote-ip=100.64.0.7 "amplihack recipe run wait"
+    tailscaled be-child ssh --remote-ip=192.0.2.10 "amplihack recipe run wait"
   proc_entry 4200002 claude - \
     claude "CLAUDE_CONFIG_DIR=$ROOT/busy" "TOKEN=qa-sentinel-argv-secret"
   proc_entry 4200003 amplihack - amplihack recipe run
@@ -338,9 +338,9 @@ check_unreadable_case() { # label flags...
   run_cli profile rotate "$@"
   [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "$label: rotate exited $STATUS"; }
   log="$(rotate_log)"
-  [[ "$(live_token)" == "qa-wwest" ]] \
-    || { echo "$log" >&2; fail "$label: ~/.claude holds $(live_token), not qa-wwest"; }
-  grep -q " swap $LIVE->wwest " <<< "$log" || { echo "$log" >&2; fail "$label: no swap line to wwest"; }
+  [[ "$(live_token)" == "qa-login-bf" ]] \
+    || { echo "$log" >&2; fail "$label: ~/.claude holds $(live_token), not qa-login-bf"; }
+  grep -q " swap $LIVE->login-bf " <<< "$log" || { echo "$log" >&2; fail "$label: no swap line to login-bf"; }
   ! grep -q "cannot see running sessions" <<< "$log" \
     || { echo "$log" >&2; fail "$label: the rotator said it cannot see running sessions"; }
   ! grep -q "not read (session running)" <<< "$log" \
@@ -351,10 +351,10 @@ check_unreadable_case() { # label flags...
     || { echo "$log" >&2; fail "$label: held, used by a readable claude, was not skipped once"; }
   [[ "$(count "skip: xxavier (session running)" "$log")" == "1" ]] \
     || { echo "$log" >&2; fail "$label: xxavier, tied by its session file to the unreadable claude, was not skipped once"; }
-  ! grep -q "skip: wwest " <<< "$log" || { echo "$log" >&2; fail "$label: wwest was skipped"; }
+  ! grep -q "skip: login-bf " <<< "$log" || { echo "$log" >&2; fail "$label: login-bf was skipped"; }
   local want
   for want in \
-    'unreadable process 4200001 (tailscaled) "tailscaled be-child ssh --remote-ip=100.64.0.7 amplihack recipe run wait": not counted (not a Claude executable)' \
+    'unreadable process 4200001 (tailscaled) "tailscaled be-child ssh --remote-ip=192.0.2.10 amplihack recipe run wait": not counted (not a Claude executable)' \
     'unreadable process 4200002 (claude) "claude CLAUDE_CONFIG_DIR=<hidden> TOKEN=<hidden>": counted as a session on busy' \
     'unreadable process 4200003 (amplihack) "amplihack recipe run": not counted (profile cannot be told)' \
     'unreadable process 4200005 (claude) "claude -p fix it --token <hidden>": counted as a session on xxavier'; do
@@ -370,24 +370,24 @@ check_unreadable_case() { # label flags...
     ! grep -qF -- "$secret" "$WORK/stdout" "$WORK/stderr" || fail "$label: the output holds '$secret'"
   done
   ! grep -q " ALERT: " <<< "$log" || { echo "$log" >&2; fail "$label: the cycle wrote an ALERT"; }
-  echo "PASS: $label: each unreadable process is named once, only busy, held and xxavier are skipped, and the spend-blocked live login moves to wwest"
+  echo "PASS: $label: each unreadable process is named once, only busy, held and xxavier are skipped, and the spend-blocked live login moves to login-bf"
   evidence ' (unreadable process|skip:|swap) ' <<< "$log"
 }
 check_unreadable_case "case 1 (95/98)" "${DEPLOYED[@]}"
 check_unreadable_case "case 2 (85/90)" "${REPORTER[@]}"
 echo "PASS: case 3: no argument secret, environment or profile path reached the log or the output"
 
-# --- Case 4: HTTP 429 for every candidate, a last good reading of wwest ------------------------
+# --- Case 4: HTTP 429 for every candidate, a last good reading of login-bf ------------------------
 new_home h429
 nov23_processes
 until="$(block_live)"
 echo 429 > "$FX/usage-mode"
 printf '%s\n' "$LIVE" > "$FX/usage-ok"
-write_history wwest 30 40 1800
+write_history login-bf 30 40 1800
 run_cli profile rotate "${DEPLOYED[@]}"
 [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 4: rotate exited $STATUS"; }
 log="$(rotate_log)"
-[[ "$(live_token)" == "qa-wwest" ]] || { echo "$log" >&2; fail "case 4: ~/.claude holds $(live_token), not qa-wwest"; }
+[[ "$(live_token)" == "qa-login-bf" ]] || { echo "$log" >&2; fail "case 4: ~/.claude holds $(live_token), not qa-login-bf"; }
 tail_text=" unconfirmed (HTTP 429); live $LIVE has no room: spend limit until $until"
 grep -qF -- "$tail_text" <<< "$log" \
   || { echo "$log" >&2; fail "case 4: the swap line does not end '$tail_text'"; }
@@ -395,7 +395,7 @@ grep -qF -- "$tail_text" <<< "$log" \
   || { echo "$log" >&2; fail "case 4: the rotator stayed on the blocked live login"; }
 echo ok > "$FX/usage-mode"
 : > "$FX/usage-ok"
-echo "PASS: case 4: with every candidate unread, the spend-blocked live login moves on wwest's last good reading and says why"
+echo "PASS: case 4: with every candidate unread, the spend-blocked live login moves on login-bf's last good reading and says why"
 evidence ' swap ' <<< "$log"
 
 # --- Case 5: the dry run ------------------------------------------------------------------------
@@ -405,13 +405,13 @@ block_live > /dev/null
 before="$(live_token)"
 run_cli profile rotate --dry-run "${DEPLOYED[@]}"
 [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "case 5: dry run exited $STATUS"; }
-grep -q "would swap $LIVE->wwest " "$WORK/stdout" \
-  || { cat "$WORK/stdout" >&2; fail "case 5: the dry run did not name the swap to wwest"; }
+grep -q "would swap $LIVE->login-bf " "$WORK/stdout" \
+  || { cat "$WORK/stdout" >&2; fail "case 5: the dry run did not name the swap to login-bf"; }
 [[ "$(live_token)" == "$before" ]] || fail "case 5: the dry run moved ~/.claude"
 for secret in qa-sentinel-argv-secret qa-sentinel-flag-secret qa-sentinel-environ-secret; do
   ! grep -qF -- "$secret" "$WORK/stdout" "$WORK/stderr" || fail "case 5: the output holds '$secret'"
 done
-echo "PASS: case 5: the dry run names the move to wwest and moves nothing"
+echo "PASS: case 5: the dry run names the move to login-bf and moves nothing"
 evidence '^would (swap|stay|alert)' < "$WORK/stdout"
 
 # --- Case 6: a waiting step wakes on the move ---------------------------------------------------
@@ -517,17 +517,17 @@ await_parked() { # label
   [[ "$NEXT" == "progress remaining="* ]] || step_fail "$1" "the wait wrote '$NEXT' before anything moved"
   [[ "$(cat "$STEP_RECORD/count")" == "1" ]] || step_fail "$1" "the stand-in claude ran more than once before the move"
 }
-# The step ran again on wwest after its wait ended on the rotator's record,
+# The step ran again on login-bf after its wait ended on the rotator's record,
 # and succeeded.
-assert_resumed_on_wwest() { # label
+assert_resumed_on_login_bf() { # label
   finish_step
   [[ "$STEP_RC" -eq 0 ]] || step_fail "$1" "the step exited $STEP_RC"
-  [[ "$(tr '\n' ' ' < "$STEP_RECORD/logins")" == "$LIVE wwest " ]] \
-    || step_fail "$1" "the attempts ran on '$(tr '\n' ' ' < "$STEP_RECORD/logins")', not '$LIVE wwest'"
+  [[ "$(tr '\n' ' ' < "$STEP_RECORD/logins")" == "$LIVE login-bf " ]] \
+    || step_fail "$1" "the attempts ran on '$(tr '\n' ' ' < "$STEP_RECORD/logins")', not '$LIVE login-bf'"
   ! grep -q "$WAIT_PREFIX \(failed\|skipped\) " "$STEP_ERR" || step_fail "$1" "the wait wrote a failed or skipped line"
 }
 
-# 6a and 6b: a move confirmed by a fresh reading of wwest ends the wait at once.
+# 6a and 6b: a move confirmed by a fresh reading of login-bf ends the wait at once.
 check_wake_case() { # label flags...
   local label=$1 log
   shift
@@ -539,36 +539,36 @@ check_wake_case() { # label flags...
   run_cli profile rotate "$@"
   [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; step_fail "$label" "rotate exited $STATUS"; }
   log="$(rotate_log)"
-  grep -q " swap $LIVE->wwest " <<< "$log" || { echo "$log" >&2; step_fail "$label" "no swap line to wwest"; }
+  grep -q " swap $LIVE->login-bf " <<< "$log" || { echo "$log" >&2; step_fail "$label" "no swap line to login-bf"; }
   next_wait_line || step_fail "$label" "the step ended without ending its wait"
   [[ "$NEXT" == "end reason=rotator capacity" ]] \
     || step_fail "$label" "after the move the wait wrote '$NEXT', not 'end reason=rotator capacity'"
-  assert_resumed_on_wwest "$label"
-  echo "PASS: $label: a step parked on the spend-blocked live login wakes on the rotator's move and runs again on wwest"
+  assert_resumed_on_login_bf "$label"
+  echo "PASS: $label: a step parked on the spend-blocked live login wakes on the rotator's move and runs again on login-bf"
   evidence "$WAIT_PREFIX (start|end|resume)" < "$STEP_ERR"
   evidence ' swap ' <<< "$log"
 }
 check_wake_case "case 6a (95/98)" "${DEPLOYED[@]}"
 check_wake_case "case 6b (85/90)" "${REPORTER[@]}"
 
-# 6c: a move made on wwest's last good reading (HTTP 429 for every
+# 6c: a move made on login-bf's last good reading (HTTP 429 for every
 # candidate) records no room, so the wait reads it and stays (#2857); the next
-# cycle reads wwest, now live, with room, and the wait ends on that record.
+# cycle reads login-bf, now live, with room, and the wait ends on that record.
 label="case 6c (95/98, last good reading)"
 new_home wake-h429
 nov23_processes
 block_live > /dev/null
 echo 429 > "$FX/usage-mode"
 printf '%s\n' "$LIVE" > "$FX/usage-ok"
-write_history wwest 30 40 1800
+write_history login-bf 30 40 1800
 start_step wake-h429
 await_parked "$label"
 run_cli profile rotate "${DEPLOYED[@]}"
 [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; step_fail "$label" "the first rotate exited $STATUS"; }
 log="$(rotate_log)"
-grep -q " swap $LIVE->wwest .* unconfirmed (HTTP 429)" <<< "$log" \
-  || { echo "$log" >&2; step_fail "$label" "no unconfirmed swap line to wwest"; }
-[[ "$(live_token)" == "qa-wwest" ]] || step_fail "$label" "~/.claude holds $(live_token), not qa-wwest"
+grep -q " swap $LIVE->login-bf .* unconfirmed (HTTP 429)" <<< "$log" \
+  || { echo "$log" >&2; step_fail "$label" "no unconfirmed swap line to login-bf"; }
+[[ "$(live_token)" == "qa-login-bf" ]] || step_fail "$label" "~/.claude holds $(live_token), not qa-login-bf"
 next_wait_line || step_fail "$label" "the step ended after the unconfirmed move"
 [[ "$NEXT" == "progress remaining="* ]] \
   || step_fail "$label" "after a move with no room read the wait wrote '$NEXT', not a progress line"
@@ -579,9 +579,9 @@ run_cli profile rotate "${DEPLOYED[@]}"
 log="$(rotate_log)"
 next_wait_line || step_fail "$label" "the step ended without ending its wait"
 [[ "$NEXT" == "end reason=rotator capacity" ]] \
-  || { echo "$log" >&2; step_fail "$label" "after the cycle that read wwest the wait wrote '$NEXT', not 'end reason=rotator capacity'"; }
-assert_resumed_on_wwest "$label"
-echo "PASS: $label: the wait stays through a move on a last good reading and ends when the next cycle reads wwest with room"
+  || { echo "$log" >&2; step_fail "$label" "after the cycle that read login-bf the wait wrote '$NEXT', not 'end reason=rotator capacity'"; }
+assert_resumed_on_login_bf "$label"
+echo "PASS: $label: the wait stays through a move on a last good reading and ends when the next cycle reads login-bf with room"
 evidence "$WAIT_PREFIX (start|progress|end|resume)" < "$STEP_ERR"
 evidence ' (swap|cycle) ' <<< "$log"
 

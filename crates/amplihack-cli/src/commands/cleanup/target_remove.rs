@@ -357,7 +357,7 @@ pub(super) fn inspect_entry(
 /// root disk with a link to `<disk>/<basename of parent>-<name>-<key>`, where
 /// `<key>` is 12 lowercase hex characters, for example
 /// `~/.cache/amplihack/amplihack-precommit-target-0e047858ba2f ->
-/// /d0/ryan/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016`.
+/// /data/you/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016`.
 ///
 /// All of these must hold:
 /// - the entry name is a hook target name

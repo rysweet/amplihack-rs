@@ -5,7 +5,7 @@
 
 # Core User Profile
 user_profile:
-  name: "Ryan"
+  name: "Owner"
   work_style: "complete_and_thorough"
   autonomy_preference: "high_with_checkpoints"
   quality_emphasis: "always"

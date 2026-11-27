@@ -125,7 +125,7 @@ fn nov23_table(f: &Fleet) -> Table {
             "tailscaled",
             "be-child",
             "ssh",
-            "--remote-ip=100.64.0.7",
+            "--remote-ip=192.0.2.10",
             "amplihack recipe run wait",
         ]),
     );
@@ -257,7 +257,7 @@ fn ac4_each_unreadable_process_is_named_once_and_no_environment_reaches_the_log(
             "{label}: free2 is live by its environment: {log}"
         );
         let tailscaled = format!(
-            "unreadable process {PID} (tailscaled) \"tailscaled be-child ssh --remote-ip=100.64.0.7 amplihack recipe run wait\": not counted (not a Claude executable)"
+            "unreadable process {PID} (tailscaled) \"tailscaled be-child ssh --remote-ip=192.0.2.10 amplihack recipe run wait\": not counted (not a Claude executable)"
         );
         let busy = format!(
             "unreadable process {} (claude) \"claude CLAUDE_CONFIG_DIR=<hidden> TOKEN=<hidden>\": counted as a session on busy",
