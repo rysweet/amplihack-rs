@@ -666,19 +666,19 @@ gh_goal_read() {
 gh_rest_get() {
   local endpoint="$1" cache="$2" validate="$3" scope="${4:-}" key entry etag=""
   local snapshot="$GH_READ_DIR/cache.previous" staged="$GH_READ_DIR/cache.next"
-  local -a headers
+  # Keep the array nonempty for Bash 3.2 under set -u.
+  local -a args=(api --include)
   GH_READ_ERROR=""
   GH_REST_LINK=""
   key="$(printf '%s\n%s' "$scope" "$endpoint" | git hash-object --stdin)" || return 1
   entry="$cache/$key.json"
-  headers=()
   if [ -f "$entry" ] && [ ! -L "$entry" ] && cp -- "$entry" "$snapshot" &&
       etag="$(jq -er '.etag | strings | select(length > 0)' "$snapshot" 2>/dev/null)"; then
-    headers=(-H "If-None-Match: $etag")
+    args+=(-H "If-None-Match: $etag")
   else
     etag=""
   fi
-  gh_goal_read core true api --include "${headers[@]}" "$endpoint" || return $?
+  gh_goal_read core true "${args[@]}" "$endpoint" || return $?
   if [ "$GH_READ_STATUS" = 304 ]; then
     if [ -z "$etag" ]; then
       GH_READ_ERROR="GitHub returned 304 without a matching cached response"
@@ -855,7 +855,7 @@ _gh_read_actions_attempts() {
 
 # The check-runs endpoint can still serve the previous attempt's jobs while
 # Actions has a rerun queued. Verify the workflow state independently and
-# require check-run IDs from the current attempt after a rerun completes.
+# match check-run IDs and conclusions to the current attempt after it completes.
 _gh_verify_actions_checks() {
   local repo="$1" head="$2" cache="$3" aggregate="$4" run attempt suite rc
   local attempts="$GH_READ_DIR/attempts.json" current="$GH_READ_DIR/current-attempts.json"
@@ -879,17 +879,18 @@ _gh_verify_actions_checks() {
     GH_EXECUTION_DETAIL="the check runs could not be matched to the current GitHub Actions attempt"
     gh_rest_pages "repos/$repo/actions/runs/$run/attempts/$attempt/jobs" "$cache" '
       .jobs | type == "array"
-    ' '.jobs[] | objects | select(.status == "completed" and .conclusion == "success")
-      | .check_run_url | strings' > "$jobs" || {
+    ' '.jobs[] | objects | select(.status == "completed")
+      | {url:(.check_run_url | strings | ascii_downcase), conclusion:(.conclusion | strings)}' > "$jobs" || {
       rc=$?
       case "$rc" in 75|79) return "$rc" ;; esac
       [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
       return "$rc"
     }
     jq -es --arg repo "$repo" --argjson suite "$suite" --slurpfile summary "$aggregate" '
-      map(ascii_downcase) as $jobs
+      . as $jobs
       | all($summary[0].actions[] | select(.suite_id == $suite);
-          .id != null and ("https://api.github.com/repos/\($repo)/check-runs/\(.id)" | ascii_downcase | IN($jobs[])))
+          .id != null and ({url:("https://api.github.com/repos/\($repo)/check-runs/\(.id)" | ascii_downcase),
+                            conclusion} | IN($jobs[])))
     ' "$jobs" >/dev/null || return 0
   done < "$reruns"
   if [ -s "$reruns" ]; then
@@ -908,7 +909,7 @@ _gh_verify_actions_checks() {
       return 0
     fi
   fi
-  GH_EXECUTION_STATE=passed
+  GH_EXECUTION_STATE=verified
   GH_EXECUTION_DETAIL=""
 }
 
@@ -925,7 +926,7 @@ gh_head_checks() {
       (.conclusion | . == null or type == "string"))
   ' '
     .check_runs[] | {name, app_id:.app.id, link:(.html_url // .details_url // ""),
-      actions:(if .app.slug == "github-actions" then {id, suite_id:.check_suite.id} else null end), state:(
+      actions:(if .app.slug == "github-actions" then {id, suite_id:.check_suite.id, conclusion} else null end), state:(
       if .status != "completed" or .conclusion == null then "pending"
       elif .conclusion == "success" then "pass"
       elif .conclusion == "skipped" or .conclusion == "neutral" then "skipping"
@@ -971,7 +972,7 @@ gh_head_checks() {
        else $checks end) as $display
     | [$display[] | select(.unverified_reason)] as $unverified
     | {checks:($display[:200] | map(del(.actions))), unverified_checks:($unverified[:200] | map(del(.actions))),
-       actions:[$checks[] | select(.state == "pass") | .actions | objects],
+       actions:[$checks[] | select(.state == "pass" or .state == "fail" or .state == "cancel") | .actions | objects],
        missing_required:($absent | length > 0),
        required_error:(if $policy_error == "" then null else $policy_error end),
        counts:{total:($checks | length), passed:($n.pass // 0), unverified:($unverified | length),
@@ -980,12 +981,12 @@ gh_head_checks() {
         elif .counts.failing > 0 then "failed"
         elif .counts.unverified > 0 or $policy_error != "" then "unverified" else "passed" end)
   ' "$rows" > "$aggregate" || return $?
-  if jq -e '.state == "passed" and (.actions | length > 0)' "$aggregate" >/dev/null; then
+  if jq -e '(.state == "passed" or .state == "failed") and (.actions | length > 0)' "$aggregate" >/dev/null; then
     _gh_verify_actions_checks "$1" "$2" "$cache" "$aggregate" || return $?
     jq -c --arg state "$GH_EXECUTION_STATE" --arg detail "$GH_EXECUTION_DETAIL" '
-      del(.actions) | .state = $state
-      | if $detail == "" then .
-        else . + {execution_detail:$detail}
+      del(.actions)
+      | if $state == "verified" then .
+        else . + {state:$state, execution_detail:$detail}
           | {name:"GitHub Actions workflow execution", state:$state, link:"", elapsed:""} as $execution
           | .counts.total += 1
           | .checks = ([$execution] + .checks)[:200]

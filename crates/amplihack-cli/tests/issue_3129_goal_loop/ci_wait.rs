@@ -626,9 +626,18 @@ esac"#,
 
 #[test]
 fn a_rerun_cannot_use_cached_successes_from_an_older_attempt() {
+    assert_rerun_rejects_cached_checks("success", "passed");
+}
+
+#[test]
+fn a_rerun_cannot_use_cached_failures_from_an_older_attempt() {
+    assert_rerun_rejects_cached_checks("failure", "failed");
+}
+
+fn assert_rerun_rejects_cached_checks(conclusion: &str, state: &str) {
     let h = Harness::new();
     let check = |id| {
-        json!({"check_runs":[{"name":"build","status":"completed","conclusion":"success",
+        json!({"check_runs":[{"name":"build","status":"completed","conclusion":conclusion,
             "app":{"slug":"github-actions","id":15368},"id":id,"check_suite":{"id":42}}]})
         .to_string()
     };
@@ -642,17 +651,25 @@ fn a_rerun_cannot_use_cached_successes_from_an_older_attempt() {
     fs::write(&checks, check(100)).unwrap();
     fs::write(&runs, run(1, "completed")).unwrap();
     let reading = read_and_decide(&h, true);
-    assert_eq!(reading["checks"]["state"], "passed", "{reading}");
+    assert_eq!(reading["checks"]["state"], state, "{reading}");
 
     fs::write(&runs, run(2, "queued")).unwrap();
     let reading = read_and_decide(&h, true);
     assert_eq!(reading["checks"]["state"], "pending", "{reading}");
-    assert_eq!(reading["checks"]["counts"]["passed"], 1, "{reading}");
+    let terminal_count = if state == "failed" {
+        "failing"
+    } else {
+        "passed"
+    };
+    assert_eq!(reading["checks"]["counts"][terminal_count], 1, "{reading}");
     assert_eq!(reading["checks"]["counts"]["pending"], 1, "{reading}");
+    fs::remove_file(h.gh.join("responses.log")).unwrap();
     fs::write(h.gh.join("completed-rerun.json"), run(2, "completed")).unwrap();
     fs::write(
         h.gh.join("attempt-jobs.json"),
-        r#"{"jobs":[{"status":"completed","conclusion":"success","check_run_url":"https://api.github.com/repos/o/r/check-runs/101"}]}"#,
+        json!({"jobs":[{"status":"completed","conclusion":conclusion,
+            "check_run_url":"https://api.github.com/repos/o/r/check-runs/101"}]})
+        .to_string(),
     )
     .unwrap();
     fake_sleep(
@@ -671,7 +688,7 @@ mv "$GH_STATE/completed-rerun.json" "$GH_STATE/workflow-runs.json""#,
     );
     fs::write(&checks, check(101)).unwrap();
     let current = wait(&h, "37");
-    assert_eq!(current["checks_state"], "passed", "{current}");
+    assert_eq!(current["checks_state"], state, "{current}");
     assert_eq!(sleeps(&h), [37]);
 }
 
