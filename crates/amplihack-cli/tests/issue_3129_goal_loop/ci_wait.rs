@@ -190,15 +190,20 @@ esac"#
 
 #[test]
 fn removing_an_absent_requirement_unblocks_the_wait_at_the_same_head_and_base() {
-    assert_removing_requirement_unblocks_wait(false);
+    assert_removing_requirement_unblocks_wait(false, false);
 }
 
 #[test]
 fn removing_a_queued_requirement_unblocks_the_wait_at_the_same_head_and_base() {
-    assert_removing_requirement_unblocks_wait(true);
+    assert_removing_requirement_unblocks_wait(true, false);
 }
 
-fn assert_removing_requirement_unblocks_wait(reported: bool) {
+#[test]
+fn a_removed_requirement_that_fails_while_waiting_does_not_fail_the_wait() {
+    assert_removing_requirement_unblocks_wait(true, true);
+}
+
+fn assert_removing_requirement_unblocks_wait(reported: bool, fails: bool) {
     let h = Harness::new();
     if reported {
         fs::write(
@@ -215,11 +220,21 @@ fn assert_removing_requirement_unblocks_wait(reported: bool) {
     assert_eq!(reading["checks"]["counts"]["pending"], 1);
     assert_eq!(reading["checks"]["counts"]["passed"], 1);
     fs::remove_file(h.gh.join("responses.log")).unwrap();
+    if fails {
+        fs::write(
+            h.gh.join("failed-check-runs.json"),
+            r#"{"check_runs":[{"name":"build","status":"completed","conclusion":"failure"},{"name":"integration","status":"completed","conclusion":"success"}]}"#,
+        )
+        .unwrap();
+    }
     fake_sleep(
         &h,
         r#"case "$(wc -l < "$GH_STATE/sleeps")" in
   1) ;;
-  2) printf '%s\n' '{"strict":false,"contexts":["integration"]}' > "$GH_STATE/protection.json" ;;
+  2) printf '%s\n' '{"strict":false,"contexts":["integration"]}' > "$GH_STATE/protection.json"
+     if [ -f "$GH_STATE/failed-check-runs.json" ]; then
+       mv "$GH_STATE/failed-check-runs.json" "$GH_STATE/check-runs.json"
+     fi ;;
   *) exit 2 ;;
 esac"#,
     );
@@ -793,6 +808,132 @@ printf '%s\n' '{"jobs":[{"status":"completed","conclusion":"failure","check_run_
     assert_eq!(result["outcome"], "checks-complete", "{result}");
     assert_eq!(result["checks_state"], "failed", "{result}");
     assert_eq!(sleeps(&h), [37]);
+}
+
+#[test]
+fn a_push_during_final_actions_verification_ends_the_wait() {
+    let h = Harness::new();
+    passing_actions_check(&h);
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["checks"]["state"], "passed", "{reading}");
+    fs::remove_file(h.gh.join("calls.log")).unwrap();
+    fs::write(h.gh.join("moved-head-during-actions"), "7".repeat(40)).unwrap();
+
+    let result = wait(&h, "37");
+    assert_eq!(result["outcome"], "head-changed", "{result}");
+    assert!(result["checks_state"].is_null(), "{result}");
+    assert!(sleeps(&h).is_empty());
+}
+
+#[test]
+fn a_base_update_during_final_actions_verification_rescans_in_the_wait() {
+    let h = Harness::new();
+    passing_actions_check(&h);
+    let reading = read_and_decide(&h, true);
+    let base_sha = "7".repeat(40);
+    assert_ne!(reading["pr"]["base_sha"], base_sha);
+    fs::remove_file(h.gh.join("calls.log")).unwrap();
+    fs::write(h.gh.join("moved-base-sha-during-actions"), &base_sha).unwrap();
+
+    let result = wait(&h, "37");
+    assert_eq!(result["checks_state"], "passed", "{result}");
+    assert_eq!(result["head"], h.initial_head, "{result}");
+    assert_eq!(result["base"], "main", "{result}");
+    assert_eq!(result["base_sha"], base_sha, "{result}");
+    assert_eq!(
+        h.calls()
+            .iter()
+            .filter(|call| call.contains("/check-runs?"))
+            .count(),
+        2
+    );
+    assert!(sleeps(&h).is_empty());
+}
+
+#[test]
+fn the_reading_discards_checks_if_the_pr_changes_during_final_actions_verification() {
+    for (change, field, error) in [
+        ("moved-head", "head", "head changed"),
+        (
+            "moved-base-sha",
+            "base_sha",
+            "target branch or its tip changed",
+        ),
+    ] {
+        let h = Harness::new();
+        passing_actions_check(&h);
+        fs::write(
+            h.gh.join(format!("{change}-during-actions")),
+            "7".repeat(40),
+        )
+        .unwrap();
+
+        let reading = read_and_decide(&h, true);
+        assert!(reading["pr"][field].is_null(), "{reading}");
+        assert!(
+            reading["repository"]["strict_status_checks"].is_null(),
+            "{reading}"
+        );
+        assert!(reading["checks"]["counts"].is_null(), "{reading}");
+        assert!(
+            reading["checks"]["error"].as_str().unwrap().contains(error),
+            "{reading}"
+        );
+    }
+}
+
+#[test]
+fn unverified_actions_checks_report_the_sanitized_api_error_or_unreadable_response() {
+    for (file, contents, expected) in [
+        (
+            "actions403",
+            "Resource not accessible by integration for gho_1234567890123456",
+            "Resource not accessible by integration for REDACTED_TOKEN (HTTP 403)",
+        ),
+        (
+            "workflow-runs.json",
+            "{}",
+            "unreadable response for repos/o/r/actions/runs",
+        ),
+    ] {
+        let h = Harness::new();
+        passing_actions_check(&h);
+        fs::write(h.gh.join(file), contents).unwrap();
+        let reading = read_and_decide(&h, true);
+        let checks = &reading["checks"];
+        let detail = checks["execution_detail"].as_str().unwrap();
+        assert_eq!(checks["state"], "unverified", "{checks}");
+        assert!(detail.contains(expected), "{detail}");
+        assert!(!detail.contains("gho_"), "{detail}");
+
+        let result = wait(&h, "");
+        assert_eq!(result["checks_state"], "unverified", "{result}");
+        assert_eq!(result["execution_detail"], detail, "{result}");
+    }
+}
+
+#[test]
+fn actions_revalidation_reports_the_unmatched_suite() {
+    let h = Harness::new();
+    passing_actions_check(&h);
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["checks"]["state"], "passed", "{reading}");
+    fs::remove_file(h.gh.join("calls.log")).unwrap();
+    fs::write(
+        h.gh.join("workflow-runs.json-during-actions"),
+        r#"{"workflow_runs":[]}"#,
+    )
+    .unwrap();
+
+    let result = wait(&h, "");
+    assert_eq!(result["checks_state"], "unverified", "{result}");
+    assert!(
+        result["execution_detail"]
+            .as_str()
+            .unwrap()
+            .contains("no unique workflow run for check suites: 42"),
+        "{result}"
+    );
 }
 
 fn passing_actions_check(h: &Harness) {

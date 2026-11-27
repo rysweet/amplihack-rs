@@ -234,6 +234,30 @@ fi
 put repository "$RJ" "$RE"
 
 # --- checks at the head -----------------------------------------------------
+revalidate_checks_pr() {
+  local head_rc
+  gh_rest_pr "$SLUG" "$PR" "$cache" "$HEAD"; head_rc=$?; passup "$head_rc"
+  if [ "$head_rc" -ne 0 ]; then
+    checks_error="the pull request could not be revalidated: ${GH_READ_ERROR:-unreadable response}"
+    put pr "$(jq -c '.head = null' "$S/pr.json")" "$checks_error"
+    put base "" "$checks_error"
+  elif [ "$(jq -r '.head.sha' "$GH_READ_BODY")" != "$HEAD" ]; then
+    checks_error="the pull request head changed during the reading"
+    put pr "$(jq -c '.head = null' "$S/pr.json")" "$checks_error"
+    put base "" "$checks_error"
+  elif ! gh_pr_base_matches "$BASE" "$BASE_SHA"; then
+    checks_error="the pull request target branch or its tip changed during the reading"
+    put pr "$(jq -c '.base = null | .base_sha = null' "$S/pr.json")" "$checks_error"
+    put base "" "$checks_error"
+  fi
+  [ -n "$checks_error" ] || return 0
+  WHY="$checks_error"
+  put repository "$(jq -c --arg error "$checks_error" '
+    .strict_status_checks = null | .strict_source = null | .strict_unreadable = $error
+  ' <<< "$RJ")" "$RE"
+  return 1
+}
+
 if ! goal_is_pr "$PR"; then put checks "" "no pull request number"
 elif [ -z "$SLUG" ] || [ -z "$HEAD" ]; then put checks "" "the pull request repository or head could not be read"
 elif [ -z "$cache" ]; then put checks "" "the conditional CI cache directory is unavailable"
@@ -263,33 +287,15 @@ else
     [ "$scan_retried" != true ] || revalidate_pr=true
     [ "$revalidate_pr" = true ] || break
     GH_READ_RETRIED=false
-    gh_rest_pr "$SLUG" "$PR" "$cache" "$HEAD"; head_rc=$?; passup "$head_rc"
-    if [ "$head_rc" -ne 0 ]; then
-      checks_error="the pull request could not be revalidated: ${GH_READ_ERROR:-unreadable response}"
-      put pr "$(jq -c '.head = null' "$S/pr.json")" "$checks_error"
-      put base "" "$checks_error"
-    elif [ "$(jq -r '.head.sha' "$GH_READ_BODY")" != "$HEAD" ]; then
-      checks_error="the pull request head changed during the reading"
-      put pr "$(jq -c '.head = null' "$S/pr.json")" "$checks_error"
-      put base "" "$checks_error"
-    elif ! gh_pr_base_matches "$BASE" "$BASE_SHA"; then
-      checks_error="the pull request target branch or its tip changed during the reading"
-      put pr "$(jq -c '.base = null | .base_sha = null' "$S/pr.json")" "$checks_error"
-      put base "" "$checks_error"
-    fi
-    if [ -n "$checks_error" ]; then
-      WHY="$checks_error"
-      put repository "$(jq -c --arg error "$checks_error" '
-        .strict_status_checks = null | .strict_source = null | .strict_unreadable = $error
-      ' <<< "$RJ")" "$RE"
-      rc=1
-      break
-    fi
+    revalidate_checks_pr || { rc=1; break; }
     [ "$scan_retried" = false ] && [ "$GH_READ_RETRIED" = false ] || continue
-    gh_revalidate_actions_checks "$SLUG" "$HEAD" "$cache" "$S/ci.json"; rc=$?; passup "$rc"
-    if [ "$rc" -ne 0 ]; then
-      checks_error="the Actions attempt could not be revalidated: ${GH_READ_ERROR:-unreadable response}"
-      break
+    if [ "$GH_EXECUTION_STATE" = verified ]; then
+      gh_revalidate_actions_checks "$SLUG" "$HEAD" "$cache" "$S/ci.json"; rc=$?; passup "$rc"
+      if [ "$rc" -ne 0 ]; then
+        checks_error="the Actions attempt could not be revalidated: ${GH_READ_ERROR:-unreadable response}"
+        break
+      fi
+      revalidate_checks_pr || { rc=1; break; }
     fi
     [ "$GH_READ_RETRIED" = true ] || break
   done

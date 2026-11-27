@@ -48,7 +48,8 @@ CALLER_UMASK="$(umask)"; umask 077
 TD=""
 result() { jq -cn --arg o "$1" --arg s "$2" '{outcome:$o, summary:$s}' | goal_atomic_write "$TD/result.json"; }
 ci_result() {
-  jq -c '. as $ci | {outcome:"checks-complete", checks_state:.state, summary:(
+  jq -c --arg head "$2" --arg base "$3" --arg base_sha "$4" '
+    . as $ci | {outcome:"checks-complete", checks_state:.state, head:$head, base:$base, base_sha:$base_sha, summary:(
       if .state == "passed" then "the checks at the head completed and passed"
       elif .state == "failed" then "the checks at the head completed and at least one failed"
       else "the checks at the head completed with unverified results" end)}
@@ -75,6 +76,26 @@ do_final() {
   esac
   # A cross-repository PR, or one whose field is missing or null, is refused.
   [ "$(printf '%s' "$out" | jq -r '.isCrossRepository | tostring')" = false ] || echo refused
+}
+
+# Read the PR before accepting check evidence for the observed head.
+ci_wait_read_pr() {
+  local slug="$1" head="$2" cache="$3" build_branch="$4" rc
+  gh_rest_pr "$slug" "$PR" "$cache" "$head"
+  rc=$?
+  case "$rc" in
+    75|79) return "$rc" ;;
+    0) ;;
+    *) printf 'the PR head read failed (exit %s): %s\n' "$rc" "${GH_READ_ERROR:-unreadable response}" >&2; return 2 ;;
+  esac
+  if [ -n "$build_branch" ] && ! jq -e --arg branch "$build_branch" --arg repo "$slug" '
+    .state == "open" and .head.ref == $branch and
+    (.head.repo.full_name | strings | ascii_downcase) == ($repo | ascii_downcase)
+  ' "$GH_READ_BODY" >/dev/null; then
+    echo "the pull request is no longer open on the build's branch and repository" >&2
+    return 2
+  fi
+  [ "$(jq -r '.head.sha' "$GH_READ_BODY")" = "$head" ] || return 10
 }
 
 # crusty_round <label> <log>: one autodrive-crusty-round at the worktree's head.
@@ -133,6 +154,7 @@ do_ci_wait() {
   # shellcheck source=workflow_gh_retry.sh
   . "$HERE/workflow_gh_retry.sh" || return 2
   local build_branch="${1:-}" head base base_sha slug required required_only strict policy_error="" cache interval rc state=pending
+  local revalidate_execution
   local GH_READ_RETRIED=false GH_BRANCH_POLICY=""
   local reading="$TD/reading.json"
   head="$(jq -r '.goal.pr.head // empty | strings' "$reading")"
@@ -157,21 +179,7 @@ do_ci_wait() {
   cache="$(goal_ci_cache_dir "${STATE:-${TD%/turns/*}}")" || return 2
 
   while :; do
-    gh_rest_pr "$slug" "$PR" "$cache" "$head"
-    rc=$?
-    case "$rc" in
-      75|79) return "$rc" ;;
-      0) ;;
-      *) printf 'the PR head read failed (exit %s): %s\n' "$rc" "${GH_READ_ERROR:-unreadable response}" >&2; return 2 ;;
-    esac
-    if [ -n "$build_branch" ] && ! jq -e --arg branch "$build_branch" --arg repo "$slug" '
-      .state == "open" and .head.ref == $branch and
-      (.head.repo.full_name | strings | ascii_downcase) == ($repo | ascii_downcase)
-    ' "$GH_READ_BODY" >/dev/null; then
-      echo "the pull request is no longer open on the build's branch and repository" >&2
-      return 2
-    fi
-    [ "$(jq -r '.head.sha' "$GH_READ_BODY")" = "$head" ] || return 10
+    ci_wait_read_pr "$slug" "$head" "$cache" "$build_branch" || return $?
     if ! gh_pr_base_matches "$base" "$base_sha"; then
       base="$(jq -r '.base.ref' "$GH_READ_BODY")"
       base_sha="$(jq -r '.base.sha' "$GH_READ_BODY")"
@@ -188,6 +196,7 @@ do_ci_wait() {
     # A rate-limit retry can span a rerun even while the head stays the same.
     # Read the checks again if any request since the start of the scan retried.
     if [ "$state" != pending ] && [ "$GH_READ_RETRIED" = false ]; then
+      revalidate_execution="$GH_EXECUTION_STATE"
       gh_revalidate_actions_checks "$slug" "$head" "$cache" "$GH_READ_DIR/ci.json"
       rc=$?
       case "$rc" in
@@ -196,12 +205,20 @@ do_ci_wait() {
         *) printf 'the Actions revalidation failed (exit %s): %s\n' "$rc" "${GH_READ_ERROR:-unreadable response}" >&2; return 2 ;;
       esac
       if [ "$GH_READ_RETRIED" = false ]; then
+        if [ "$revalidate_execution" = verified ]; then
+          # The Actions request was scoped to the previous PR snapshot.
+          ci_wait_read_pr "$slug" "$head" "$cache" "$build_branch" || return $?
+          if [ "$GH_READ_RETRIED" = true ] || ! gh_pr_base_matches "$base" "$base_sha"; then
+            state=pending
+            continue
+          fi
+        fi
         if jq -e '.state == "pending"' "$GH_READ_DIR/ci.json" >/dev/null; then
           state=pending
           gh_goal_command sleep "$interval" || return 2
           continue
         fi
-        ci_result "$GH_READ_DIR/ci.json" || return 2
+        ci_result "$GH_READ_DIR/ci.json" "$head" "$base" "$base_sha" || return 2
         return 0
       fi
     fi
@@ -215,9 +232,9 @@ do_ci_wait() {
     esac
     state="$(jq -r '.state' "$GH_READ_DIR/ci.json")"
     case "$state" in
-      passed|pending)
-        # A removed requirement can remain queued on the same PR. Refresh
-        # policy on the existing interval while waiting on required checks.
+      passed|pending|failed)
+        # A removed requirement can remain queued or fail on the same PR.
+        # Refresh policy before a required-only wait reports a failure.
         if [ "$GH_READ_RETRIED" = false ] &&
           { [ "$state" = passed ] || [ "$required_only" = true ] ||
             jq -e '.missing_required' "$GH_READ_DIR/ci.json" >/dev/null; }; then
@@ -232,7 +249,7 @@ do_ci_wait() {
           esac
         fi
         if [ "$state" = pending ]; then gh_goal_command sleep "$interval" || return 2; fi ;;
-      failed|unverified) ;;
+      unverified) ;;
       *) echo 'the CI read returned an unknown state' >&2; return 2 ;;
     esac
   done

@@ -265,6 +265,14 @@ case "${1:-} ${2:-}" in
         http 200 "$(cat "$G/statuses.json" 2>/dev/null || echo '{"statuses":[]}')" ;;
       repos/o/r/actions/runs\?head_sha=*)
         conditional=true
+        if [ "$(grep -Fc '/actions/runs?head_sha=' "$G/calls.log")" -eq 2 ]; then
+          for file in moved-head moved-base-sha workflow-runs.json; do
+            if [ -f "$G/$file-during-actions" ]; then
+              mv "$G/$file-during-actions" "$G/$file"
+            fi
+          done
+        fi
+        if [ -f "$G/actions403" ]; then http 403 "$(cat "$G/actions403")"; fi
         http 200 "$(cat "$G/workflow-runs.json" 2>/dev/null || echo '{"workflow_runs":[]}')" ;;
       repos/o/r/actions/runs/*/attempts/*/jobs\?*)
         conditional=true

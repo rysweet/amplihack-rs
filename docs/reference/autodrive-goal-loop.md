@@ -440,7 +440,7 @@ Under `judge` and `file_all` the agent files each issue with
   a pass. A head change ends the wait. When the wait detects a change to the
   target branch, target tip, or required-check policy, it scans again in the
   same wait. A required-only wait conditionally refreshes policy on each
-  pending scan, including when a check still reports as queued. A required
+  pending scan and before reporting a failure. A required
   check with no result also prompts a conditional policy refresh in either
   mode. The turn reading discards results if the PR snapshot or policy
   changes during verification.
@@ -452,9 +452,13 @@ Under `judge` and `file_all` the agent files each issue with
   while the check runs still show the previous attempt's passes. After a
   rerun, a pass requires matching successful job IDs from the current attempt.
   The verifier rechecks the workflow runs after reading those jobs and again
-  after the final policy and PR reads to detect a newly queued attempt.
-  Missing attempt evidence leaves the result unverified, which can happen
-  when a partial rerun does not execute every check used for the pass.
+  after the final policy and PR reads to detect a newly queued attempt. The
+  wait and reading then confirm the PR snapshot again before publishing
+  the result for those workflow runs. Missing attempt evidence leaves the
+  result unverified, which can happen when a partial rerun does not execute
+  every check used for the pass. The `execution_detail` field reports a
+  sanitised API diagnostic or the check suite or attempt that could not be
+  matched.
   With `args.required: true` and readable required names, the wait selects the
   required checks by name and expected App. When a check run and a commit
   status share a required name, both are retained. A failed status blocks
@@ -892,7 +896,7 @@ its actions:
 | Action | Outcomes |
 |--------|----------|
 | `review` | `reviewed`, `review-failed` |
-| `wait` | `checks-complete` with `checks_state` of `passed`, `failed`, or `unverified`, `head-changed`, `guidance-arrived`, `wait-error` |
+| `wait` | `checks-complete` with `head`, `base`, `base_sha`, and `checks_state` of `passed`, `failed`, or `unverified`. Other outcomes are `head-changed`, `guidance-arrived`, and `wait-error`. |
 | `merge` | `merged`, `not-authorised`, `authorization-unreadable`, `guidance-unknown`, `outcomes-unmet`, `outcomes-unreadable`, `checks-not-green`, `refused`, `not-open`, `message-unavailable`, `invalid-head`, `head-mismatch` |
 
 The shared outcomes are `continued`, `no-action`, `skipped-guidance`,

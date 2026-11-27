@@ -838,19 +838,33 @@ gh_pr_base_matches() {
 
 _gh_read_actions_attempts() {
   local repo="$1" head="$2" cache="$3" aggregate="$4" runs="$GH_READ_DIR/workflow-runs.jsonl"
+  local matched
   gh_rest_pages "repos/$repo/actions/runs?head_sha=$head" "$cache" '
     (.workflow_runs | type == "array") and all(.workflow_runs[];
       (.id | type == "number" and . > 0 and floor == .) and
       (.run_attempt | type == "number" and . >= 1 and floor == .) and
       (.status | type == "string"))
   ' '.workflow_runs[] | {id, head_sha, check_suite_id, run_attempt, status}' > "$runs" || return $?
-  jq -cs --arg head "$head" --slurpfile summary "$aggregate" '
+  matched="$(jq -csr --arg head "$head" --slurpfile summary "$aggregate" '
     . as $runs
     | ($summary[0].actions | map(.suite_id) | unique) as $suites
-    | $suites | map(. as $suite | [$runs[] | select(.head_sha == $head and .check_suite_id == $suite)])
-    | if any(.[]; length != 1 or .[0].check_suite_id == null) then error("unmatched workflow run")
-      else map(.[0]) end
-  ' "$runs" 2>/dev/null
+    | $suites | map(. as $suite | {
+        suite:($suite | if type == "number" and . > 0 and floor == . then . else null end),
+        runs:[$runs[] | select(.head_sha == $head and .check_suite_id == $suite)]})
+    | map(select(.suite == null or (.runs | length) != 1)) as $unmatched
+    | if ($unmatched | length) == 0 then map(.runs[0])
+      else "no unique workflow run for check suites: " +
+        ($unmatched[:20] | map(.suite // "missing or invalid ID") | join(", ")) +
+        (if ($unmatched | length) > 20 then ", and \(($unmatched | length) - 20) more" else "" end)
+      end
+  ' "$runs" 2>/dev/null)" || {
+    GH_READ_ERROR="the workflow runs and check suites could not be compared"
+    return 1
+  }
+  case "$matched" in
+    '['*) printf '%s\n' "$matched" ;;
+    *) GH_READ_ERROR="$matched"; return 1 ;;
+  esac
 }
 
 _gh_compare_actions_attempts() {
@@ -860,6 +874,7 @@ _gh_compare_actions_attempts() {
   _gh_read_actions_attempts "$@" > "$current" || {
     rc=$?
     case "$rc" in 75|79) return "$rc" ;; esac
+    GH_EXECUTION_DETAIL="$GH_EXECUTION_DETAIL: ${GH_READ_ERROR:-unreadable response}"
     [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
     return "$rc"
   }
@@ -884,6 +899,7 @@ _gh_verify_actions_checks() {
   _gh_read_actions_attempts "$repo" "$head" "$cache" "$aggregate" > "$attempts" || {
     rc=$?
     case "$rc" in 75|79) return "$rc" ;; esac
+    GH_EXECUTION_DETAIL="$GH_EXECUTION_DETAIL: ${GH_READ_ERROR:-unreadable response}"
     [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
     return "$rc"
   }
@@ -895,13 +911,14 @@ _gh_verify_actions_checks() {
   jq -r '.[] | select(.run_attempt > 1) | [.id, .run_attempt, .check_suite_id] | @tsv' \
     "$attempts" > "$reruns" || return 0
   while IFS=$'\t' read -r run attempt suite; do
-    GH_EXECUTION_DETAIL="the check runs could not be matched to the current GitHub Actions attempt"
+    GH_EXECUTION_DETAIL="the check runs for suite $suite could not be matched to GitHub Actions run $run attempt $attempt"
     gh_rest_pages "repos/$repo/actions/runs/$run/attempts/$attempt/jobs" "$cache" '
       .jobs | type == "array"
     ' '.jobs[] | objects | select(.status == "completed")
       | {url:(.check_run_url | strings | ascii_downcase), conclusion:(.conclusion | strings)}' > "$jobs" || {
       rc=$?
       case "$rc" in 75|79) return "$rc" ;; esac
+      GH_EXECUTION_DETAIL="$GH_EXECUTION_DETAIL: ${GH_READ_ERROR:-unreadable response}"
       [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
       return "$rc"
     }
