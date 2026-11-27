@@ -1495,7 +1495,7 @@ The script checks the GitHub repository for releases and compares against the em
 - Ensure test YAML follows ruthless simplicity
 - Verify tests focus on behavior, not implementation
 
-**pr-review-assistant**:
+**reviewing-code**:
 
 - Include outside-in tests in PR reviews
 - Verify tests cover changed functionality
@@ -2068,7 +2068,7 @@ shadow.create(local_sources=["~/repos/lib:org/lib"])
 - **shadow-testing**: Complete shadow environment setup and usage
 - **test-gap-analyzer**: Find untested code paths
 - **philosophy-guardian**: Review test philosophy compliance
-- **pr-review-assistant**: Include tests in PR reviews
+- **reviewing-code**: Include tests in PR reviews
 - **module-spec-generator**: Generate specs with test scenarios
 
 ### Further Reading

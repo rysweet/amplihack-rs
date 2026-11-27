@@ -630,7 +630,7 @@ The script compares the embedded version against the latest GitHub release and n
 
 - **test-gap-analyzer**: Find untested code paths (unit test focus)
 - **philosophy-guardian**: Review test philosophy compliance
-- **pr-review-assistant**: Include tests in PR reviews
+- **reviewing-code**: Include tests in PR reviews
 - **module-spec-generator**: Generate specs with test scenarios
 
 ## Resources

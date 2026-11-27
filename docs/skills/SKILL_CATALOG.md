@@ -11,8 +11,8 @@ to extend the lists or restore the full lists through a managed installation.
 
 ## Summary
 
-- **Unique bundled skill names:** 127
-- **Skill definition files:** 127
+- **Unique bundled skill names:** 123
+- **Skill definition files:** 123
 
 ## Bundled Skills
 
@@ -24,7 +24,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `amplihack-migrate` | `migrate/SKILL.md` |
 | `analyzing-deeply` | `meta-cognitive/analyzing-deeply/SKILL.md` |
 | `anthropologist-analyst` | `anthropologist-analyst/SKILL.md` |
-| `architecting-solutions` | `development/architecting-solutions/SKILL.md` |
 | `aspire` | `aspire/SKILL.md` |
 | `authenticated-web-scraper` | `authenticated-web-scraper/SKILL.md` |
 | `auto-drive-to-merge` | `auto-drive-to-merge/SKILL.md` |
@@ -43,7 +42,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `computer-scientist-analyst` | `computer-scientist-analyst/SKILL.md` |
 | `consensus-voting` | `consensus-voting/SKILL.md` |
 | `context-management` | `context-management/SKILL.md` |
-| `creating-pull-requests` | `collaboration/creating-pull-requests/SKILL.md` |
 | `crusty-old-engineer` | `crusty-old-engineer/SKILL.md` |
 | `cybersecurity-analyst` | `cybersecurity-analyst/SKILL.md` |
 | `debate-workflow` | `debate-workflow/SKILL.md` |
@@ -107,7 +105,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `political-scientist-analyst` | `political-scientist-analyst/SKILL.md` |
 | `pptx` | `pptx/SKILL.md` |
 | `pr-guide` | `pr-guide/SKILL.md` |
-| `pr-review-assistant` | `pr-review-assistant/SKILL.md` |
 | `pre-commit-manager` | `pre-commit-manager/SKILL.md` |
 | `property-based-testing` | `property-based-testing/SKILL.md` |
 | `psychologist-analyst` | `psychologist-analyst/SKILL.md` |
@@ -136,7 +133,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `supervise-agent-sessions` | `supervise-agent-sessions/SKILL.md` |
 | `supply-chain-audit` | `supply-chain-audit/SKILL.md` |
 | `test-gap-analyzer` | `test-gap-analyzer/SKILL.md` |
-| `testing-code` | `quality/testing-code/SKILL.md` |
 | `tla-plus-expert` | `tla-plus-expert/SKILL.md` |
 | `transcript-viewer` | `transcript-viewer/SKILL.md` |
 | `urban-planner-analyst` | `urban-planner-analyst/SKILL.md` |
