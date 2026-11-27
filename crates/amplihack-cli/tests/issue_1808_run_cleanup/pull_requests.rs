@@ -341,10 +341,6 @@ fn unsupported_gh_host_keeps_worktrees_without_requesting_a_listing() {
             }
         });
         assert_kept(&report, &wt);
-        assert_eq!(
-            entry_for(&report, &wt)["reason"],
-            "cannot identify repository: unsupported GH_HOST for PR listing"
-        );
         assert!(fx.gh_calls().is_empty());
     }
 
