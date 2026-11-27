@@ -34,6 +34,7 @@ context:
   autodrive_invocation_file: ""
   autodrive_authorization: ""
   no_merge: "true"
+  # Seconds between CI reads. Empty uses the REST wait's 120-second default.
   checks_watch_interval: ""
   autodrive_dry_run: "false"
   # #3160: fix_all (the default, also when empty), judge or file_all. The

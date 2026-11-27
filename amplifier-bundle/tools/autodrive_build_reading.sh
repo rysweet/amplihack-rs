@@ -34,7 +34,7 @@
 #
 # Only refs are fetched; nothing here changes a worktree or GitHub. The one
 # write is a cache in the state folder: an own pull request found by branch is
-# recorded in pr.json, so a later `final` reads it. Exit 79 from gh passes up;
+# recorded in pr.json, so a later `final` reads it. Exits 75 and 79 pass up;
 # every other failure is recorded and the read exits 0.
 # docs/reference/build-goal-loop.md#the-reading.
 
@@ -42,6 +42,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || exit 2
 # shellcheck source=autodrive_build_lib.sh
 . "$HERE/autodrive_build_lib.sh" || exit 2
+# shellcheck source=workflow_gh_retry.sh
+. "$HERE/workflow_gh_retry.sh" || exit 2
 TD="${1:-}"
 build_turn_dir "$TD" || exit 2
 STATE="${AUTODRIVE_STATE_DIR:-}"; STATE="${STATE%/}"
@@ -53,8 +55,15 @@ case "$LAUNCH" in /*) ;; *) [ -z "${AUTODRIVE_REPO:-}" ] || LAUNCH="$AUTODRIVE_R
 if [ -z "$LAUNCH" ]; then LAUNCH="."; fi
 LAUNCH="$(cd "$LAUNCH" 2>/dev/null && pwd -P)" || LAUNCH="$PWD"
 S="$(mktemp -d "$TD/.reading.XXXXXX")" || exit 1
-trap 'rm -rf -- "$S"' EXIT
-gh79() { [ "${1:-0}" -ne 79 ] || exit 79; }
+GH_READ_DIR="$S"
+trap 'gh_goal_cancel; rm -rf -- "$S"' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+passup() { case "$1" in 75|79) exit "$1" ;; esac; }
+GUIDANCE_SINCE="${AUTODRIVE_GUIDANCE_MARK:-}"
+goal_is_entry "$GUIDANCE_SINCE" || GUIDANCE_SINCE=""
+GUIDANCE_TARGET="${AUTODRIVE_GUIDANCE_TARGET:-}"
+goal_github_pr_repo "$GUIDANCE_TARGET" "${GUIDANCE_TARGET##*/}" >/dev/null || GUIDANCE_TARGET=""
+gh_rate_limit_guidance() { goal_read_guidance; }
 err() { build_redact_tail < "$1" 2>/dev/null; }
 put() { # put <section> <json object or empty> <error>
   if [ -n "$2" ] && printf '%s' "$2" | jq -e 'type == "object"' >/dev/null 2>&1; then
@@ -91,7 +100,7 @@ if [ "$WT_OK" = true ]; then
 elif [ -n "$BRANCH" ] && git -C "$LAUNCH" rev-parse --verify -q "refs/heads/${BRANCH}^{commit}" >/dev/null 2>&1; then
   LOCAL_HEAD="$(git -C "$LAUNCH" rev-parse --verify -q "refs/heads/${BRANCH}^{commit}")"; HEAD_SRC=local-branch
 else
-  LOCAL_HEAD="$(git -C "$LAUNCH" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)"; HEAD_SRC=launch-checkout
+  LOCAL_HEAD="$(git -C "$LAUNCH" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)"; HEAD_SRC="launch-checkout"
 fi
 goal_is_sha "$LOCAL_HEAD" || LOCAL_HEAD=""
 
@@ -127,7 +136,7 @@ if [ -z "$BRANCH" ]; then PRS_ERR="the run branch is not known, so no pull reque
 elif [ -n "$REPO_ERR" ]; then PRS_ERR="$REPO_ERR"; fi
 OWN_PR=""; OWN_HOW=none
 if [ -z "$REPO_ERR" ]; then
-  build_own_pr; rc=$?; gh79 "$rc"
+  build_own_pr gh_goal_read graphql trace; rc=$?; passup "$rc"
   [ "$PR_LIST_FAILED" = false ] || PRS_ERR="$PR_LIST_ERR"
 fi
 # Cache only: an own pull request found by branch is recorded for `final`.
@@ -144,7 +153,9 @@ URL=""; PR_STATE=""; PR_DRAFT=""
 if [ -n "$OWN_PR" ]; then
   mv -f -- "$TD/goal.json" "$S/goal.before" 2>/dev/null
   RECIPE_VAR_pr_number="$OWN_PR" AUTODRIVE_STATE_DIR="$STATE" AUTODRIVE_REPO="$LAUNCH" AUTODRIVE_INVOCATION_FILE="" \
-    bash "$HERE/autodrive_pr_reading.sh" "$TD" >"$S/pr-reading.log" 2>&1; rc=$?; gh79 "$rc"
+    AUTODRIVE_GUIDANCE_MARK="$GUIDANCE_SINCE" AUTODRIVE_GUIDANCE_TARGET="$GUIDANCE_TARGET" \
+    gh_goal_command bash "$HERE/autodrive_pr_reading.sh" "$TD" >"$S/pr-reading.log" 2>&1; rc=$?
+  passup "$rc"
   if [ "$rc" -eq 0 ] && goal_json_file "$TD/goal.json" 1048576; then
     for sec in pr checks reviews repository base; do jq -c --arg s "$sec" '.[$s] // {error:"absent"}' "$TD/goal.json" > "$S/$sec.json"; done
     URL="$(jq -r '.url // empty | strings' "$S/pr.json")"; PR_STATE="$(jq -r '.pr.state // empty | strings' "$TD/goal.json")"
@@ -154,6 +165,7 @@ if [ -n "$OWN_PR" ]; then
   fi
   rm -f -- "$TD/goal.json"
   [ -n "$URL" ] || URL="$(printf '%s' "$BUILD_CANDIDATES" | jq -r --argjson n "$OWN_PR" '.[] | select(.number == $n) | .url // empty')"
+  if goal_github_pr_repo "$URL" "$OWN_PR" >/dev/null; then GUIDANCE_TARGET="$URL"; fi
 else
   for sec in pr checks reviews; do put "$sec" "" "the run has no pull request yet"; done
   put repository "" "read from the pull request once it exists"
@@ -176,13 +188,16 @@ else
       comm -12 "$S/based" "$S/mine" | head -n 200 > "$S/overlap"
       STRICT=null; SWHY=""
       if [ -n "$BUILD_REPO_NAME" ]; then
-        rules="$(gh api "repos/${BUILD_REPO_NAME}/rules/branches/${BASE_NAME}" 2>"$S/rules.err")"; rc=$?; gh79 "$rc"
-        if [ "$rc" -eq 0 ] && printf '%s' "$rules" | jq -e 'type == "array"' >/dev/null 2>&1; then
-          if printf '%s' "$rules" | jq -e 'any(.[]; .type == "required_status_checks" and .parameters.strict_required_status_checks_policy == true)' >/dev/null; then STRICT=true; else STRICT=false; fi
-        else SWHY="rules endpoint: $(err "$S/rules.err")"; fi
+        base_path="$(jq -nr --arg ref "$BASE_NAME" '$ref | @uri')"
+        gh_goal_read core true api --include "repos/${BUILD_REPO_NAME}/rules/branches/${base_path}"; rc=$?; passup "$rc"
+        if [ "$rc" -eq 0 ] && jq -e 'type == "array"' "$GH_READ_BODY" >/dev/null 2>&1; then
+          if jq -e 'any(.[]; .type == "required_status_checks" and .parameters.strict_required_status_checks_policy == true)' "$GH_READ_BODY" >/dev/null; then STRICT=true; else STRICT=false; fi
+        else SWHY="rules endpoint: ${GH_READ_ERROR:-unreadable response}"; fi
         if [ "$STRICT" != true ]; then
-          prot="$(gh api "repos/${BUILD_REPO_NAME}/branches/${BASE_NAME}/protection/required_status_checks" --jq .strict 2>"$S/prot.err")"; rc=$?; gh79 "$rc"
-          case "$rc:$(printf '%s' "$prot" | tr -d '[:space:]')" in 0:true) STRICT=true ;; 0:false) STRICT=false ;; *) SWHY="${SWHY:+$SWHY; }classic protection: $(err "$S/prot.err")" ;; esac
+          gh_goal_read core true api --include "repos/${BUILD_REPO_NAME}/branches/${base_path}/protection/required_status_checks"; rc=$?; passup "$rc"
+          prot=""
+          [ "$rc" -ne 0 ] || prot="$(jq -r '.strict | booleans' "$GH_READ_BODY" 2>/dev/null)"
+          case "$prot" in true|false) STRICT="$prot" ;; *) SWHY="${SWHY:+$SWHY; }classic protection: ${GH_READ_ERROR:-unreadable response}" ;; esac
         fi
       fi
       BJ="$(jq -cn --arg b "$BASE_NAME" --arg mb "$MB" --arg bs "$BASE_SHA" \
@@ -219,7 +234,9 @@ if [ -n "$INUM" ]; then
   [ -z "$BUILD_REPO_NAME" ] || [ "$BUILD_REPO" != "$BUILD_REPO_NAME" ] || args+=(--repo "$BUILD_REPO_NAME")
   # TMPDIR is this reading's scratch folder, so the claim check's file for gh's
   # error text stays inside the state folder (S-D3).
-  env -u ALLOW_EXISTING_PR -u AMPLIHACK_ALLOW_EXISTING_PR TMPDIR="$S" bash "$HERE/workflow_issue_claim_check.sh" "${args[@]}" > "$S/claim" 2>"$S/claim.err"; rc=$?; gh79 "$rc"
+  AUTODRIVE_GUIDANCE_MARK="$GUIDANCE_SINCE" AUTODRIVE_GUIDANCE_TARGET="$GUIDANCE_TARGET" \
+    gh_goal_command env -u ALLOW_EXISTING_PR -u AMPLIHACK_ALLOW_EXISTING_PR TMPDIR="$S" bash "$HERE/workflow_issue_claim_check.sh" \
+    --goal-reading "${args[@]}" > "$S/claim" 2>"$S/claim.err"; rc=$?; passup "$rc"
   line="$(tail -n 1 "$S/claim")"
   if [ "$rc" -eq 0 ] && printf '%s' "$line" | jq -e 'type == "object" and (.claims | type) == "array"' >/dev/null 2>&1; then
     CRES="$(printf '%s' "$line" | jq -r '.result // empty | strings')"
@@ -273,12 +290,12 @@ TJ=""; TE=""
 if [ -f "$STATE/pr-text/title" ] && [ -f "$STATE/pr-text/body" ]; then
   EQ=null
   if [ -n "$OWN_PR" ]; then
-    live="$(gh pr view "$OWN_PR" --json title,body 2>"$S/live.err")"; rc=$?; gh79 "$rc"
-    if [ "$rc" -eq 0 ] && printf '%s' "$live" | jq -e '(.title | type) == "string" and (.body | type) == "string"' >/dev/null 2>&1; then
-      printf '%s' "$live" | jq -j .title > "$S/lt"; printf '%s' "$live" | jq -j .body > "$S/lb"
+    gh_goal_read graphql trace pr view "$OWN_PR" --json title,body; rc=$?; passup "$rc"
+    if [ "$rc" -eq 0 ] && jq -e '(.title | type) == "string" and (.body | type) == "string"' "$GH_READ_BODY" >/dev/null 2>&1; then
+      jq -j .title "$GH_READ_BODY" > "$S/lt"; jq -j .body "$GH_READ_BODY" > "$S/lb"
       # shellcheck source=workflow_pr_text.sh
       if . "$HERE/workflow_pr_text.sh" && pr_text_same "$STATE/pr-text/title" "$STATE/pr-text/body" "$S/lt" "$S/lb"; then EQ=true; else EQ=false; fi
-    else TE="the live text could not be read: $(err "$S/live.err")"; fi
+    else TE="the live text could not be read: ${GH_READ_ERROR:-unreadable response}"; fi
   fi
   TJ="$(jq -cn --rawfile t "$STATE/pr-text/title" --rawfile b "$STATE/pr-text/body" --argjson eq "$EQ" --arg d "$STATE/pr-text" \
     '{intended:{title:$t, body_excerpt:($b | .[0:2000]), body_bytes:($b | utf8bytelength), folder:$d}, live_equals_intended:$eq}')"
@@ -302,7 +319,9 @@ jq -n --slurpfile run "$S/run.json" --slurpfile prs "$S/prs.json" --slurpfile pr
   --slurpfile issue "$S/issue.json" --slurpfile hi "$S/host_inputs.json" --slurpfile cp "$S/checks_passed.json" \
   --slurpfile text "$S/pr_text.json" --slurpfile ctx "$S/context.json" --arg own "$OWN_PR" --arg gt "$GT" --arg wt "$OUT_WT" \
   --arg pst "$PR_STATE" --arg pd "$PR_DRAFT" '
-  ($run[0]) as $r | ($issue[0]) as $i | ($hi[0]) as $h | ($checks[0].counts // null) as $c |
+  $run[0] as $r | $issue[0] as $i | $hi[0] as $h | $checks[0] as $ci | $ci.counts as $c |
+  (if $ci.error then "unverified" else $ci.state // "unverified" end) as $ci_state |
+  ($ci.error // $ci.execution_detail // $ci.required_error) as $ci_detail |
   {schema:1, schema_version:1,
    subject:(if $own != "" then "PR #" + $own elif $r.branch then "branch " + $r.branch else "the build run" end),
    worktree:$wt, untrusted:[".prs.candidates", ".pr", ".checks", ".reviews", ".issue.claims", ".pr_text.intended"],
@@ -314,7 +333,10 @@ jq -n --slurpfile run "$S/run.json" --slurpfile prs "$S/prs.json" --slurpfile pr
      + (if $r.commits_not_pushed != null then ", \($r.commits_not_pushed) commits not pushed" else "" end)
      + (if $r.uncommitted_changes != null then ", \($r.uncommitted_changes) uncommitted changes" else "" end)
      + (if $own != "" then "; PR #" + $own + " " + (if $pst == "" then "unreadable" else $pst end) + (if $pd == "true" then " draft" elif $pd == "false" then " ready" else "" end)
-          + (if $c != null then ", checks \($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending" else "" end)
+          + ", checks " + $ci_state
+          + (if $c == null then "" elif $c.total == 0 then " (none reported)"
+            else " (\(if $ci_state == "unverified" or $ci_detail then "observed: " else "" end)\($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending)" end)
+          + (if $ci_detail then " — " + $ci_detail else "" end)
         elif $prs[0].error then "; pull requests unreadable" else "; no pull request yet" end)
      + (if $i.number != null then "; issue #\($i.number) (\($i.source)), \($i.claims | length) claims" else "" end)
      + (if ($h.missing | type) == "array" and ($h.missing | length) > 0 then "; host inputs missing from the worktree: " + ($h.missing | join(", ")) else "" end)

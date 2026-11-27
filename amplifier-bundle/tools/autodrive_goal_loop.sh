@@ -74,7 +74,7 @@ goal_call() { # the goal tool, with the contract and the driver's own state only
   ( cd "$REPO" && AUTODRIVE_GOAL_CONTRACT=1 AUTODRIVE_STATE_DIR="$STATE" AUTODRIVE_REPO="$REPO" AUTODRIVE_WORKTREE="$WORK" \
       AUTODRIVE_LOOP_HOME="$LOOP_HOME" AUTODRIVE_INVOCATION_FILE="$INVOCATION" \
       AUTODRIVE_TASK_FILE="$W/TASK" AUTODRIVE_TURN_DIR="${TD:-}" AUTODRIVE_GUIDANCE_UNKNOWN="${GUIDE_UNKNOWN:-false}" \
-      exec bash "$GOAL_PATH" "$@" )
+      AUTODRIVE_GUIDANCE_MARK="${MARK:-}" AUTODRIVE_GUIDANCE_TARGET="${GUIDE_TARGET:-}" exec bash "$GOAL_PATH" "$@" )
 }
 turn_call() { # the shared turn tool, with what it needs from the driver
   AUTODRIVE_STATE_DIR="$STATE" AUTODRIVE_GOAL_TOOL="$GOAL_PATH" AUTODRIVE_GOAL_FILE="$GOAL_TEXT" \

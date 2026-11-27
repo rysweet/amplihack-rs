@@ -239,9 +239,11 @@ build_worktree_check() {
 # build_own_pr: the run's own pull request, from the state (pr.json), then the
 # run branch (one `gh pr list --head`), then the context pr_number. A list that
 # fails is unknown, never "none": PR_LIST_FAILED tells a creator not to create.
+# The reading can supply gh_goal_read to handle rate-limit declines.
 OWN_PR=""; OWN_HOW="none"; STATE_PR=""; BRANCH_PR=""; CROSS_PR=""; PR_LIST_FAILED=false; PR_LIST_ERR=""; BUILD_CANDIDATES='[]'
 build_own_pr() {
   local rec="${STATE:-}/pr.json" n out rc err base
+  local -a args
   OWN_PR=""; OWN_HOW="none"; STATE_PR=""; BRANCH_PR=""; CROSS_PR=""; PR_LIST_FAILED=false; PR_LIST_ERR=""; BUILD_CANDIDATES='[]'
   if [ -n "${STATE:-}" ] && goal_json_file "$rec" 65536; then
     n="$(jq -r '.number // empty | tostring' "$rec")"
@@ -249,8 +251,15 @@ build_own_pr() {
   fi
   if [ -n "${BUILD_BRANCH:-}" ]; then
     err="$(mktemp "${S:-${STATE:-${TMPDIR:-/tmp}}}/build-pr-list.XXXXXX")" || err=/dev/null
-    out="$(gh pr list --head "$BUILD_BRANCH" --state open --limit 20 \
-      --json number,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,title,body,createdAt 2>"$err")"; rc=$?
+    args=(pr list --head "$BUILD_BRANCH" --state open --limit 20
+      --json 'number,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,title,body,createdAt')
+    if [ "$#" -gt 0 ]; then
+      "$@" "${args[@]}"; rc=$?
+      if [ "$rc" -eq 0 ]; then out="$(<"$GH_READ_BODY")"
+      else printf '%s\n' "$GH_READ_ERROR" >"$err"; fi
+    else
+      out="$(gh "${args[@]}" 2>"$err")"; rc=$?
+    fi
     case "$rc" in 79|75) [ "$err" = /dev/null ] || rm -f -- "$err"; return "$rc" ;; esac
     if [ "$rc" -ne 0 ] || ! printf '%s' "$out" | jq -e 'type == "array"' >/dev/null 2>&1; then
       PR_LIST_FAILED=true
