@@ -55,7 +55,7 @@ under [Azure DevOps builds](#azure-devops-builds). The build steps run when
 | `workflow-prep` | The existing recipe, unchanged. Chooses the tracking issue and runs the claim check as information. |
 | `workflow-worktree` | The existing recipe. Step 04 creates the worktree and, for a new branch, links host inputs into it. |
 | `build-goal-setup` | Runs `autodrive_build_run.sh setup`. Creates the state folder, records the run's branch and worktree, and links host inputs into the worktree, which also covers a run on an existing branch. |
-| `build-loop` | Runs `autodrive_build_run.sh loop`, which calls the shared loop's driver, `tools/autodrive_goal_loop.sh`, the way the `autodrive-goal-loop` recipe's own step calls it, with `autodrive_build_goal.sh` as the goal tool and `skills/default-workflow/goal-build-pr.md` as the goal text. Each turn is then one `amplihack recipe run autodrive-goal-turn` from this step's depth, as under `auto-drive-to-merge`. Output: `build_loop_result`, the loop's end line from `loop-end.json`. A nested run of the loop recipe would put each turn's agent past the session-depth ceiling, and a sub-recipe step would merge the loop's context, `autodrive_state_dir` included, back into the run and its callers. |
+| `build-loop` | Runs `autodrive_build_run.sh loop`, which calls the shared loop's driver, `tools/autodrive_goal_loop.sh`, the way the `autodrive-goal-loop` recipe's own step calls it, with `autodrive_build_goal.sh` as the goal tool and `skills/default-workflow/goal-build-pr.md` as the goal text. Before the driver starts, a missing recorded worktree may be adopted only after the continuation head and one clean, exactly listed branch worktree are verified. Each turn is then one `amplihack recipe run autodrive-goal-turn` from this step's depth, as under `auto-drive-to-merge`. Output: `build_loop_result`, the loop's end line from `loop-end.json`. A nested run of the loop recipe would put each turn's agent past the session-depth ceiling, and a sub-recipe step would merge the loop's context, `autodrive_state_dir` included, back into the run and its callers. |
 | `build-report` | Runs `autodrive_build_run.sh report`. Non-fatal, and it runs once, after the loop's last action. Writes `workflow_result` from the loop's end, the pull request's live state and the outcome ledger. The run makes no file outside its state folder, so there is nothing else to remove. |
 
 The agent in each turn works on the branch the run created. The worktree and
@@ -132,7 +132,7 @@ Each invocation of `default-workflow` gets a fresh private folder made with
 
 A parent that is relative, contains `..`, is a symlink, belongs to another user
 or is world-writable without the sticky bit is skipped. The folder holds
-`identity.json` (branch, worktree and where they came from), `pr.json`,
+`identity.json` (branch, worktree, recorded commit and where they came from), `pr.json`,
 `pr-text/` (the latest intended title and body), `checks.json` and the turn
 records. State files are a cache. They are never an authority for a write to
 GitHub, which always checks live state first.
@@ -240,6 +240,17 @@ exported as `GH_REPO` for every `gh` call, including the delegated ones. No
 call passes `--repo`. A write is refused when the context `pr_repository` differs from the
 origin repository. When the origin cannot be parsed, reads record an error in
 the reading and writes report `failed`.
+
+### Continuation worktree recovery
+
+At the start of `build-loop`, a missing recorded worktree is recoverable only
+when Git lists exactly one worktree for the run branch and the identity records
+the commit it held. The candidate must be clean, including untracked and
+submodule changes, and its current commit must equal that recorded head. The
+loop persists the adopted path in `identity.json` before the first turn. A
+missing recorded commit, an invalid, dirty or differently headed candidate, or
+multiple candidates is a startup refusal with no agent turn. If Git lists no
+candidate, the existing missing-worktree reading remains in effect.
 
 ### Adoption
 

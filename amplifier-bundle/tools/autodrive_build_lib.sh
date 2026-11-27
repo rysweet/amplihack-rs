@@ -140,10 +140,10 @@ build_ws_field() {
   printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r --arg f "$1" 'if type == "object" then (.[$f] // empty | strings) else empty end' 2>/dev/null
 }
 
-ID_BRANCH=""; ID_WORKTREE=""; ID_SOURCE=""; ID_BASE=""; ID_STARTED=""; ID_ERR=""
+ID_BRANCH=""; ID_WORKTREE=""; ID_SOURCE=""; ID_BASE=""; ID_STARTED=""; ID_HEAD=""; ID_ERR=""
 build_identity_load() {
   local f="${STATE:-}/identity.json"
-  ID_BRANCH=""; ID_WORKTREE=""; ID_SOURCE=""; ID_BASE=""; ID_STARTED=""; ID_ERR=""
+  ID_BRANCH=""; ID_WORKTREE=""; ID_SOURCE=""; ID_BASE=""; ID_STARTED=""; ID_HEAD=""; ID_ERR=""
   [ -n "${STATE:-}" ] && [ -e "$f" ] || { ID_ERR="no identity.json in the state folder"; return 1; }
   goal_json_file "$f" 65536 || { ID_ERR="identity.json is not a JSON object file of at most 64 KiB"; return 1; }
   ID_BRANCH="$(jq -r '.branch // empty | strings' "$f")"
@@ -151,22 +151,26 @@ build_identity_load() {
   ID_SOURCE="$(jq -r '.source // empty | strings' "$f")"
   ID_BASE="$(jq -r '.base // empty | strings' "$f")"
   ID_STARTED="$(jq -r '.started // empty | strings' "$f")"
+  ID_HEAD="$(jq -r '.head // empty | strings' "$f")"
   build_valid_branch "$ID_BRANCH" || ID_BRANCH=""
   build_valid_branch "$ID_BASE" || ID_BASE=""
   case "$ID_WORKTREE" in /*) ;; *) ID_WORKTREE="" ;; esac
   [[ "$ID_STARTED" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]] || ID_STARTED=""
+  [[ "$ID_HEAD" =~ ^[0-9a-fA-F]{40}$ ]] || ID_HEAD=""
   return 0
 }
 
-# build_run_branch: worktree_setup.branch_name, then existing_branch. An
-# adopted identity (prepare-worktree args.branch) names its own branch; the
-# caller checks the adoption rule again before any write.
+# build_run_branch: a recovered or adopted identity names its own branch.
+# Otherwise use worktree_setup.branch_name, then existing_branch. The caller
+# checks the adoption rule again before any write.
 BUILD_BRANCH=""; BUILD_BRANCH_SOURCE="none"
 build_run_branch() {
   local b
   BUILD_BRANCH=""; BUILD_BRANCH_SOURCE="none"
   build_identity_load >/dev/null 2>&1 || :
-  if [ "$ID_SOURCE" = adopted ] && [ -n "$ID_BRANCH" ]; then BUILD_BRANCH="$ID_BRANCH"; BUILD_BRANCH_SOURCE=adopted; return 0; fi
+  if [ -n "$ID_SOURCE" ] && [ "$ID_SOURCE" != none ] && [ -n "$ID_BRANCH" ]; then
+    BUILD_BRANCH="$ID_BRANCH"; BUILD_BRANCH_SOURCE="$ID_SOURCE"; return 0
+  fi
   b="$(build_ws_field branch_name)"
   if build_valid_branch "$b"; then BUILD_BRANCH="$b"; BUILD_BRANCH_SOURCE=worktree_setup; return 0; fi
   b="${RECIPE_VAR_existing_branch:-}"
@@ -177,6 +181,42 @@ build_run_branch() {
 build_worktree_lookup() {
   git -C "$1" worktree list --porcelain 2>/dev/null | awk -v want="refs/heads/$2" '
     /^worktree /{p = substr($0, 10)} /^branch /{if (substr($0, 8) == want) {print p; exit}}'
+}
+
+# build_worktree_candidates <launch> <branch>: every Git-listed worktree on the
+# exact branch. A missing path is retained so recovery can refuse it loudly.
+build_worktree_candidates() {
+  git -C "$1" worktree list --porcelain 2>/dev/null | awk -v want="refs/heads/$2" '
+    /^worktree / { p = substr($0, 10); b = "" }
+    /^branch / { b = substr($0, 8); if (b == want) print p }
+  '
+}
+
+# build_worktree_recover <launch> <branch> <recorded-head>:
+#   0 and BUILD_WT_PATH set when one clean candidate matches the recorded head,
+#   1 with BUILD_WT_WHY when recovery must refuse, and 2 when no candidate is
+#   listed so the caller preserves the existing missing-worktree behavior.
+BUILD_WT_PATH=""; BUILD_WT_WHY=""
+build_worktree_recover() {
+  local launch="$1" branch="$2" head="$3" path real current candidate="" count=0
+  local -a listed=()
+  BUILD_WT_PATH=""; BUILD_WT_WHY=""
+  [ -n "$head" ] || { BUILD_WT_WHY="the continuation has no recorded commit"; return 1; }
+  while IFS= read -r path; do [ -n "$path" ] && listed+=("$path"); done < <(build_worktree_candidates "$launch" "$branch")
+  [ "${#listed[@]}" -gt 0 ] || return 2
+  for path in "${listed[@]}"; do
+    case "$path" in /*) ;; *) BUILD_WT_WHY="a listed worktree for ${branch} has an invalid path"; return 1 ;; esac
+    [ -d "$path" ] && [ ! -L "$path" ] || { BUILD_WT_WHY="a listed worktree for ${branch} is missing"; return 1; }
+    real="$(cd "$path" 2>/dev/null && pwd -P)" || { BUILD_WT_WHY="a listed worktree for ${branch} cannot be entered"; return 1; }
+    [ "$real" != "$(cd "$launch" 2>/dev/null && pwd -P)" ] || { BUILD_WT_WHY="the listed worktree for ${branch} is the launch checkout"; return 1; }
+    current="$(git -C "$real" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)" || { BUILD_WT_WHY="the listed worktree for ${branch} has no readable commit"; return 1; }
+    [ "$current" = "$head" ] || { BUILD_WT_WHY="the listed worktree for ${branch} is at another commit"; return 1; }
+    [ -z "$(git -C "$real" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)" ] || { BUILD_WT_WHY="the listed worktree for ${branch} is dirty"; return 1; }
+    candidate="$real"; count=$((count + 1))
+  done
+  [ "$count" -eq 1 ] || { BUILD_WT_WHY="more than one clean worktree is listed for ${branch}"; return 1; }
+  BUILD_WT_PATH="$candidate"
+  return 0
 }
 
 BUILD_WT_WHY=""

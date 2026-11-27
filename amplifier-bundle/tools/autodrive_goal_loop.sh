@@ -18,8 +18,8 @@
 # (failed_turn, #3129 R1): nothing is reset, the evidence goes into result.json
 # and one line into the run's own log, and a fresh agent judges it next turn.
 # Three cases end the run: `--once`; the operator's `recipe.usage_limit_wait =
-# false`; and three turns in a row that failed with the same error before any
-# agent started (#3286), since no agent then runs to read the failure.
+# false`; and a terminal policy refusal. A repeated pre-agent failure waits for
+# an owner event instead of starting another identical turn.
 #
 #   autodrive_goal_loop.sh --goal-tool <name.sh> --goal-file <bundle-relative path>
 #     --state-dir <dir> --repo <dir> [--task-file <f>] [--notes-file <f>]
@@ -47,7 +47,7 @@ CALLER_UMASK="$(umask)"
 
 GOAL_TOOL=""; GOAL_FILE=""; STATE=""; REPO=""; TASK_FILE=""; NOTES_FILE=""; INVOCATION=""; RECOVERY=""; ONCE=false
 LOOP_END_WRITTEN=false; TURN=0; RUN_ID=""; MERGE_ALLOWED=false; SUBJECT=""
-PRE_AGENT_END=3; PRE_AGENT_RUN=0; PRE_AGENT_ERR="" # #3286: same-error turns in a row with no agent
+PRE_AGENT_SIGNATURE=""
 
 say() { printf 'auto-drive goal loop: %s\n' "$*" >&2; }
 finish() { # finish <rc> [error]: the one stdout line, then exit
@@ -203,7 +203,7 @@ bundle_whole() {
   done
 }
 failed_turn() {
-  local rc="$1" summary judged=false limit=false lwait="" recovery=next-turn wrc err pre=false repeat=false nosteps=false
+  local rc="$1" summary judged=false limit=false lwait="" recovery=next-turn wrc err pre=false repeat=false nosteps=false marker_sig=""
   local why="the next turn starts at once; its agent reads this failure and the turn log and decides"
   classify_child "$TD/turn.log" >"$W/marker" # sets CHILD_FAILURE_* from the runner's last marker
   summary="$(child_failure_summary "$rc" "$TD/turn.log")"
@@ -212,10 +212,15 @@ failed_turn() {
   sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -e '.completed_steps == [] and .failed_steps == []' >/dev/null 2>&1 && nosteps=true # only a marker shows no step ran; none is unknown
   jq -e '.completed | index("decide") != null' "$W/steps" >/dev/null 2>&1 && judged=true; [ -f "$TD/decision.json" ] && [ ! -L "$TD/decision.json" ] && judged=true
   err="$(goal_last_line "$TD/turn.log")"; [ -n "$err" ] || err="$summary"
-  if [ "$judged" = false ] && [ "$nosteps" = true ]; then # no agent started (#3286)
-    pre=true; [ "$PRE_AGENT_RUN" -gt 0 ] && [ "$err" = "$PRE_AGENT_ERR" ] || { PRE_AGENT_RUN=0; PRE_AGENT_ERR="$err"; }
-    PRE_AGENT_RUN=$((PRE_AGENT_RUN + 1))
-  else PRE_AGENT_RUN=0; fi
+  if [ "$judged" = false ] && [ "$nosteps" = true ] && [ "$CHILD_FAILURE_CLASS" != unknown ]; then
+    pre=true
+    marker_sig="$(sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -c 'if type == "object" then {class:(.class // null), detail:(.signal // null)} else empty end' 2>/dev/null)"
+    [ -n "$marker_sig" ] || pre=false
+    [ "$pre" = true ] && [ -n "$PRE_AGENT_SIGNATURE" ] && [ "$marker_sig" = "$PRE_AGENT_SIGNATURE" ] && repeat=true
+    [ "$pre" = true ] && PRE_AGENT_SIGNATURE="$marker_sig" || PRE_AGENT_SIGNATURE=""
+  else
+    PRE_AGENT_SIGNATURE=""
+  fi
   goal_run_log_line "auto-drive goal loop: turn ${TURN} failed (${summary}): ${err}"
   if [ "$CHILD_FAILURE_CLASS" = usage_limit ]; then
     limit=true
@@ -229,15 +234,17 @@ failed_turn() {
   elif ! bundle_whole; then
     recovery=owner-wait
     why="the launch bundle no longer holds the turn recipe, the turn tool or the goal tool, so no turn can run until the owner restores it; the run waits for the owner's word"
-  elif [ "$pre" = true ] && [ "$PRE_AGENT_RUN" -ge "$PRE_AGENT_END" ]; then
-    recovery=ended; repeat=true; why="no agent started in this turn or in the $((PRE_AGENT_END - 1)) turns before it, and all ${PRE_AGENT_END} failed with the same error, so no agent can read the failure; the run ends with that error"
-  elif [ "$pre" = true ]; then why="no agent started in this turn, which is ${PRE_AGENT_RUN} of ${PRE_AGENT_END} turns in a row to fail with the same error before any agent started; the next turn starts at once, and the run ends at ${PRE_AGENT_END}"
+  elif [ "$repeat" = true ]; then
+    recovery=owner-wait
+    why="the turn failed before the agent started with the same structured failure class and detail as the previous turn; the owner wait is armed until guidance, a pull-request or worktree change, or the owner's stop"
+  elif [ "$pre" = true ]; then
+    why="the turn failed before the agent started; a different failure or an event clears the comparison, and the next turn reads the failure"
   fi
   jq -cn --arg s "the turn run failed after the runner's own recovery (${summary}): ${why}" --arg rc "$rc" \
-    --arg class "$CHILD_FAILURE_CLASS" --arg retryable "$CHILD_FAILURE_RETRYABLE" --slurpfile st "$W/steps" \
+    --arg class "$CHILD_FAILURE_CLASS" --arg detail "$CHILD_FAILURE_SIGNAL" --arg retryable "$CHILD_FAILURE_RETRYABLE" --slurpfile st "$W/steps" \
     --argjson judged "$judged" --argjson limit "$limit" --arg lw "$lwait" --arg rec "$recovery" --arg log "$TD/turn.log" \
     '{outcome:"turn-failed", summary:$s, recovery:$rec,
-      failure:{exit:($rc | tonumber? // $rc), class:$class, retryable:$retryable, usage_limit:$limit,
+      failure:{exit:($rc | tonumber? // $rc), class:$class, detail:$detail, retryable:$retryable, usage_limit:$limit,
         usage_limit_wait:(if $lw == "true" then true elif $lw == "false" then false else null end), agent_finished:$judged,
         completed_steps:$st[0].completed, failed_steps:$st[0].failed, log:$log}}' | goal_atomic_write "$TD/result.json"
   turn_call record "$TD" || say "WARNING: the record of failed turn ${TURN} could not be written"
@@ -245,15 +252,38 @@ failed_turn() {
   case "$recovery" in
     next-turn) return 0 ;;
     ended)
-      if [ "$repeat" = true ]; then end_run failed "$err"; finish 1 "$err"; fi
       if [ "$limit" = true ]; then end_run usage_limit "$why"; else end_run failed "the turn run failed (${summary}) and this was a --once turn"; fi
       finish 1 "$why" ;;
   esac
-  # owner-wait: an event, never a timer. Guidance that arrived since this
-  # turn's reading wakes it at once.
-  "$AMPLIHACK_BIN" recipe guidance wait "--since=$NEWEST" ${GUIDE_TARGET:+"$GUIDE_TARGET"} >"$TD/owner-wait.json" 2>"$TD/owner-wait.err"; wrc=$?
-  passed_up "$wrc" "the owner wait after failed turn ${TURN}"
-  if [ "$wrc" -eq 0 ]; then say "new guidance arrived; the next turn reads it"; return 0; fi
+  # owner-wait: an event, never a timer. Reuse the existing wait-owner action
+  # for an unchanged pre-agent failure. Bundle loss keeps its older direct
+  # guidance wait and fallback hand-off.
+  if [ "$repeat" = true ]; then
+    { printf 'The turn failed before the agent started twice with the same structured failure class and detail. The failure is %s. A changed guidance entry, pull request, worktree, or owner stop is required before another turn can start.\n\n' "$marker_sig"
+      printf 'Hand-off from the auto-drive goal loop, turn %03d. Owner: the operator who started this run. Decision: provide a change that clears the repeated pre-agent failure or stop the run.\n' "$TURN"
+    } | goal_neutralise | goal_atomic_write "$TD/end.md"
+    if goal_secret_screen "$TD/end.md"; then
+      goal_call publish "$TD/end.md" >"$TD/publish.log" 2>&1 || say "WARNING: the repeated-failure hand-off could not be published; the text is in end.md"
+    else
+      rm -f -- "$TD/end.md"
+    fi
+    jq -cn '{schema_version:1, valid:true, action:"wait-owner", args:{owner:"the operator who started this run", question:"the repeated pre-agent failure must change before another turn starts"}, why:"the repeated pre-agent failure is unchanged", problem:null}' \
+      | goal_atomic_write "$TD/decision.json"
+    turn_call wait-owner "$TD"; wrc=$?
+    passed_up "$wrc" "the owner wait after failed turn ${TURN}"
+    if [ "$wrc" -eq 0 ]; then
+      if [ "$(jq -r '.outcome // empty' "$TD/result.json" 2>/dev/null)" = ended ] && [ "$(jq -r '.end // empty' "$TD/result.json" 2>/dev/null)" = handoff ]; then
+        end_run handoff "the repeated pre-agent failure could not arm the owner wait; the question was handed off"
+        finish 0
+      fi
+      PRE_AGENT_SIGNATURE=""; say "the owner wait returned; the next turn reads the changed state"; return 0
+    fi
+  else
+    # Guidance that arrived since this turn's reading wakes it at once.
+    "$AMPLIHACK_BIN" recipe guidance wait "--since=$NEWEST" ${GUIDE_TARGET:+"$GUIDE_TARGET"} >"$TD/owner-wait.json" 2>"$TD/owner-wait.err"; wrc=$?
+    passed_up "$wrc" "the owner wait after failed turn ${TURN}"
+    if [ "$wrc" -eq 0 ]; then say "new guidance arrived; the next turn reads it"; return 0; fi
+  fi
   # No wake could be armed (3), or the wait itself failed: the question goes to
   # the operator, as wait-owner's fallback does. The text is mechanical.
   { printf 'Turn %03d of the auto-drive goal loop failed (%s), and the launch bundle no longer holds the turn recipe, the turn tool or the goal tool, so no turn can run.\n\n' "$TURN" "$summary"
