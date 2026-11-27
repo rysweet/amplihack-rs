@@ -932,17 +932,20 @@ older or interrupted runs, a worktree is **eligible** in either of these cases:
   cleanup uses the modification time alone.
 
 In report and apply mode, `amplihack cleanup` matches pull requests by exact
-head branch name. It honors a verified checkout's `gh repo set-default`
-selection. Without a selection, its GitHub fetch remotes must identify the
-same repository. Checkouts of that repository share a complete all-state
-REST listing, in creation order, using pages of 100 with a limit of 40
+head branch name. It reads `GH_REPO` before the checkout's `gh repo set-default`
+selection. Without either selection, the checkout's GitHub fetch remotes
+must identify the same repository. Checkouts of the same repository share
+REST evidence. Cleanup requests pages of 100, with a combined limit of 40
 requests per repository and a 30-second timeout per request.
 
-If cleanup cannot identify the repository or validate the complete listing,
-it keeps the dependent items and reports why. A listing that still has a
-continuation at the page limit keeps those items even when it already
-contains a matching PR. Complete history distinguishes an old closed or
-merged PR from an absent PR when `run.json` was modified recently.
+Cleanup reads the complete open PR listing and reads closed PRs in
+descending update order. For runs that already meet the no-PR age rule,
+reaching the keep-period cutoff supplies enough evidence because older
+closures cannot extend the keep period. When a recent `run.json` modification
+makes an old closure and an absent PR yield different verdicts, cleanup
+requires complete history before removing the worktree. If it cannot
+resolve the repository or validate the required evidence, it keeps the
+dependent items and reports why.
 
 These rules decide worktrees, and targets recorded in the legacy format. A
 run's legacy targets are removed only when every worktree the run still has is
@@ -2008,9 +2011,10 @@ feature. Record it with `amplihack_run_owned.sh record`, or remove it yourself.
 check `gh auth status` for github.com. Cleanup keeps dependent items when
 the required PR evidence is unavailable or exceeds the request limit.
 
-**Skipped with `cannot identify repository`.** Check the worktree's GitHub
-fetch remotes with `git remote -v`. For a checkout with a fork and an
-upstream remote, use `gh repo set-default` to select its PR repository.
+**Skipped with `cannot identify repository`.** Check `GH_REPO` if set.
+Otherwise, check the worktree's GitHub fetch remotes with `git remote -v`.
+For a checkout with a fork and an upstream remote, use `gh repo set-default`
+to select its PR repository.
 
 **Skipped with `cleanup lock held`.** Another `amplihack cleanup --apply` or an
 end-of-run sweep is running. Wait for it to finish and run the command again.

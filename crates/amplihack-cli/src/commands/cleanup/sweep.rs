@@ -7,9 +7,7 @@
 
 use super::Category;
 use super::archive::archive_file;
-use super::eligibility::{
-    Verdict, is_valid_branch, is_valid_id, no_pr_verdict, pr_verdict, run_is_active,
-};
+use super::eligibility::{Verdict, is_valid_branch, is_valid_id, no_pr_verdict, run_is_active};
 use super::pull_requests;
 use super::run_dir::{
     CLEANUP_RECORD, OWNED_PATHS, OwnedKind, OwnedPath, RUN_JSON, RUN_SCHEMA_VERSION, RunReport,
@@ -987,7 +985,7 @@ struct Collector<'a> {
     now: SystemTime,
     /// Taken on first use: most categories never ask.
     procs: Option<ProcScan>,
-    pr_listings: HashMap<String, Result<pull_requests::Listing, String>>,
+    pr_listings: HashMap<pull_requests::Repository, pull_requests::Listing>,
     common_cache: HashMap<PathBuf, Option<PathBuf>>,
     list_cache: HashMap<PathBuf, Result<Vec<PathBuf>, String>>,
     items: Vec<Item>,
@@ -1086,15 +1084,13 @@ impl Collector<'_> {
                 };
             }
         };
+        let no_pr = self.no_pr(ended, run);
         let listing = self
             .pr_listings
-            .entry(repository.clone())
-            .or_insert_with(|| pull_requests::list(&repository).map_err(|e| format!("{e:#}")));
-        match listing {
-            Ok(prs) => match prs.get(branch) {
-                Some(pr) => pr_verdict(pr, self.now.into(), self.s.keep),
-                None => self.no_pr(ended, run),
-            },
+            .entry(repository)
+            .or_insert_with_key(pull_requests::Listing::new);
+        match listing.verdict(branch, self.now.into(), self.s.keep, no_pr) {
+            Ok(verdict) => verdict,
             Err(error) => Verdict::Skip {
                 reason: format!("cannot list pull requests: {error}"),
             },
