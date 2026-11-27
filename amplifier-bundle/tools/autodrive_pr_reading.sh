@@ -265,7 +265,8 @@ else
   checks_error=""
   revalidate_pr="$GH_READ_RETRIED"
   # A reset wait can straddle a push, retarget or rerun. A pass always
-  # requires a freshly verified policy, PR and Actions attempt.
+  # requires a freshly verified policy. A verified Actions result also needs
+  # a current PR snapshot, whatever the check conclusion.
   while :; do
     GH_READ_RETRIED=false
     gh_head_checks "$SLUG" "$HEAD" "$cache" "$REQUIRED" true "$WHY" > "$S/ci.json"; rc=$?; passup "$rc"
@@ -284,7 +285,9 @@ else
       fi
     fi
     scan_retried="$GH_READ_RETRIED"
-    [ "$scan_retried" != true ] || revalidate_pr=true
+    if [ "$scan_retried" = true ] || [ "$GH_EXECUTION_STATE" = verified ]; then
+      revalidate_pr=true
+    fi
     [ "$revalidate_pr" = true ] || break
     GH_READ_RETRIED=false
     revalidate_checks_pr || { rc=1; break; }
