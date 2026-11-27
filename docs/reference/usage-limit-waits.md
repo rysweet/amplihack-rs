@@ -150,7 +150,7 @@ reset still ahead, a line saying a stated reset has already passed, or
 
 | Kind | Words that select it |
 |------|----------------------|
-| `session` | `5-hour limit`, `session limit`, and any limit wording it does not recognise |
+| `session` | `5-hour limit`, `session limit`, Codex's `Usage limit reached` and `service rate limit` lines, and any limit wording it does not recognise |
 | `weekly` | `weekly limit` |
 | `spend` | the organisation spend-limit phrase |
 | `credits` | `Your workspace is out of credits` (Codex) |
@@ -518,16 +518,24 @@ The one setting is
 limit is passed up at once as `skipped reason=disabled`
 ([Turning the wait off](#turning-the-wait-off)).
 
-## Codex credit exhaustion
+## Codex limit messages
 
-`Your workspace is out of credits` is classed `usage_limit`, with
-`"signal":"your workspace is out of credits"`. `credit balance is too low`, the
-Anthropic API message, still classes `environmental`.
+Codex prints these limit lines (#2911, #2952). Each is classed `usage_limit`,
+and none states a reset, so each starts a capacity wait.
+`credit balance is too low`, the Anthropic API message, still classes
+`environmental`.
+
+| Line | Kind | Failure class signal |
+|------|------|----------------------|
+| `Your workspace is out of credits. Add credits to continue.` | `credits` | `your workspace is out of credits` |
+| `Your workspace is out of credits. Ask your workspace owner to refill in order to continue.` | `credits` | `your workspace is out of credits` |
+| `Usage limit reached. You've reached your usage limit. Increase your limits to continue using codex.` | `session` | `usage limit` |
+| `agent step failed: Codex exec failed with status exit status: 1: service rate limit; retry later or check account quota` | `session` | `retry later or check account quota` |
 
 | Reader | Rule |
 |--------|------|
-| The recipe runner's failure class | The phrase anywhere in a failed step's evidence, in any case. |
-| The usage-limit wait | The phrase must open a whole standard-error line, or the last non-empty standard-output line, and be followed by a delimiter. Prose that mentions it does not start a wait. |
+| The recipe runner's failure class | The signal anywhere in a failed step's evidence, in any case. |
+| The usage-limit wait | The line must be a whole standard-error line, or the last non-empty standard-output line. It may start with one log level, `ERROR: `, `WARN: ` or `WARNING: `, in capitals and followed by one space. The credits and usage-limit phrases must then open the line and be followed by a delimiter or nothing. The service rate-limit phrase must open the line, or end a line that opens with `Codex exec failed with status ` or `agent step failed: Codex exec failed with status `. Prose that mentions a phrase does not start a wait. |
 
 A Codex step launched directly with `amplihack codex` is not supervised, so
 its credit exhaustion is classed but does not wait
