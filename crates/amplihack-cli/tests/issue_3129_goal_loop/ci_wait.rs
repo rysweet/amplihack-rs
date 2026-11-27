@@ -158,20 +158,11 @@ printf '%040d\n' 7 > "$GH_STATE/moved-head""#,
 }
 
 #[test]
-fn the_wait_discards_a_pass_if_the_target_or_its_policy_changed() {
-    for (change, outcome) in [
-        (
-            "printf 'release\\n' > \"$GH_STATE/moved-base\"",
-            "base-changed",
-        ),
-        (
-            "printf '%040d\\n' 7 > \"$GH_STATE/moved-base-sha\"",
-            "base-changed",
-        ),
-        (
-            r#"printf '%s\n' '{"strict":false,"contexts":["integration"]}' > "$GH_STATE/protection.json""#,
-            "policy-changed",
-        ),
+fn the_wait_uses_the_new_required_checks_if_the_target_or_its_policy_changes() {
+    for change in [
+        "printf 'release\\n' > \"$GH_STATE/moved-base\"",
+        "printf '%040d\\n' 7 > \"$GH_STATE/moved-base-sha\"",
+        "",
     ] {
         let h = Harness::new();
         h.set_checks("build\tpending\t0\n");
@@ -180,15 +171,20 @@ fn the_wait_discards_a_pass_if_the_target_or_its_policy_changed() {
         fake_sleep(
             &h,
             &format!(
-                r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
-{change}
-printf 'build\tpass\t0\n' > "$GH_STATE/checks""#
+                r#"case "$(wc -l < "$GH_STATE/sleeps")" in
+  1)
+    {change}
+    printf '%s\n' '{{"strict":false,"contexts":["integration"]}}' > "$GH_STATE/protection.json"
+    printf 'build\tpass\t0\n' > "$GH_STATE/checks" ;;
+  2) printf 'build\tpass\t0\nintegration\tfail\t0\n' > "$GH_STATE/checks" ;;
+  *) exit 1 ;;
+esac"#
             ),
         );
         let result = wait(&h, "37");
-        assert_eq!(result["outcome"], outcome, "{result}");
-        assert!(result["checks_state"].is_null(), "{result}");
-        assert_eq!(sleeps(&h), [37]);
+        assert_eq!(result["outcome"], "checks-complete", "{result}");
+        assert_eq!(result["checks_state"], "failed", "{result}");
+        assert_eq!(sleeps(&h), [37, 37]);
     }
 }
 

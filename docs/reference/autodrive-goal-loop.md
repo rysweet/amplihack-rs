@@ -437,8 +437,11 @@ Under `judge` and `file_all` the agent files each issue with
   commit statuses for that snapshot. While checks are pending, it sleeps for
   the configured interval before reading again. The wait and the turn reading
   verify the target's required-check policy and PR snapshot before reporting
-  a pass. Changes to the head, target branch, target tip, or policy require a
-  new reading. A rate-limit retry during the scan or final PR verification
+  a pass. A head change ends the wait. When the wait detects a change to the
+  target branch, target tip, or required-check policy, it scans again in the
+  same wait. The turn reading discards results if the PR snapshot or policy
+  changes during verification.
+  A rate-limit retry during the scan or final PR verification
   requires another scan. The turn reading also revalidates the PR snapshot
   after a rate-limit retry between the first PR lookup and the scan.
   A candidate pass based on GitHub Actions check runs also reads their

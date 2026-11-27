@@ -212,7 +212,7 @@ contract: exit 2 for a bad call, 75 and 79 passed up unchanged.
 | `open-pr` | pushed branch | Creates the pull request with the title and body from `args.title` and `args.body`, byte for byte, against the base from the context, then the identity, then the repository default. If an open pull request already exists on the branch, records its number. Reads the text back and corrects it at most once | `opened`, `already-open`, `text-differs`, `not-pushed`, `refused`, `invalid-args`, `refused-secret`, `failed` |
 | `mark-ready` | pull request | Runs `gh pr ready <n>` and reads back `isDraft`. Refuses a cross-repository pull request | `marked-ready`, `already-ready`, `still-draft`, `not-open`, `refused`, `refused-cross-repo`, `guidance-unknown`, `no-pr`, `failed` |
 | `review` | pull request | Runs one review round at the pushed head through the shared review entry point | the verdict, `no-pr`, `failed` |
-| `wait` | pull request | Uses the [shared conditional REST wait](./autodrive-goal-loop.md#waiting) at the configured interval | `checks-complete` with `checks_state` of `passed` or `failed`, `head-changed`, `guidance-arrived`, `wait-error` |
+| `wait` | pull request | Uses the [shared conditional REST wait](./autodrive-goal-loop.md#waiting) at the configured interval | `checks-complete` with `checks_state` of `passed`, `failed`, or `unverified`, `head-changed`, `guidance-arrived`, `wait-error` |
 | `prepare-worktree` | recorded branch | Restores a missing worktree, or adopts one, and links host inputs. Never uses `-f`, never resets | Reports whether the worktree is usable and which host inputs were linked |
 
 How the agent commits and pushes: it runs `git commit` and `git push` in the

@@ -128,12 +128,12 @@ checks_watch_interval() {
 }
 
 # Run in its own shell so the guidance wake can interrupt an API call, a
-# rate-limit wait or an ordinary interval sleep. Exits 10–12 discard stale evidence.
+# rate-limit wait or an ordinary interval sleep. Exit 10 signals a new head.
 do_ci_wait() {
   # shellcheck source=workflow_gh_retry.sh
   . "$HERE/workflow_gh_retry.sh" || return 2
   local build_branch="${1:-}" head base base_sha slug required required_only strict policy_error="" cache interval rc state=pending
-  local GH_READ_RETRIED=false
+  local GH_READ_RETRIED=false GH_BRANCH_POLICY=""
   local reading="$TD/reading.json"
   head="$(jq -r '.goal.pr.head // empty | strings' "$reading")"
   base="$(jq -r '.goal.pr.base // empty | strings' "$reading")"
@@ -172,12 +172,22 @@ do_ci_wait() {
       return 2
     fi
     [ "$(jq -r '.head.sha' "$GH_READ_BODY")" = "$head" ] || return 10
-    gh_pr_base_matches "$base" "$base_sha" || return 11
+    if ! gh_pr_base_matches "$base" "$base_sha"; then
+      base="$(jq -r '.base.ref' "$GH_READ_BODY")"
+      base_sha="$(jq -r '.base.sha' "$GH_READ_BODY")"
+      gh_read_branch_policy "$slug" "$base" "$cache" || return $?
+      state=pending
+    fi
+    if [ -n "$GH_BRANCH_POLICY" ]; then
+      required="$(jq -c '.required' <<< "$GH_BRANCH_POLICY")"
+      strict="$(jq -c '.strict_status_checks' <<< "$GH_BRANCH_POLICY")"
+      policy_error="$(jq -r '.error' <<< "$GH_BRANCH_POLICY")"
+      GH_BRANCH_POLICY=""
+    fi
 
     # A rate-limit retry can span a rerun even while the head stays the same.
     # Read the checks again if any request since the start of the scan retried.
     if [ "$state" != pending ] && [ "$GH_READ_RETRIED" = false ]; then
-      [ "$state" != policy-changed ] || return 12
       ci_result "$GH_READ_DIR/ci.json" || return 2
       return 0
     fi
@@ -196,8 +206,10 @@ do_ci_wait() {
           gh_verify_branch_policy "$slug" "$base" "$cache" "$required" "$strict"; rc=$?
           case "$rc" in
             75|79) return "$rc" ;;
-            0) ;;
-            *) state=policy-changed ;;
+            0) GH_BRANCH_POLICY="" ;;
+            *)
+              [ -n "$GH_BRANCH_POLICY" ] || return 2
+              state=pending ;; # Rescan with the newly read policy in this wait.
           esac
         fi ;;
       failed|unverified) ;;
@@ -229,8 +241,6 @@ do_act_wait() {
     79|75) exit "$code" ;;
     0) return 0 ;; # The completed wait wrote result.json.
     10) result head-changed "the pull request head changed during the wait" ;;
-    11) result base-changed "the pull request target branch or its tip changed during the wait" ;;
-    12) result policy-changed "the required-check policy changed or could not be verified during the wait" ;;
     *) result wait-error "the CI wait exited ${code:-unknown}. $(tail -n 1 "$TD/wait.err" | goal_clean_line 300)" ;;
   esac
 }
