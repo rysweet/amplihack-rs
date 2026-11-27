@@ -571,7 +571,7 @@ _gh_goal_wait_for_reset() {
   fi
 }
 
-# gh pr view writes its response headers to the API trace. Keep the final
+# GraphQL CLI reads write their response headers to the API trace. Keep the final
 # response's headers and the CLI diagnostic, omitting traffic from diagnostics
 # so successful requests and their payloads cannot classify a later failure.
 _gh_goal_trace_response() {
@@ -707,6 +707,12 @@ gh_rest_pages() {
       return 1
     fi
   done
+}
+
+# The PR body is scoped to the head the caller is verifying.
+gh_rest_pr() {
+  gh_rest_get "repos/$1/pulls/$2" "$3" \
+    '(.head.sha | type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$"))' "$4"
 }
 
 # gh_head_checks <owner/repo> <sha> <cache_dir> <required_checks_json> <required_only> <policy_error>

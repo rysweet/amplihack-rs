@@ -136,7 +136,7 @@ if [ -z "$BRANCH" ]; then PRS_ERR="the run branch is not known, so no pull reque
 elif [ -n "$REPO_ERR" ]; then PRS_ERR="$REPO_ERR"; fi
 OWN_PR=""; OWN_HOW=none
 if [ -z "$REPO_ERR" ]; then
-  build_own_pr gh_goal_read graphql false; rc=$?; passup "$rc"
+  build_own_pr gh_goal_read graphql trace; rc=$?; passup "$rc"
   [ "$PR_LIST_FAILED" = false ] || PRS_ERR="$PR_LIST_ERR"
 fi
 # Cache only: an own pull request found by branch is recorded for `final`.
@@ -290,7 +290,7 @@ TJ=""; TE=""
 if [ -f "$STATE/pr-text/title" ] && [ -f "$STATE/pr-text/body" ]; then
   EQ=null
   if [ -n "$OWN_PR" ]; then
-    gh_goal_read graphql false pr view "$OWN_PR" --json title,body; rc=$?; passup "$rc"
+    gh_goal_read graphql trace pr view "$OWN_PR" --json title,body; rc=$?; passup "$rc"
     if [ "$rc" -eq 0 ] && jq -e '(.title | type) == "string" and (.body | type) == "string"' "$GH_READ_BODY" >/dev/null 2>&1; then
       jq -j .title "$GH_READ_BODY" > "$S/lt"; jq -j .body "$GH_READ_BODY" > "$S/lb"
       # shellcheck source=workflow_pr_text.sh

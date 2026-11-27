@@ -151,8 +151,7 @@ do_ci_wait() {
   cache="$(goal_ci_cache_dir "${STATE:-${TD%/turns/*}}")" || return 2
 
   while :; do
-    gh_rest_get "repos/$slug/pulls/$PR" "$cache" \
-      '(.head.sha | type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$"))' "$head"
+    gh_rest_pr "$slug" "$PR" "$cache" "$head"
     rc=$?
     case "$rc" in
       75|79) return "$rc" ;;

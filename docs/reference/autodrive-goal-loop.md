@@ -117,6 +117,10 @@ it never sets the policy, never overrides one that was read, and never fills in
 one that could not be read (#3141). GitHub can report `BEHIND` under a policy
 that does not require an up-to-date branch.
 
+Required workflow rules make CI policy incomplete because check runs and
+commit statuses alone cannot establish whether the configured workflows ran
+successfully. The reading and the wait report this in `required_error`.
+
 Fetching the base is allowed. Reading never changes the worktree. A read that
 fails records its error in its own section and never ends the turn.
 
@@ -434,7 +438,8 @@ Under `judge` and `file_all` the agent files each issue with
   before reading again. It rechecks the head before returning a completed
   result. Both the turn reading and the wait repeat check collection after a
   rate-limit retry during the scan because a rerun can start at the same head.
-  The wait also repeats the scan when the final head revalidation retries.
+  The turn reading revalidates its head after a rate-limit retry that follows
+  the PR lookup. Both repeat the scan when head revalidation retries.
   With `args.required: true` and readable required names, the wait selects the
   required checks by name and expected App. A commit status can satisfy a
   requirement that allows any source. Skipped and neutral required jobs,
@@ -463,7 +468,7 @@ including any links to later pages, without using the primary rate allowance.
 When GitHub declines a call because of a rate limit, the response's
 `Retry-After`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers
 determine the deadline when available. The turn captures these headers from
-the GraphQL PR read as well as the REST CI reads. The `gh api rate_limit`
+GraphQL reads in the build and PR turns as well as REST CI reads. The `gh api rate_limit`
 lookup can supply a missing reset when its counter is exhausted. The turn sleeps once
 until the deadline and retries that call. If there is no future deadline, the
 operation stays pending until guidance or cancellation. The lookup can show

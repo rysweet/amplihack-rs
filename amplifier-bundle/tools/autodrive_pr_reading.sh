@@ -108,6 +108,7 @@ else
 fi
 goal_is_sha "$HEAD" || HEAD=""
 if SLUG="$(goal_github_pr_repo "$URL" "$PR")"; then GUIDANCE_TARGET="$URL"; fi
+GH_READ_RETRIED=false
 
 # --- repo: the PR's own worktree, else the run's checkout --------------------
 WORK="$REPO"; WT_ERR=""
@@ -232,17 +233,22 @@ else
     if [ -n "$cache" ]; then
       gh_rest_pages "repos/$SLUG/rules/branches/$base_path" "$cache" \
         'type == "array" and all(.[]; (.type | type == "string"))' \
-        '.[] | select(.type == "required_status_checks")' > "$S/rules.jsonl"; rc=$?; passup "$rc"
+        '.[] | select(.type == "required_status_checks" or .type == "workflows")' > "$S/rules.jsonl"; rc=$?; passup "$rc"
     else rc=1; GH_READ_ERROR="the conditional CI cache directory is unavailable"; fi
     if [ "$rc" -eq 0 ] && rules="$(jq -sce "$check_fields"'
-      select(all(.[]; .parameters.required_status_checks
+      [.[] | select(.type == "required_status_checks")] as $status_rules
+      | select(all($status_rules[]; .parameters.required_status_checks
         | type == "array" and all(.[]; (.context | context) and (.integration_id | app_id))))
-      | {strict:any(.[]; .parameters.strict_required_status_checks_policy == true),
-         required:[.[].parameters.required_status_checks[] | {name:.context, app_id:(.integration_id | source)}]}
+      | {strict:any($status_rules[]; .parameters.strict_required_status_checks_policy == true),
+         required:[$status_rules[].parameters.required_status_checks[] | {name:.context, app_id:(.integration_id | source)}],
+         workflows:any(.[]; .type == "workflows")}
     ' "$S/rules.jsonl" 2>/dev/null)"; then
       RULES_READ=true
       REQUIRED="$(jq -c '.required' <<< "$rules")"
       if jq -e '.strict' <<< "$rules" >/dev/null; then STRICT=true; SRC=rules; fi
+      if jq -e '.workflows' <<< "$rules" >/dev/null; then
+        WHY="required workflow results cannot be verified from check runs and commit statuses"
+      fi
     else WHY="rules endpoint: ${GH_READ_ERROR:-unreadable response}"; fi
     protection=""; protection_source=protection
     gh_goal_read core true api --include "repos/$SLUG/branches/$base_path/protection/required_status_checks"; rc=$?; passup "$rc"
@@ -302,17 +308,37 @@ elif [ -z "$SLUG" ] || [ -z "$HEAD" ]; then put checks "" "the pull request repo
 elif [ -z "$cache" ]; then put checks "" "the conditional CI cache directory is unavailable"
 else
   REQUIRED="$(jq -c 'unique' <<< "$REQUIRED")"
-  # A retry anywhere in the scan can straddle a rerun at the same head.
+  checks_error=""
+  revalidate_head="$GH_READ_RETRIED"
+  # A reset wait can straddle a push or a rerun at the same head. Publish
+  # only a scan that survived recovery and still belongs to the PR head.
   while :; do
     GH_READ_RETRIED=false
     gh_head_checks "$SLUG" "$HEAD" "$cache" "$REQUIRED" true "$WHY" > "$S/ci.json"; rc=$?; passup "$rc"
-    [ "$rc" -eq 0 ] && [ "$GH_READ_RETRIED" = true ] || break
+    scan_retried="$GH_READ_RETRIED"
+    if [ "$scan_retried" = true ]; then revalidate_head=true; fi
+    if [ "$rc" -ne 0 ]; then
+      checks_error="the checks could not be read: ${GH_READ_ERROR:-unreadable response}"
+    fi
+    [ "$revalidate_head" = true ] || break
+    GH_READ_RETRIED=false
+    gh_rest_pr "$SLUG" "$PR" "$cache" "$HEAD"; head_rc=$?; passup "$head_rc"
+    head_error=""
+    if [ "$head_rc" -ne 0 ]; then
+      head_error="the pull request head could not be revalidated: ${GH_READ_ERROR:-unreadable response}"
+    elif [ "$(jq -r '.head.sha' "$GH_READ_BODY")" != "$HEAD" ]; then
+      head_error="the pull request head changed during the reading"
+    fi
+    if [ -n "$head_error" ]; then
+      put pr "$(jq -c '.head = null' "$S/pr.json")" "$head_error"
+      put base "" "$head_error"
+      checks_error="$head_error"
+      rc=1
+      break
+    fi
+    [ "$rc" -eq 0 ] && { [ "$scan_retried" = true ] || [ "$GH_READ_RETRIED" = true ]; } || break
   done
-  checks_error=""
-  if [ "$rc" -ne 0 ]; then
-    checks_error="the checks could not be read: ${GH_READ_ERROR:-unreadable response}"
-    printf '{}\n' > "$S/ci.json"
-  fi
+  [ "$rc" -eq 0 ] || printf '{}\n' > "$S/ci.json"
   put checks "$(jq -c --arg why "$WHY" --argjson required "$REQUIRED" --argjson rc "$rc" '
     . + {required_known:($why == ""), required_error:(if $why == "" then null else $why end),
          required:($required | map(.name) | unique), required_checks:$required, gh_exit:$rc}

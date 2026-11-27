@@ -515,7 +515,7 @@ claim_gh() { # claim_gh <error file> <gh args...>; sets CLAIM_GH_RESULT
   shift
   CLAIM_GH_RESULT=""
   if [ "$GOAL_READING" = true ]; then
-    gh_goal_read graphql false "$@" || rc=$?
+    gh_goal_read graphql trace "$@" || rc=$?
     case "$rc" in 75|79) exit "$rc" ;; esac
     if [ "$rc" -eq 0 ]; then CLAIM_GH_RESULT="$(<"$GH_READ_BODY")"
     else printf '%s\n' "$GH_READ_ERROR" >> "$errors"; fi

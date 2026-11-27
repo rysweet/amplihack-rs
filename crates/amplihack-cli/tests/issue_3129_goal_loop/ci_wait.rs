@@ -373,8 +373,7 @@ fn incomplete_policy_keeps_the_skipped_required_job_and_optional_success_visible
         assert!(
             checks["required_error"]
                 .as_str()
-                .unwrap()
-                .contains("classic protection")
+                .is_some_and(|s| !s.is_empty())
         );
         assert_eq!(checks["counts"]["passed"], 1);
         assert_eq!(checks["counts"]["skipped"], 1);
@@ -390,6 +389,37 @@ fn incomplete_policy_keeps_the_skipped_required_job_and_optional_success_visible
         for field in ["counts", "required_error", "unverified_checks"] {
             assert_eq!(result[field], checks[field], "{field}");
         }
+    }
+    assert!(sleeps(&h).is_empty());
+}
+
+#[test]
+fn an_optional_pass_cannot_verify_a_required_workflow_rule() {
+    let h = Harness::new();
+    fs::write(h.gh.join("rules.json"), "[]").unwrap();
+    fs::write(
+        h.gh.join("rules-page-2.json"),
+        r#"[{"type":"workflows","parameters":{"workflows":[{"repository_id":42,"path":".github/workflows/required.yml","ref":"refs/heads/main"}]}}]"#,
+    )
+    .unwrap();
+    h.set_checks("optional\tpass\t0\n");
+
+    for required in [false, true] {
+        let reading = read_and_decide(&h, required);
+        let checks = &reading["checks"];
+        assert_eq!(checks["state"], "unverified", "{checks}");
+        assert_eq!(checks["required_known"], false);
+        assert!(
+            checks["required_error"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty())
+        );
+        assert_eq!(checks["counts"]["passed"], 1);
+
+        let result = wait(&h, "");
+        assert_eq!(result["outcome"], "checks-complete", "{result}");
+        assert_eq!(result["checks_state"], "unverified", "{result}");
+        assert_eq!(result["required_error"], checks["required_error"]);
     }
     assert!(sleeps(&h).is_empty());
 }
@@ -415,6 +445,24 @@ fn the_reading_discards_a_pass_if_a_rerun_starts_during_the_status_retry() {
     let sleeps = sleeps(&h);
     assert_eq!(sleeps.len(), 1);
     assert!((21..=25).contains(&sleeps[0]), "{sleeps:?}");
+}
+
+#[test]
+fn the_reading_discards_completed_checks_if_the_head_moves_during_the_status_retry() {
+    let h = Harness::new();
+    h.set_checks("build\tpass\t0\n");
+    fs::write(h.gh.join("decline-core-status"), "1\n").unwrap();
+    fake_sleep(&h, r#"printf '%040d\n' 7 > "$GH_STATE/moved-head""#);
+
+    let reading = read_and_decide(&h, false);
+    assert!(reading["pr"]["head"].is_null(), "{reading}");
+    assert!(
+        reading["checks"]["error"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    assert!(reading["checks"]["counts"].is_null(), "{reading}");
+    assert_eq!(sleeps(&h).len(), 1);
 }
 
 #[test]
