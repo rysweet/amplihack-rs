@@ -44,15 +44,17 @@ printf 'build\tpass\t0\n' > "$GH_STATE/checks""#,
 
 #[test]
 fn an_empty_interval_uses_the_default_with_no_diagnostic() {
+    let baseline = run_wait(Some("120"), true);
+    assert_eq!(baseline.0, [120]);
     for value in [None, Some("")] {
-        assert_eq!(run_wait(value, true), (vec![120], 0));
+        assert_eq!(run_wait(value, true), baseline);
     }
 }
 
 #[test]
 fn the_configured_interval_is_used_when_guidance_is_available() {
     for value in [37, 9_223_372_036_u64] {
-        assert_eq!(run_wait(Some(&value.to_string()), true), (vec![value], 0));
+        assert_eq!(run_wait(Some(&value.to_string()), true).0, [value]);
     }
 }
 
@@ -63,7 +65,13 @@ fn the_configured_interval_is_used_when_the_guidance_wake_is_unavailable() {
 
 #[test]
 fn an_invalid_interval_uses_the_default_and_reports_it_once() {
+    // Count diagnostics relative to the same command with a valid setting.
+    let (_, baseline) = run_wait(Some("120"), true);
     for value in ["abc", "0", "-5", "037", "9223372037", "9999999999"] {
-        assert_eq!(run_wait(Some(value), true), (vec![120], 1), "{value}");
+        assert_eq!(
+            run_wait(Some(value), true),
+            (vec![120], baseline + 1),
+            "{value}"
+        );
     }
 }
