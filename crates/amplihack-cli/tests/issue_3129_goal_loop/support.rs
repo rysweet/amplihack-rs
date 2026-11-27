@@ -121,6 +121,28 @@ decline() {
     [ -e "$G/no-retry-after" ] || printf 'Retry-After: 25\r\n'
     printf 'X-RateLimit-Remaining: 10\r\n\r\n'
     echo 'gh: secondary rate limit (HTTP 429)' >&2
+  elif [ -e "$G/graphql-secondary" ]; then
+    if [ "${GH_DEBUG:-}" = api ]; then
+      cat >&2 <<'TRACE'
+* Request to https://api.github.com/graphql
+> POST /graphql HTTP/1.1
+
+< HTTP/2.0 200 OK
+< X-Ratelimit-Remaining: 0
+< X-Ratelimit-Reset: 9999999999
+
+* Request took 1ms
+* Request to https://api.github.com/graphql
+> POST /graphql HTTP/1.1
+
+< HTTP/2.0 403 Forbidden
+< Retry-After: 17
+< X-Ratelimit-Remaining: 10
+
+* Request took 1ms
+TRACE
+    fi
+    echo 'HTTP 403: secondary rate limit (https://api.github.com/graphql)' >&2
   else
     echo 'GraphQL: API rate limit already exceeded' >&2
   fi
@@ -197,8 +219,10 @@ case "${1:-} ${2:-}" in
     case "$endpoint" in
       rate_limit)
         resource="$(cat "$G/declined")"
-        jq -cn --arg resource "$resource" --argjson reset "$(( $(date +%s) + 30 ))" \
-          '{resources:{($resource):{remaining:(if $resource == "graphql" then 0 else 10 end), reset:$reset}}}' ;;
+        remaining=10
+        if [ "$resource" = graphql ] && [ ! -e "$G/graphql-secondary" ]; then remaining=0; fi
+        jq -cn --arg resource "$resource" --argjson remaining "$remaining" --argjson reset "$(( $(date +%s) + 30 ))" \
+          '{resources:{($resource):{remaining:$remaining, reset:$reset}}}' ;;
       repos/o/r/pulls/7)
         [ ! -e "$G/wait79" ] || exit 79
         decline core
@@ -225,6 +249,7 @@ case "${1:-} ${2:-}" in
             elif .[1] == "skipping" then "skipped" elif .[1] == "neutral" then "neutral"
             else "failure" end)}] | {check_runs:.}' < "$G/checks")" ;;
       repos/o/r/commits/*/status\?*)
+        decline core status
         conditional=true
         http 200 "$(cat "$G/statuses.json" 2>/dev/null || echo '{"statuses":[]}')" ;;
       *rules/branches*) if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"

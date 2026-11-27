@@ -571,23 +571,46 @@ _gh_goal_wait_for_reset() {
   fi
 }
 
-# gh_goal_read <core|graphql> <include_headers true|false> <gh args...>
+# gh pr view writes its response headers to the API trace. Keep the final
+# response's headers and the CLI diagnostic, omitting traffic from diagnostics
+# so successful requests and their payloads cannot classify a later failure.
+_gh_goal_trace_response() {
+  LC_ALL=C awk -v headers="$2" '
+    BEGIN { diagnostic = 1 }
+    /^\* Request to / { response = ""; phase = "request"; diagnostic = 0; message = ""; next }
+    phase == "request" && /^< HTTP\// { phase = "headers" }
+    phase == "headers" {
+      if (/^< /) { response = response substr($0, 3) "\n"; next }
+      phase = "body"
+    }
+    /^\* Request took / { phase = ""; diagnostic = 1; next }
+    diagnostic { message = message $0 "\n" }
+    END { printf "%s", response > headers; printf "%s", message }
+  ' "$1"
+}
+
+# gh_goal_read <core|graphql> <header mode: true|false|trace> <gh args...>
 # GH_READ_DIR is the caller's private scratch. GH_READ_BODY points to a file
 # valid until the next read. Only a rate-limit response retries the command.
 # GH_READ_RETRIED lets callers invalidate evidence across a retry.
 gh_goal_read() {
-  local resource="$1" include_headers="$2" rc headers reported_at
+  local resource="$1" header_mode="$2" rc headers diagnostic reported_at
   shift 2
   local raw="$GH_READ_DIR/gh.raw" err="$GH_READ_DIR/gh.err"
+  local -a command=(gh "$@")
+  if [ "$header_mode" = trace ]; then
+    command=(env GH_DEBUG=api GH_FORCE_TTY= NO_COLOR=1 "${command[@]}")
+  fi
   GH_READ_BODY="$raw"
-  GH_READ_STATUS=""
   GH_READ_ERROR=""
   while :; do
     rc=0
-    gh_goal_command gh "$@" > "$raw" 2> "$err" || rc=$?
+    GH_READ_STATUS=""
+    gh_goal_command "${command[@]}" > "$raw" 2> "$err" || rc=$?
     case "$rc" in 75|79) return "$rc" ;; esac
     headers="$err"
-    if [ "$include_headers" = true ]; then
+    diagnostic="$err"
+    if [ "$header_mode" = true ]; then
       headers="$GH_READ_DIR/gh.headers"
       LC_ALL=C awk '{ sub(/\r$/, "") } !length { exit } { print }' "$raw" > "$headers" || return 1
       GH_READ_STATUS="$(LC_ALL=C awk 'NR == 1 && /^HTTP\// { print $2 }' "$headers")"
@@ -599,17 +622,22 @@ gh_goal_read() {
       fi
     elif [ "$rc" -eq 0 ]; then
       return 0
+    elif [ "$header_mode" = trace ]; then
+      headers="$GH_READ_DIR/gh.headers"
+      diagnostic="$GH_READ_DIR/gh.diagnostic"
+      _gh_goal_trace_response "$err" "$headers" > "$diagnostic" || return 1
+      GH_READ_STATUS="$(LC_ALL=C awk 'NR == 1 && /^HTTP\// { print $2 }' "$headers")"
     fi
     if [ "$GH_READ_STATUS" = 429 ] ||
       { [ "$GH_READ_STATUS" = 403 ] &&
         { [ "$(_gh_header "$headers" x-ratelimit-remaining)" = 0 ] ||
           [ -n "$(_gh_header "$headers" retry-after)" ]; }; } ||
-      [ "$(classify_gh_error "$err" explicit)" = rate_limit ]; then
+      [ "$(classify_gh_error "$diagnostic" explicit)" = rate_limit ]; then
       GH_READ_RETRIED=true
       reported_at="$(date +%s)" || return 1
       _gh_goal_wait_for_reset "$resource" "$headers" "$reported_at" || return $?
     else
-      GH_READ_ERROR="$(gh_safe_stderr "$err")"
+      GH_READ_ERROR="$(gh_safe_stderr "$diagnostic")"
       [ "$rc" -ne 0 ] || rc=1
       return "$rc"
     fi
@@ -681,12 +709,12 @@ gh_rest_pages() {
   done
 }
 
-# gh_head_checks <owner/repo> <sha> <cache_dir> <required_checks_json> [<required_only>]
+# gh_head_checks <owner/repo> <sha> <cache_dir> <required_checks_json> <required_only> <policy_error>
 # Requirements are {name, app_id}, with source_known:false when the branch
 # policy supplies the name alone. A missing required check and a head with
 # no reported checks are pending. The display is capped separately from counts.
 gh_head_checks() {
-  local commit="repos/$1/commits/$2" cache="$3" required="$4" required_only="${5:-true}"
+  local commit="repos/$1/commits/$2" cache="$3" required="$4" required_only="$5" policy_error="$6"
   local rows="$GH_READ_DIR/checks.jsonl"
   gh_rest_pages "$commit/check-runs" "$cache" '
     (.check_runs | type == "array") and all(.check_runs[];
@@ -710,7 +738,7 @@ gh_head_checks() {
       if .state == "success" then "pass" elif .state == "pending" then "pending" else "fail" end
     )}
   ' >> "$rows" || return $?
-  jq -c -s --argjson required "$required" --argjson required_only "$required_only" '
+  jq -c -s --argjson required "$required" --argjson required_only "$required_only" --arg policy_error "$policy_error" '
     def matches($check): .name == $check.name and (.app_id == null or .app_id == $check.app_id);
     def has_unattributed_status($checks):
       . as $need | any($checks[]; .legacy_status and .name == $need.name);
@@ -719,7 +747,7 @@ gh_head_checks() {
     | ([$all[] | . as $check
         | [$required[] | select(matches($check))] as $matches
         | [$missing[] | select(has_unattributed_status([$check])) | .app_id] as $expected_apps
-        | select(($required | length) == 0 or ($required_only | not) or
+        | select(($required | length) == 0 or ($required_only | not) or $policy_error != "" or
                  ($matches | length) > 0 or ($expected_apps | length) > 0)
         | if .state == "pending" then .
           elif ($expected_apps | length) > 0 then
@@ -737,10 +765,11 @@ gh_head_checks() {
        else $checks end) as $display
     | [$display[] | select(.unverified_reason)] as $unverified
     | {checks:$display[:200], unverified_checks:$unverified[:200],
+       required_error:(if $policy_error == "" then null else $policy_error end),
        counts:{total:($checks | length), passed:($n.pass // 0), unverified:($unverified | length),
         failing:(($n.fail // 0) + ($n.cancel // 0)), pending:($n.pending // 0), skipped:($n.skipping // 0)}}
     | .state = (if .counts.total == 0 or .counts.pending > 0 then "pending"
         elif .counts.failing > 0 then "failed"
-        elif .counts.unverified > 0 then "unverified" else "passed" end)
+        elif .counts.unverified > 0 or $policy_error != "" then "unverified" else "passed" end)
   ' "$rows"
 }

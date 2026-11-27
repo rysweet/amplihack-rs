@@ -96,7 +96,7 @@ which is why waiting is an action and not part of the agent step.
 | `repo` | Repository, worktree path, current branch, whether the worktree is clean, commits not yet pushed |
 | `merge_authority` | `no_merge`, dry run, and the effective authority |
 | `pr` | Head, base, `mergeable`, `mergeStateStatus`, draft, state |
-| `checks` | Check runs and commit statuses at the head, with counts and an overall `state`. `required` lists known required names. `required_checks` pairs each name with its expected GitHub App ID, or `null` for any source. A branch response that lists a name without its App policy adds `source_known: false`. `required_known` is true when both the rulesets and classic required names are accounted for. `required_error` explains incomplete policy, in which case the reading counts all observed checks. A required check with no result is pending, as is a head with no reported checks. `unverified_checks` gives the observed checks that cannot establish success and the reason for each. |
+| `checks` | Check runs and commit statuses at the head, with counts and an overall `state`. `required` lists known required names. `required_checks` pairs each name with its expected GitHub App ID, or `null` for any source. A branch response that lists a name without its App policy adds `source_known: false`. `required_known` is true when both the rulesets and classic required names are accounted for. `required_error` explains incomplete policy. The reading then shows all observed checks, applies known requirements and marks an otherwise passing result `unverified`. A required check with no result is pending, as is a head with no reported checks. `unverified_checks` gives the observed checks that cannot establish success and the reason for each. |
 | `reviews` | GitHub review verdicts and Crusty round verdicts, each with the head it was given at and the round's minor findings. Each minor finding is `{id, summary, outcome, evidence?, reason?}`, where `outcome` is `fixed`, `filed` or `open` (see [Minor review findings](#minor-review-findings)); a round whose record or minor findings could not be read is listed with its `error` |
 | `base` | Merge base, how far behind the PR is, conflicting files from `git merge-tree --write-tree`, and the files the base changed since the merge base that the PR also touches |
 | `repository` | Allowed merge methods; whether strict status checks are required (`strict_status_checks`, `strict_source`, `strict_unreadable`); `merge_state_behind` as evidence only |
@@ -432,8 +432,9 @@ Under `judge` and `file_all` the agent files each issue with
   immediately, then reads the check runs and commit statuses if the head is
   unchanged. While checks are pending, it sleeps for the configured interval
   before reading again. It rechecks the head before returning a completed
-  result. A rate-limit retry during check collection or head revalidation
-  triggers a fresh check scan because a rerun can start at the same head.
+  result. Both the turn reading and the wait repeat check collection after a
+  rate-limit retry during the scan because a rerun can start at the same head.
+  The wait also repeats the scan when the final head revalidation retries.
   With `args.required: true` and readable required names, the wait selects the
   required checks by name and expected App. A commit status can satisfy a
   requirement that allows any source. Skipped and neutral required jobs,
@@ -442,8 +443,9 @@ Under `judge` and `file_all` the agent files each issue with
   `unverified_checks`. If there is no pending or failing check, these
   conditions produce `checks_state: unverified`. A result needs at least one
   success to pass. The wait uses all reported checks when the policy has no
-  required names or is incomplete. If a required-only wait reaches completion
-  with incomplete policy, it returns `wait-error` with the reason.
+  required names or is incomplete. With incomplete policy, both modes apply
+  known requirements, mark an otherwise passing result `unverified`, and
+  include the observed counts and `required_error` in the result.
 - A login with room. The runner's usage-limit wait (#2992) handles this, and
   limit-resume (#3112) restarts the run. The loop adds nothing.
 - The owner's answer. The waiting step arms a FIFO in the run's
@@ -460,8 +462,9 @@ including any links to later pages, without using the primary rate allowance.
 
 When GitHub declines a call because of a rate limit, the response's
 `Retry-After`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers
-determine the deadline when available. The `gh api rate_limit` lookup can
-supply a missing reset when its counter is exhausted. The turn sleeps once
+determine the deadline when available. The turn captures these headers from
+the GraphQL PR read as well as the REST CI reads. The `gh api rate_limit`
+lookup can supply a missing reset when its counter is exhausted. The turn sleeps once
 until the deadline and retries that call. If there is no future deadline, the
 operation stays pending until guidance or cancellation. The lookup can show
 a counter with room even though the original request was declined, leaving

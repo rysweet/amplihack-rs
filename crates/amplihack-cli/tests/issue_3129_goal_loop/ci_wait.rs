@@ -3,7 +3,7 @@
 
 #![cfg(target_os = "linux")]
 
-use super::support::{Harness, PR, describe};
+use super::support::{Harness, PR, PR_BRANCH, describe};
 use crate::support::{exec_stub::write_executable, fifo_release};
 use serde_json::{Value, json};
 use std::fs::{self, DirBuilder};
@@ -342,9 +342,79 @@ fn rules_alone_cannot_establish_required_check_completion() {
 printf 'build\tpass\t0\nclassic\tpass\t0\n' > "$GH_STATE/checks""#,
         );
         let result = wait(&h, "");
-        assert_eq!(result["outcome"], "wait-error", "{result}");
+        assert_eq!(result["outcome"], "checks-complete", "{result}");
+        assert_eq!(result["checks_state"], "unverified", "{result}");
+        assert_eq!(
+            result["required_error"],
+            reading["checks"]["required_error"]
+        );
+        assert_eq!(result["counts"]["passed"], 2);
         assert_eq!(sleeps(&h), [120]);
     }
+}
+
+#[test]
+fn incomplete_policy_keeps_the_skipped_required_job_and_optional_success_visible() {
+    let h = Harness::new();
+    fs::write(h.gh.join("classic403"), "").unwrap();
+    fs::write(
+        h.gh.join("rules.json"),
+        r#"[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"build"}]}}]"#,
+    )
+    .unwrap();
+    h.set_checks("build\tskipping\t0\noptional\tpass\t0\n");
+
+    for required in [false, true] {
+        let reading = read_and_decide(&h, required);
+        let checks = &reading["checks"];
+        assert_eq!(checks["state"], "unverified", "{checks}");
+        assert_eq!(checks["required"], json!(["build"]));
+        assert_eq!(checks["required_known"], false);
+        assert!(
+            checks["required_error"]
+                .as_str()
+                .unwrap()
+                .contains("classic protection")
+        );
+        assert_eq!(checks["counts"]["passed"], 1);
+        assert_eq!(checks["counts"]["skipped"], 1);
+        assert_eq!(checks["unverified_checks"][0]["name"], "build");
+        assert_eq!(
+            checks["unverified_checks"][0]["unverified_reason"],
+            "skipped_or_neutral"
+        );
+
+        let result = wait(&h, "");
+        assert_eq!(result["outcome"], "checks-complete", "{result}");
+        assert_eq!(result["checks_state"], "unverified", "{result}");
+        for field in ["counts", "required_error", "unverified_checks"] {
+            assert_eq!(result[field], checks[field], "{field}");
+        }
+    }
+    assert!(sleeps(&h).is_empty());
+}
+
+#[test]
+fn the_reading_discards_a_pass_if_a_rerun_starts_during_the_status_retry() {
+    let h = Harness::new();
+    h.set_checks("build\tpass\t0\n");
+    fs::write(h.gh.join("decline-core-status"), "1\n").unwrap();
+    fake_sleep(&h, r#"printf 'build\tpending\t0\n' > "$GH_STATE/checks""#);
+
+    let reading = read_and_decide(&h, false);
+    assert_eq!(reading["pr"]["head"], h.origin_head(PR_BRANCH));
+    assert_eq!(reading["checks"]["state"], "pending", "{reading}");
+    assert_eq!(reading["checks"]["counts"]["passed"], 0);
+    assert_eq!(reading["checks"]["checks"][0]["state"], "pending");
+    let calls = h.calls();
+    assert_eq!(
+        calls.iter().filter(|c| c.contains("/check-runs?")).count(),
+        2
+    );
+    assert_eq!(calls.iter().filter(|c| c.contains("/status?")).count(), 3);
+    let sleeps = sleeps(&h);
+    assert_eq!(sleeps.len(), 1);
+    assert!((21..=25).contains(&sleeps[0]), "{sleeps:?}");
 }
 
 #[test]
@@ -433,6 +503,26 @@ fn legacy_commit_statuses_can_complete_the_wait_with_success() {
     assert_eq!(result["outcome"], "checks-complete", "{result}");
     assert_eq!(result["checks_state"], "passed");
     assert!(sleeps(&h).is_empty());
+}
+
+#[test]
+fn graphql_secondary_decline_uses_the_response_deadline_with_quota_remaining() {
+    let h = Harness::new();
+    fs::write(h.gh.join("decline-graphql"), "1\n").unwrap();
+    fs::write(h.gh.join("graphql-secondary"), "").unwrap();
+    // If the deadline is missed, let the guidance fallback fail promptly.
+    write_executable(&h.bin.join("mkfifo"), "#!/bin/bash\nexit 1\n", 0o755);
+    fake_sleep(&h, "exit 0");
+
+    let reading = read_and_decide(&h, false);
+    assert_eq!(reading["pr"]["head"], h.origin_head(PR_BRANCH), "{reading}");
+    assert_eq!(reading["checks"]["state"], "passed");
+    let sleeps = sleeps(&h);
+    assert_eq!(sleeps.len(), 1);
+    assert!((13..=17).contains(&sleeps[0]), "{sleeps:?}");
+    let calls = h.calls();
+    assert_eq!(calls.iter().filter(|c| c.starts_with("pr view")).count(), 2);
+    assert_eq!(calls.iter().filter(|c| *c == "api rate_limit").count(), 1);
 }
 
 #[test]

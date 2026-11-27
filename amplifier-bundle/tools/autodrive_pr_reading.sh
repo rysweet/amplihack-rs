@@ -91,7 +91,7 @@ fi
 # --- the pull request -------------------------------------------------------
 HEAD=""; BASE=""; BRANCH=""; URL=""; MSS=""; PR_READ=false
 if goal_is_pr "$PR"; then
-  gh_goal_read graphql false pr view "$PR" --json number,state,headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus,isDraft,isCrossRepository,url,reviews
+  gh_goal_read graphql trace pr view "$PR" --json number,state,headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus,isDraft,isCrossRepository,url,reviews
   rc=$?; passup "$rc"
   if [ "$rc" -eq 0 ] && jq -e 'type == "object"' "$GH_READ_BODY" >/dev/null 2>&1 && cp -- "$GH_READ_BODY" "$S/pr.raw"; then
     PR_READ=true
@@ -302,9 +302,12 @@ elif [ -z "$SLUG" ] || [ -z "$HEAD" ]; then put checks "" "the pull request repo
 elif [ -z "$cache" ]; then put checks "" "the conditional CI cache directory is unavailable"
 else
   REQUIRED="$(jq -c 'unique' <<< "$REQUIRED")"
-  check_filter="$REQUIRED"
-  [ -z "$WHY" ] || check_filter='[]'
-  gh_head_checks "$SLUG" "$HEAD" "$cache" "$check_filter" > "$S/ci.json"; rc=$?; passup "$rc"
+  # A retry anywhere in the scan can straddle a rerun at the same head.
+  while :; do
+    GH_READ_RETRIED=false
+    gh_head_checks "$SLUG" "$HEAD" "$cache" "$REQUIRED" true "$WHY" > "$S/ci.json"; rc=$?; passup "$rc"
+    [ "$rc" -eq 0 ] && [ "$GH_READ_RETRIED" = true ] || break
+  done
   checks_error=""
   if [ "$rc" -ne 0 ]; then
     checks_error="the checks could not be read: ${GH_READ_ERROR:-unreadable response}"
@@ -349,6 +352,6 @@ jq -n --slurpfile repo "$S/repo.json" --slurpfile ma "$S/merge_authority.json" -
    summary:((if $p.error then "PR #" + $prn + ": the pull request could not be read (" + $p.error + ")" else
      "PR #" + $prn + " " + ($p.state // "?") + " at " + (($p.head // "?")[0:12]) + " (" + ($p.head_branch // "?") + " into " + ($p.base // "?") + "), mergeStateStatus " + ($p.merge_state // "?")
      + "; checks: " + (if $checks[0].error then "unreadable" elif $c.total == 0 then "pending (no checks reported)"
-        else "\($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending, \($c.unverified // 0) unverified" end)
+        else "\($checks[0].state) (\($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending, \($c.unverified // 0) unverified)" end)
      + "; base: " + (if $b.error then "unreadable" else "\($b.behind_by // "?") behind, \($b.conflict_files | length) conflicting files" end)
      + "; merging " + (if $ma[0].effective then "allowed" else "off" end) end) + "; minor findings: " + $mf)}' | goal_atomic_write "$TD/goal.json"

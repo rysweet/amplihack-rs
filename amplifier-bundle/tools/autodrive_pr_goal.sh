@@ -48,11 +48,15 @@ CALLER_UMASK="$(umask)"; umask 077
 TD=""
 result() { jq -cn --arg o "$1" --arg s "$2" '{outcome:$o, summary:$s}' | goal_atomic_write "$TD/result.json"; }
 ci_result() {
-  jq -c '{outcome:"checks-complete", checks_state:.state, summary:(
+  jq -c '. as $ci | {outcome:"checks-complete", checks_state:.state, summary:(
       if .state == "passed" then "the checks at the head completed and passed"
       elif .state == "failed" then "the checks at the head completed and at least one failed"
       else "the checks at the head completed with unverified results" end)}
-    + (if (.unverified_checks | length) > 0 then {unverified_checks} else {} end)' "$1" \
+    + (if (.unverified_checks | length) > 0 then {unverified_checks} else {} end)
+    | if $ci.required_error then
+        . + ($ci | {counts, required_error})
+        | .summary += ". The required-check policy is incomplete: " + .required_error
+      else . end' "$1" \
     | goal_atomic_write "$TD/result.json"
 }
 need_pr() { goal_is_pr "$PR" || { result no-pr "no pull request number reached the goal tool (pr_number)"; exit 0; }; }
@@ -135,12 +139,10 @@ do_ci_wait() {
     return 2
   fi
   required_only="$(jq -r '.args.required == true' "$TD/decision.json")" || return 2
-  if ! required="$(jq -ce '.goal.checks | select(.required_known == true) | .required_checks | arrays' "$reading")"; then
-    required='[]'
-    if [ "$required_only" = true ]; then
-      policy_error="$(jq -r '.goal.checks.required_error // empty | strings' "$reading")"
-      policy_error="${policy_error:-the reading has no complete required-check policy}"
-    fi
+  required="$(jq -ce '.goal.checks.required_checks | arrays' "$reading")" || required='[]'
+  if ! jq -e '.goal.checks | .required_known == true and (.required_checks | type) == "array"' "$reading" >/dev/null; then
+    policy_error="$(jq -r '.goal.checks.required_error // empty | strings' "$reading")"
+    policy_error="${policy_error:-the reading has no complete required-check policy}"
   fi
   interval="$(checks_watch_interval)"
   GH_READ_DIR="$(mktemp -d "$TD/.ci-wait.XXXXXX")" || return 2
@@ -169,15 +171,11 @@ do_ci_wait() {
     # A rate-limit retry can span a rerun even while the head stays the same.
     # Read the checks again if any request since the start of the scan retried.
     if [ "$state" != pending ] && [ "$GH_READ_RETRIED" = false ]; then
-      if [ -n "$policy_error" ]; then
-        printf 'the required-check policy is incomplete: %s\n' "$policy_error" >&2
-        return 2
-      fi
       ci_result "$GH_READ_DIR/ci.json" || return 2
       return 0
     fi
     GH_READ_RETRIED=false
-    gh_head_checks "$slug" "$head" "$cache" "$required" "$required_only" > "$GH_READ_DIR/ci.json"
+    gh_head_checks "$slug" "$head" "$cache" "$required" "$required_only" "$policy_error" > "$GH_READ_DIR/ci.json"
     rc=$?
     case "$rc" in
       75|79) return "$rc" ;;
