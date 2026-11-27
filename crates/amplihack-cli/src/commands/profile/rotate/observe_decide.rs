@@ -7,7 +7,7 @@
 //! is read once a cycle, at the edge (`Extra::for_cycle`).
 
 use super::super::cycle::Ctx;
-use super::super::damp::{damp, is_failed_probe_swap, keep_for_home_key, next_failed};
+use super::super::damp::{damp, high_use, is_failed_probe_swap, keep_for_home_key, next_failed};
 use super::super::decide::target::{self, LiveRoom, NoMove};
 use super::super::decide::target_seen::{self, Extra, reading_used};
 use super::super::decide::{Decision, Measured, Probed, Reading, Reason, needs_swap};
@@ -183,7 +183,15 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     // evidence, so a failed live probe neither damps the move off it nor
     // keeps it for the home key; `next_failed` above still counts the raw
     // probe.
-    let (decision, note) = damp(verdict.decision, &live_reading, failed, swapped_at, t, s);
+    let (decision, note, evidence) = damp(
+        verdict.decision,
+        &live_reading,
+        failed,
+        swapped_at,
+        t,
+        s,
+        |swapped_at| high_use::known_high(&ctx.live_series, high?, live_name?, swapped_at, t, s),
+    );
     // Only here is the file read: a swap on this ground is rare. The strict
     // reader, not `key_check::home_key`: a key Claude may not read must not
     // keep a dead login live, and the swap it would have stopped is harmless.
@@ -211,6 +219,15 @@ pub(in crate::commands::profile::rotate) fn decide_with(
         (_, tag) => tag,
     };
     let mut seen = target_seen::build(snap, extra.clone(), &probes, &blocks, s.target_week_max, t);
+    if matches!(
+        decision,
+        Decision::Swap {
+            reason: Reason::FailedProbe,
+            ..
+        }
+    ) {
+        seen.failed_probe_use = evidence;
+    }
     // Issue #2820: a live plan login with a standing block may be left for
     // a target with a recent reading that could not be read again.
     seen.live_blocked = live_name

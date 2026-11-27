@@ -303,7 +303,8 @@ pub fn annotate(seen: &Seen, name: &ProfileName, shown: &mut Shown) {
 /// The whole `swap` line (F8): the target figures of [`swap_target`] and
 /// the shared `swap` text. A cycle emits it as it stands and `--dry-run`
 /// prefixes it with `would `, so the two cannot drift apart. A swap is made
-/// on a fresh reading (issue #3105), and then the line has no suffix. Issue
+/// on a fresh reading (issue #3105). A failed-probe swap during the hold
+/// also logs the high-use evidence. Issue
 /// #2820: a move off a live login with a standing block onto a target
 /// accepted without a fresh reading ends with the [`unconfirmed`] suffix
 /// and which block the live login has and until when.
@@ -316,6 +317,9 @@ pub fn swap_line(
     reason: super::Reason,
 ) -> String {
     let mut line = msg::swap(from, to, live, &swap_target(seen, to, target), reason);
+    if let Some(evidence) = &seen.failed_probe_use {
+        line.push_str(&format!("; {evidence}"));
+    }
     if let Some((_, why)) = seen.unconfirmed.as_ref().filter(|(n, _)| n == to) {
         line.push_str(&unconfirmed(*why));
         if let Some((until, kind)) = seen.live_blocked {

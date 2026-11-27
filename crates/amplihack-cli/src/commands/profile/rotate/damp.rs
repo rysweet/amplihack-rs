@@ -2,7 +2,7 @@
 //! probe counts as headroom 0, so `decide` alone would swap every cycle
 //! while the live probe keeps failing. A swap made only because the live
 //! probe failed needs `FAILED_PROBE_LIMIT` failures in a row and is subject
-//! to the hold. See "Rotate failed live probes" in
+//! to the hold unless existing readings show high use. See "Rotate failed live probes" in
 //! docs/reference/profile-command.md.
 //!
 //! A key in the `$HOME` files that fails the live probe fails it whichever
@@ -19,6 +19,10 @@
 use super::decide::{Decision, Reading, Reason, held};
 use super::log::msg;
 use super::settings::Settings;
+use high_use::Evidence;
+
+#[path = "failed_probe_use.rs"]
+pub(super) mod high_use;
 
 /// Consecutive failed live probes before a swap on that ground alone.
 pub const FAILED_PROBE_LIMIT: u32 = 3;
@@ -31,7 +35,8 @@ pub fn next_failed(prev: u32, live: &Reading) -> u32 {
     }
 }
 
-/// `d` after the failed-probe rules, with the log note for a damped stay.
+/// `d` after the failed-probe rules, with a stay note or the evidence for a
+/// swap during the hold. Look for high use only when the hold would stop it.
 /// Only a threshold swap on a failed live probe is changed.
 pub fn damp(
     d: Decision,
@@ -40,7 +45,8 @@ pub fn damp(
     swapped_at: Option<i64>,
     now: i64,
     s: &Settings,
-) -> (Decision, Option<String>) {
+    high_use: impl FnOnce(i64) -> Option<Evidence>,
+) -> (Decision, Option<String>, Option<Evidence>) {
     let to = match (live, d) {
         (
             Reading::Failed,
@@ -49,19 +55,23 @@ pub fn damp(
                 reason: Reason::Threshold,
             },
         ) => to,
-        (_, d) => return (d, None),
+        (_, d) => return (d, None, None),
     };
     if consecutive_failed < FAILED_PROBE_LIMIT {
         let note = msg::stay_failed_probe(consecutive_failed, FAILED_PROBE_LIMIT);
-        return (Decision::Stay, Some(note));
+        return (Decision::Stay, Some(note), None);
     }
+    let mut evidence = None;
     if let Some(t) = swapped_at
         && held(s.hold, swapped_at, now)
     {
-        // A future swap time holds for the whole hold.
-        let elapsed = u64::try_from(now.saturating_sub(t)).unwrap_or(0);
-        let left = s.hold.saturating_sub(elapsed);
-        return (Decision::Stay, Some(msg::stay_held_failed(left)));
+        evidence = high_use(t);
+        if evidence.is_none() {
+            // A future swap time holds for the whole hold.
+            let elapsed = u64::try_from(now.saturating_sub(t)).unwrap_or(0);
+            let left = s.hold.saturating_sub(elapsed);
+            return (Decision::Stay, Some(msg::stay_held_failed(left)), None);
+        }
     }
     (
         Decision::Swap {
@@ -69,6 +79,7 @@ pub fn damp(
             reason: Reason::FailedProbe,
         },
         None,
+        evidence,
     )
 }
 

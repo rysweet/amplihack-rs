@@ -13,6 +13,7 @@
 //! points read for the cycle). A dated reading older than that is
 //! superseded: never ranked, never substituted and never swapped on.
 
+use super::super::damp::high_use::Evidence;
 use super::super::identify::Skip;
 use super::super::ledger::OverflowBlock;
 use super::super::measure::ProbeLabel;
@@ -149,6 +150,8 @@ pub struct Standing {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Seen {
     pub extra: Extra,
+    /// Evidence for a failed-probe swap made during the post-swap hold.
+    pub(in crate::commands::profile::rotate) failed_probe_use: Option<Evidence>,
     /// Every plan login the cycle measured, and every one it skipped without
     /// reading (issue #2910), so a login whose room was never read is counted.
     pub logins: BTreeMap<ProfileName, Standing>,
