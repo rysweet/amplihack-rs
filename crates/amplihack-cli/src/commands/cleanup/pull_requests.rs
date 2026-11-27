@@ -14,8 +14,11 @@ use std::time::Duration;
 const GH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT: usize = 1024 * 1024;
 const PAGE_SIZE: usize = 100;
-// Shared by the listings and any exact-head lookups for this repository.
-const MAX_REQUESTS: usize = 40;
+// Including the first page, manual cleanup makes at most 40 requests per
+// repository. A continuation on the last page makes the whole listing unusable.
+const MAX_PAGES: usize = 40;
+
+pub(super) type Listing = HashMap<String, PrInfo>;
 
 /// Resolve the checkout's GitHub repository without contacting its remotes.
 /// Honor the selection saved by gh repo set-default. Otherwise the GitHub
@@ -155,155 +158,70 @@ fn public_github_repository(url: &str) -> Option<String> {
     github_repository_from_remote_url(url).map(|name| name.to_ascii_lowercase())
 }
 
-pub(super) struct Listing {
-    branches: HashMap<String, PrInfo>,
-    pub(super) full_history: bool,
-    historical: HashMap<String, Result<Option<PrInfo>, String>>,
-    remaining: usize,
-}
-
-impl Listing {
-    pub(super) fn load(repository: &str, now: DateTime<Utc>, keep: Duration) -> Result<Self> {
-        let mut listing = Self {
-            branches: HashMap::new(),
-            full_history: false,
-            historical: HashMap::new(),
-            remaining: MAX_REQUESTS,
-        };
-        let endpoint = format!("repos/{repository}/pulls");
-        let cutoff = chrono::TimeDelta::from_std(keep)
-            .ok()
-            .and_then(|keep| now.checked_sub_signed(keep));
-        listing.full_history = listing.scan(&endpoint, "all", cutoff)?;
-        if !listing.full_history {
-            // Even a PR whose last update predates the keep period can be open.
-            listing.scan(&endpoint, "open", None)?;
+/// Build an index only after the last page has been validated. A duplicate
+/// number can indicate that the collection changed while it was being read.
+pub(super) fn list(repository: &str) -> Result<Listing> {
+    let endpoint = format!("repos/{repository}/pulls");
+    let mut seen = HashSet::new();
+    let mut branches = Listing::new();
+    let mut advertised_last = 1;
+    for page in 1..=MAX_PAGES {
+        let body =
+            request_page(&endpoint, page).with_context(|| format!("PR listing page {page}"))?;
+        let (payload, has_next, last_page) = response_page(&body, &endpoint, page)
+            .with_context(|| format!("PR listing page {page}"))?;
+        if let Some(last_page) = last_page {
+            advertised_last = advertised_last.max(last_page);
         }
-        Ok(listing)
-    }
-
-    pub(super) fn find(
-        &mut self,
-        repository: &str,
-        branch: &str,
-        needs_history: bool,
-    ) -> Result<Option<&PrInfo>, &str> {
-        let known = self.branches.get(branch);
-        if known.is_some() || self.full_history || !needs_history {
-            return Ok(known);
+        ensure!(
+            has_next || page >= advertised_last,
+            "PR listing ended at page {page} before advertised page {advertised_last}"
+        );
+        let rows: Vec<RawPr> = serde_json::from_str(payload).context("cannot parse PR listing")?;
+        ensure!(rows.len() <= PAGE_SIZE, "PR listing exceeds the page size");
+        for row in rows {
+            let (branch, pr) = row.into_pr()?;
+            ensure!(seen.insert(pr.number), "PR listing repeated a pull request");
+            branches
+                .entry(branch)
+                .and_modify(|known| {
+                    if known.state != "OPEN"
+                        && (pr.state == "OPEN"
+                            || pr.closed_at.or(pr.merged_at) >= known.closed_at.or(known.merged_at))
+                    {
+                        *known = pr.clone();
+                    }
+                })
+                .or_insert(pr);
         }
-        self.historical
-            .entry(branch.into())
-            .or_insert_with(|| {
-                take_request(&mut self.remaining)
-                    .and_then(|()| historical_pr(repository, branch))
-                    .map_err(|e| format!("{e:#}"))
-            })
-            .as_ref()
-            .map(Option::as_ref)
-            .map_err(String::as_str)
-    }
-
-    /// The all-state scan can stop once the descending update order proves
-    /// that any unread closed PR is old enough. Return true on the final page.
-    fn scan(&mut self, endpoint: &str, state: &str, cutoff: Option<DateTime<Utc>>) -> Result<bool> {
-        let mut seen = HashSet::new();
-        let mut furthest_page = 1;
-        let mut last_updated = None;
-        let mut page = 1;
-        loop {
-            take_request(&mut self.remaining)?;
-            let body = request_page(endpoint, state, page)
-                .with_context(|| format!("{state} PR listing page {page}"))?;
-            let (payload, has_next, last_page) = response_page(&body, endpoint, page)
-                .with_context(|| format!("{state} PR listing page {page}"))?;
-            furthest_page = furthest_page.max(last_page.unwrap_or(page));
-            ensure!(
-                has_next || page >= furthest_page,
-                "{state} PR listing ended at page {page} before advertised page {furthest_page}"
-            );
-            let rows: Vec<RawPr> =
-                serde_json::from_str(payload).context("cannot parse PR listing")?;
-            ensure!(rows.len() <= PAGE_SIZE, "PR listing exceeds the page size");
-            for row in rows {
-                if state == "all" {
-                    let updated = row.updated_at.context("PR listing has no update time")?;
-                    ensure!(
-                        last_updated.is_none_or(|previous| updated <= previous)
-                            && row
-                                .closed_at
-                                .into_iter()
-                                .chain(row.merged_at)
-                                .all(|stamp| stamp <= updated),
-                        "PR listing has inconsistent update times"
-                    );
-                    last_updated = Some(updated);
-                }
-                let (branch, pr) = row.into_pr()?;
-                ensure!(
-                    state != "open" || pr.state == "OPEN",
-                    "open PR listing contains a closed PR"
-                );
-                ensure!(seen.insert(pr.number), "PR listing repeated a pull request");
-                self.branches
-                    .entry(branch)
-                    .and_modify(|known| {
-                        if known.state != "OPEN"
-                            && (pr.state == "OPEN"
-                                || pr.closed_at.or(pr.merged_at)
-                                    >= known.closed_at.or(known.merged_at))
-                        {
-                            *known = pr.clone();
-                        }
-                    })
-                    .or_insert(pr);
-            }
-            if !has_next {
-                return Ok(true);
-            }
-            if cutoff
-                .zip(last_updated)
-                .is_some_and(|(cutoff, updated)| updated <= cutoff)
-            {
-                return Ok(false);
-            }
-            page += 1;
+        if !has_next {
+            return Ok(branches);
         }
     }
+    bail!("PR listing continues past the {MAX_PAGES}-page limit")
 }
 
-fn take_request(remaining: &mut usize) -> Result<()> {
-    ensure!(
-        *remaining > 0,
-        "PR evidence exceeds the {MAX_REQUESTS}-request limit"
-    );
-    *remaining -= 1;
-    Ok(())
-}
-
-fn gh_api() -> Command {
+fn request_page(endpoint: &str, page: usize) -> Result<Vec<u8>> {
     let mut command = Command::new("gh");
     amplihack_git::scrub(&mut command);
     command
-        .args(["api", "--hostname", "github.com"])
-        .stdin(Stdio::null())
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1");
-    command
-}
-
-fn request_page(endpoint: &str, state: &str, page: usize) -> Result<Vec<u8>> {
-    let mut command = gh_api();
-    command
-        .args(["--include", "--method", "GET"])
+        .args([
+            "api",
+            "--hostname",
+            "github.com",
+            "--include",
+            "--method",
+            "GET",
+        ])
         .arg(endpoint)
-        .arg("-f")
-        .arg(format!("state={state}"))
-        .args(if state == "all" {
-            ["-f", "sort=updated", "-f", "direction=desc"]
-        } else {
-            ["-f", "sort=created", "-f", "direction=asc"]
-        })
+        .args([
+            "-f",
+            "state=all",
+            "-f",
+            "sort=created",
+            "-f",
+            "direction=asc",
+        ])
         .arg("-f")
         .arg(format!("per_page={PAGE_SIZE}"))
         .arg("-f")
@@ -311,13 +229,12 @@ fn request_page(endpoint: &str, state: &str, page: usize) -> Result<Vec<u8>> {
         .arg("--jq")
         .arg(concat!(
             "if type == \"array\" then ",
-            "map({number, state, closed_at, merged_at, updated_at, head: {ref: .head.ref}}) ",
+            "map({number, state, closed_at, merged_at, head: {ref: .head.ref}}) ",
             "else error(\"expected an array of pull requests\") end",
-        ));
-    gh_output(command)
-}
-
-fn gh_output(command: Command) -> Result<Vec<u8>> {
+        ))
+        .stdin(Stdio::null())
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1");
     let output = crate::util::run_output_with_timeout_limited(command, GH_TIMEOUT, MAX_OUTPUT)?;
     ensure!(
         output.status.success(),
@@ -425,7 +342,6 @@ struct RawPr {
     state: String,
     closed_at: Option<DateTime<Utc>>,
     merged_at: Option<DateTime<Utc>>,
-    updated_at: Option<DateTime<Utc>>,
     head: PrHead,
 }
 
@@ -460,76 +376,6 @@ impl RawPr {
     }
 }
 
-/// Only an exact match is needed here. The shared scans have already checked
-/// the branch for open and recently closed PRs across the repository.
-fn historical_pr(repository: &str, branch: &str) -> Result<Option<PrInfo>> {
-    const QUERY: &str = "query($owner:String!,$repo:String!,$branch:String!) { \
-        repository(owner:$owner,name:$repo) { \
-            pullRequests(first:1,states:[CLOSED,MERGED],headRefName:$branch, \
-                orderBy:{field:UPDATED_AT,direction:DESC}) { \
-                nodes { number state headRefName closedAt mergedAt } \
-            } \
-        } \
-    }";
-    let (owner, repo) = repository
-        .split_once('/')
-        .context("invalid repository name")?;
-    let mut command = gh_api();
-    command
-        .args(["graphql", "-f"])
-        .arg(format!("query={QUERY}"))
-        .arg("-f")
-        .arg(format!("owner={owner}"))
-        .arg("-f")
-        .arg(format!("repo={repo}"))
-        .arg("-f")
-        .arg(format!("branch={branch}"));
-    let body = gh_output(command).context("cannot check branch PR history")?;
-    let response: serde_json::Value =
-        serde_json::from_slice(&body).context("cannot parse branch PR history")?;
-    ensure!(
-        response.get("errors").is_none(),
-        "cannot check branch PR history"
-    );
-    let rows = response
-        .pointer("/data/repository/pullRequests/nodes")
-        .and_then(serde_json::Value::as_array)
-        .context("branch PR history has no result")?;
-    let row = match rows.as_slice() {
-        [] => return Ok(None),
-        [row] => row,
-        _ => bail!("branch PR history returned several results"),
-    };
-    let pr: HistoricalPr =
-        serde_json::from_value(row.clone()).context("invalid branch PR history")?;
-    ensure!(
-        pr.head_ref_name == branch
-            && pr.number > 0
-            && match pr.state.as_str() {
-                "CLOSED" => pr.closed_at.is_some(),
-                "MERGED" => pr.merged_at.is_some(),
-                _ => false,
-            },
-        "invalid branch PR history"
-    );
-    Ok(Some(PrInfo {
-        number: pr.number,
-        state: pr.state,
-        closed_at: pr.closed_at,
-        merged_at: pr.merged_at,
-    }))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct HistoricalPr {
-    number: u64,
-    state: String,
-    head_ref_name: String,
-    closed_at: Option<DateTime<Utc>>,
-    merged_at: Option<DateTime<Utc>>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,7 +391,7 @@ mod tests {
         );
         let last = b"HTTP/2.0 200 OK\nLink: <https://api.github.com/repositories/12/pulls?page=39>; rel=\"prev\"\n\n[]";
         assert_eq!(
-            response_page(last, ENDPOINT, MAX_REQUESTS).unwrap(),
+            response_page(last, ENDPOINT, MAX_PAGES).unwrap(),
             ("[]", false, None)
         );
     }

@@ -86,33 +86,16 @@ printf '%s\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 test "$1" = api || exit 64
 endpoint=
 page=
-state=
-owner=
-repo=
-branch=
 for a in "$@"; do
   case "$a" in
-    repos/*/pulls|graphql) endpoint=$a ;;
+    repos/*/pulls) endpoint=$a ;;
     page=*) page=${a#page=} ;;
-    state=*) state=${a#state=} ;;
-    owner=*) owner=${a#owner=} ;;
-    repo=*) repo=${a#repo=} ;;
-    branch=*) branch=${a#branch=} ;;
   esac
 done
-if [ "$endpoint" = graphql ]; then
-  cat "$FAKE_GH_DIR/$owner/$repo/history/$branch.json"
-  exit $?
-fi
 test -n "$endpoint" && test -n "$page" || exit 64
 repository=${endpoint#repos/}
 repository=${repository%/pulls}
 dir="$FAKE_GH_DIR/$repository"
-case "$state" in
-  all) ;;
-  open) dir="$dir/open" ;;
-  *) exit 64 ;;
-esac
 if [ -f "$dir/$page.fail" ]; then echo 'fake gh: simulated failure' >&2; exit 1; fi
 if [ -f "$dir/$page.http" ]; then cat "$dir/$page.http"; exit 0; fi
 printf 'HTTP/2.0 200 OK\n\n'
@@ -419,7 +402,6 @@ impl Fx {
             Err(err) => panic!("cannot read fake PR rows: {err}"),
         };
         rows.push(row);
-        rows.sort_by(|a, b| b["updated_at"].as_str().cmp(&a["updated_at"].as_str()));
         fs::write(path, serde_json::to_vec(&rows).unwrap()).unwrap();
     }
 
@@ -427,14 +409,14 @@ impl Fx {
         let at = rfc3339_hours_ago(closed_hours_ago);
         self.gh_add(serde_json::json!({
             "number": number, "state": "closed", "head": {"ref": branch},
-            "closed_at": at, "merged_at": merged.then_some(&at), "updated_at": at,
+            "closed_at": at, "merged_at": merged.then_some(&at),
         }));
     }
 
     pub fn gh_open(&self, branch: &str, number: u64) {
         self.gh_add(serde_json::json!({
             "number": number, "state": "open", "head": {"ref": branch},
-            "closed_at": null, "merged_at": null, "updated_at": rfc3339_hours_ago(1),
+            "closed_at": null, "merged_at": null,
         }));
     }
 
@@ -449,13 +431,12 @@ impl Fx {
 
     pub fn gh_page(&self, repository: &str, page: usize, next: bool, rows: &str) {
         let links = next.then_some(("next", page + 1));
-        self.gh_page_with_links(repository, "all", page, links.as_slice(), rows);
+        self.gh_page_with_links(repository, page, links.as_slice(), rows);
     }
 
     pub fn gh_page_with_links(
         &self,
         repository: &str,
-        state: &str,
         page: usize,
         links: &[(&str, usize)],
         rows: &str,
@@ -463,25 +444,13 @@ impl Fx {
         let mut response = String::from("HTTP/2.0 200 OK\r\n");
         for (relation, linked_page) in links {
             response.push_str(&format!(
-                "Link: <https://api.github.com/repos/{repository}/pulls?state={state}&per_page=100&page={linked_page}>; rel=\"{relation}\"\r\n",
+                "Link: <https://api.github.com/repos/{repository}/pulls?state=all&per_page=100&page={linked_page}>; rel=\"{relation}\"\r\n",
             ));
         }
         response.push_str("\r\n");
         response.push_str(rows);
-        let mut dir = self.gh_repository_dir(repository);
-        if state == "open" {
-            dir = dir.join("open");
-            fs::create_dir_all(&dir).unwrap();
-        }
+        let dir = self.gh_repository_dir(repository);
         fs::write(dir.join(format!("{page}.http")), response).unwrap();
-    }
-
-    pub fn gh_history(&self, repository: &str, branch: &str, response: &serde_json::Value) {
-        let path = self
-            .gh_repository_dir(repository)
-            .join(format!("history/{branch}.json"));
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, response.to_string()).unwrap();
     }
 
     pub fn take_gh_calls(&self) -> Vec<String> {

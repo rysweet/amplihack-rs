@@ -934,17 +934,15 @@ older or interrupted runs, a worktree is **eligible** in either of these cases:
 In report and apply mode, `amplihack cleanup` matches pull requests by exact
 head branch name. It honors a verified checkout's `gh repo set-default`
 selection. Without a selection, its GitHub fetch remotes must identify the
-same repository. Checkouts of that repository share an invocation-local
-listing in descending update order. Once the listing reaches PRs older than
-the keep period, cleanup can stop scanning history and list open PRs
-separately. An older or interrupted run with a recently modified `run.json`
-can still need an exact-branch history lookup. An older closed or merged PR
-can make that worktree eligible while the no-PR rule still keeps it.
+same repository. Checkouts of that repository share a complete all-state
+REST listing, in creation order, using pages of 100 with a limit of 40
+requests per repository and a 30-second timeout per request.
 
-Listings use pages of 100. Listings and history lookups share a limit of 40
-requests per repository and a 30-second timeout per request. If cleanup cannot
-identify the repository or validate the PR evidence it needs, it keeps the
-dependent items and reports why.
+If cleanup cannot identify the repository or validate the complete listing,
+it keeps the dependent items and reports why. A listing that still has a
+continuation at the page limit keeps those items even when it already
+contains a matching PR. Complete history distinguishes an old closed or
+merged PR from an absent PR when `run.json` was modified recently.
 
 These rules decide worktrees, and targets recorded in the legacy format. A
 run's legacy targets are removed only when every worktree the run still has is

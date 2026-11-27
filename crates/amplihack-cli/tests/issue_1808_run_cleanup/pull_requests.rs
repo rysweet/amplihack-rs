@@ -25,7 +25,7 @@ fn assert_kept(report: &Value, wt: &Path) {
 
 fn open_pr(number: usize, branch: &str) -> Value {
     json!({"number": number, "state": "open", "head": {"ref": branch},
-           "closed_at": null, "merged_at": null, "updated_at": rfc3339_hours_ago(1)})
+           "closed_at": null, "merged_at": null})
 }
 
 #[test]
@@ -70,7 +70,12 @@ fn manual_report_and_apply_share_bounded_listings_across_checkouts() {
             let calls = fx.take_gh_calls();
             assert_eq!(calls.len(), 3, "{calls:?}");
             assert!(
-                calls.iter().all(|call| !call.contains("--head")),
+                calls.iter().all(|call| {
+                    call.starts_with("api ")
+                        && call.contains("state=all")
+                        && !call.contains("--head")
+                        && !call.contains("graphql")
+                }),
                 "{calls:?}"
             );
             assert_eq!(
@@ -177,14 +182,8 @@ fn failed_or_malformed_pages_keep_all_dependent_worktrees() {
 fn a_terminal_page_before_the_advertised_last_page_keeps_worktrees() {
     let fx = Fx::new();
     let wt = seed_worktree(&fx, &fx.repo, "first", "on-unread-page");
-    fx.gh_page_with_links(
-        DEFAULT_REPOSITORY,
-        "all",
-        1,
-        &[("next", 2), ("last", 3)],
-        "[]",
-    );
-    fx.gh_page_with_links(DEFAULT_REPOSITORY, "all", 2, &[("prev", 1)], "[]");
+    fx.gh_page_with_links(DEFAULT_REPOSITORY, 1, &[("next", 2), ("last", 3)], "[]");
+    fx.gh_page_with_links(DEFAULT_REPOSITORY, 2, &[("prev", 1)], "[]");
     fx.gh_page(
         DEFAULT_REPOSITORY,
         3,
@@ -194,115 +193,7 @@ fn a_terminal_page_before_the_advertised_last_page_keeps_worktrees() {
 
     let report = fx.cleanup_json(&["--apply"]);
     assert_kept(&report, &wt);
-    assert!(
-        entry_for(&report, &wt)["reason"]
-            .as_str()
-            .unwrap()
-            .contains("ended at page 2 before advertised page 3")
-    );
     assert_eq!(fx.gh_calls().lines().count(), 2);
-}
-
-#[test]
-fn deep_history_is_only_queried_when_it_can_change_the_run_verdict() {
-    let fx = Fx::new();
-    let cases = [
-        ("stale-open", 72, true),
-        ("closed-recently", 72, true),
-        ("old-run", 72, false),
-        ("touched/old-merge", 1, false),
-        ("touched-no-pr", 1, true),
-        ("touched-lookup-failed", 1, true),
-    ];
-    let mut worktrees = Vec::new();
-    for (branch, mtime, keep) in cases {
-        let wt = fx.worktree(branch);
-        let mut run = SeedRun::ended(72).owns_worktree(&wt, branch);
-        run.run_json_mtime_hours_ago = mtime;
-        fx.seed_run(&run);
-        worktrees.push((wt, keep));
-    }
-
-    let recent = rfc3339_hours_ago(1);
-    let old = rfc3339_hours_ago(72);
-    let rows = json!([
-        {"number": 2, "state": "closed", "head": {"ref": "closed-recently"},
-         "closed_at": recent, "merged_at": null, "updated_at": recent},
-        {"number": 3, "state": "closed", "head": {"ref": "irrelevant"},
-         "closed_at": old, "merged_at": null, "updated_at": old},
-    ]);
-    fx.gh_page_with_links(
-        DEFAULT_REPOSITORY,
-        "all",
-        1,
-        &[("next", 2), ("last", 100)],
-        &rows.to_string(),
-    );
-    fx.gh_fail(DEFAULT_REPOSITORY, 2);
-    let mut stale_open = open_pr(4, "stale-open");
-    stale_open["updated_at"] = json!(old);
-    fx.gh_page_with_links(
-        DEFAULT_REPOSITORY,
-        "open",
-        1,
-        &[],
-        &json!([stale_open]).to_string(),
-    );
-    fx.gh_history(
-        DEFAULT_REPOSITORY,
-        "touched/old-merge",
-        &json!({"data": {"repository": {"pullRequests": {"nodes": [
-            {"number": 1, "state": "MERGED", "headRefName": "touched/old-merge",
-             "closedAt": old, "mergedAt": old}
-        ]}}}}),
-    );
-    fx.gh_history(
-        DEFAULT_REPOSITORY,
-        "touched-no-pr",
-        &json!({"data": {"repository": {"pullRequests": {"nodes": []}}}}),
-    );
-    fx.gh_history(
-        DEFAULT_REPOSITORY,
-        "touched-lookup-failed",
-        &json!({"errors": [{"message": "listing failed"}]}),
-    );
-
-    let report = fx.cleanup_json(&["--apply"]);
-    for (wt, keep) in &worktrees {
-        if *keep {
-            assert_kept(&report, wt);
-        } else {
-            assert_eq!(entry_for(&report, wt)["action"], "removed", "{wt:?}");
-            assert!(!wt.exists(), "{wt:?}");
-        }
-    }
-    assert_eq!(
-        entry_for(&report, &worktrees[4].0)["reason"],
-        "within keep period (no PR)"
-    );
-    assert!(
-        entry_for(&report, &worktrees[5].0)["reason"]
-            .as_str()
-            .unwrap()
-            .contains("cannot check branch PR history")
-    );
-    let calls = fx.take_gh_calls();
-    assert_eq!(calls.len(), 5, "{calls:?}");
-    assert!(calls[0].contains("state=all -f sort=updated -f direction=desc"));
-    assert!(calls[1].contains("state=open"));
-    for branch in [
-        "touched/old-merge",
-        "touched-no-pr",
-        "touched-lookup-failed",
-    ] {
-        assert_eq!(
-            calls
-                .iter()
-                .filter(|call| call.ends_with(&format!("branch={branch}")))
-                .count(),
-            1
-        );
-    }
 }
 
 #[test]
@@ -310,7 +201,18 @@ fn cap_requires_an_end_signal_even_when_the_last_page_is_full() {
     let fx = Fx::new();
     let absent = seed_worktree(&fx, &fx.repo, "first", "absent");
     let present = seed_worktree(&fx, &fx.repo, "first", "last-page");
-    for page in 1..PAGE_CAP {
+    let old_branch = "touched-old-merge";
+    let old_merge = fx.worktree(old_branch);
+    let mut run = SeedRun::ended(72).owns_worktree(&old_merge, old_branch);
+    run.run_json_mtime_hours_ago = 1;
+    fx.seed_run(&run);
+    let old = rfc3339_hours_ago(72);
+    let first_page = json!([
+        {"number": 101, "state": "closed", "head": {"ref": old_branch},
+         "closed_at": old, "merged_at": old}
+    ]);
+    fx.gh_page(DEFAULT_REPOSITORY, 1, true, &first_page.to_string());
+    for page in 2..PAGE_CAP {
         // A short page can still have an explicit continuation.
         fx.gh_page(DEFAULT_REPOSITORY, page, true, "[]");
     }
@@ -322,12 +224,15 @@ fn cap_requires_an_end_signal_even_when_the_last_page_is_full() {
     let truncated = fx.cleanup_json(&["--apply"]);
     assert_kept(&truncated, &absent);
     assert_kept(&truncated, &present);
+    assert_kept(&truncated, &old_merge);
     assert_eq!(fx.take_gh_calls().len(), PAGE_CAP);
 
     fx.gh_page(DEFAULT_REPOSITORY, PAGE_CAP, false, &rows);
     let complete = fx.cleanup_json(&["--apply"]);
     assert_eq!(entry_for(&complete, &absent)["action"], "removed");
     assert!(!absent.exists());
+    assert_eq!(entry_for(&complete, &old_merge)["action"], "removed");
+    assert!(!old_merge.exists());
     assert_kept(&complete, &present);
     assert_eq!(fx.take_gh_calls().len(), PAGE_CAP);
 }

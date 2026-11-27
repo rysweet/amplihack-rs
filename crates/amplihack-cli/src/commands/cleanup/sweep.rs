@@ -1086,31 +1086,15 @@ impl Collector<'_> {
                 };
             }
         };
-        let no_pr = self.no_pr(ended, run);
-        let needs_history = matches!(no_pr, Verdict::Skip { .. });
-        let now = self.now.into();
-        let keep = self.s.keep;
         let listing = self
             .pr_listings
             .entry(repository.clone())
-            .or_insert_with(|| {
-                pull_requests::Listing::load(&repository, now, keep).map_err(|e| format!("{e:#}"))
-            });
-        let verdict = listing
-            .as_mut()
-            .map_err(|error| error.as_str())
-            .and_then(|prs| {
-                let full_history = prs.full_history;
-                Ok(match prs.find(&repository, branch, needs_history)? {
-                    Some(pr) => pr_verdict(pr, now, keep),
-                    None if !full_history && !needs_history => Verdict::Eligible {
-                        reason: "no open or recently closed PR; keep period has passed".into(),
-                    },
-                    None => no_pr,
-                })
-            });
-        match verdict {
-            Ok(verdict) => verdict,
+            .or_insert_with(|| pull_requests::list(&repository).map_err(|e| format!("{e:#}")));
+        match listing {
+            Ok(prs) => match prs.get(branch) {
+                Some(pr) => pr_verdict(pr, self.now.into(), self.s.keep),
+                None => self.no_pr(ended, run),
+            },
             Err(error) => Verdict::Skip {
                 reason: format!("cannot list pull requests: {error}"),
             },
