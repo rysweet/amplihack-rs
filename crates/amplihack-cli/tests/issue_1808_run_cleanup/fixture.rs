@@ -452,7 +452,7 @@ impl Fx {
         let mut response = String::from("HTTP/2.0 200 OK\r\n");
         for (relation, linked_page) in links {
             response.push_str(&format!(
-                "Link: <https://api.github.com/repos/{repository}/pulls?state=all&per_page=100&page={linked_page}>; rel=\"{relation}\"\r\n",
+                "Link: <https://api.github.com/repos/{repository}/pulls?state=all&sort=created&direction=asc&per_page=100&page={linked_page}>; rel=\"{relation}\"\r\n",
             ));
         }
         response.push_str("\r\n");

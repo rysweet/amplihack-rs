@@ -15,6 +15,7 @@ const GH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT: usize = 1024 * 1024;
 const PAGE_SIZE: usize = 100;
 const MAX_PAGES: usize = 40;
+const LISTING_FILTERS: [&str; 3] = ["state=all", "sort=created", "direction=asc"];
 
 #[derive(PartialEq, Eq, Hash)]
 pub(super) struct Repository {
@@ -39,9 +40,9 @@ impl Remote {
 }
 
 /// Resolve the checkout's GitHub repository without contacting its remotes.
-/// Honor GH_REPO, then the selection saved by gh repo set-default. Otherwise
-/// all remotes that could supply a PR repository must agree on a public
-/// repository. GH_HOST applies unless GH_REPO names
+/// Honor GH_REPO. For checkout remotes, require a known public host before
+/// honoring gh repo set-default. Without a saved selection, the remotes must
+/// agree on a single public repository. GH_HOST applies unless GH_REPO names
 /// a host explicitly. Diagnostics omit selection values.
 pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repository> {
     if let Some(value) = std::env::var_os("GH_REPO").filter(|value| !value.is_empty()) {
@@ -96,18 +97,20 @@ pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repos
             remote.nonlocal_push |= !is_local_remote(url);
         }
     }
-    if let Some(name) = configured_repository(checkout, git_timeout, &remotes_by_name)? {
-        return Ok(Repository {
-            name,
-            use_default_host: false,
-        });
-    }
+    // gh can select its configured default host before reading gh-resolved.
+    // A public marker cannot resolve which host to use in a mixed checkout.
     ensure!(
         remotes_by_name
             .values()
             .all(|remote| !remote.is_unrecognized()),
         "checkout has a remote with an unrecognized PR repository"
     );
+    if let Some(name) = configured_repository(checkout, git_timeout, &remotes_by_name)? {
+        return Ok(Repository {
+            name,
+            use_default_host: false,
+        });
+    }
     let mut names = remotes_by_name
         .into_values()
         .flat_map(|remote| remote.public_repositories);
@@ -184,10 +187,6 @@ fn configured_repository(
             })
             .context("invalid GitHub repository selection")?;
         let remote = remotes.get(remote).context("selected remote is missing")?;
-        ensure!(
-            !remote.is_unrecognized(),
-            "selected remote has an unrecognized PR repository"
-        );
         let mut names = remote.public_repositories.iter();
         let remote_repo = names
             .next()
@@ -334,6 +333,10 @@ fn read_page(
     );
     let rows: Vec<RawPr> = serde_json::from_str(payload).context("cannot parse PR listing")?;
     ensure!(rows.len() <= PAGE_SIZE, "PR listing exceeds the page size");
+    ensure!(
+        !has_next || rows.len() == PAGE_SIZE,
+        "PR listing has a short page before its continuation"
+    );
     Ok((rows, has_next))
 }
 
@@ -345,18 +348,12 @@ fn request_page(repository: &Repository, endpoint: &str, page: usize) -> Result<
     if !repository.use_default_host {
         command.args(["--hostname", "github.com"]);
     }
+    command.args(["--include", "--method", "GET"]).arg(endpoint);
+    for filter in LISTING_FILTERS {
+        command.args(["-f", filter]);
+    }
     command
-        .args(["--include", "--method", "GET"])
-        .arg(endpoint)
-        .args([
-            "-f",
-            "state=all",
-            "-f",
-            "sort=created",
-            "-f",
-            "direction=asc",
-            "-f",
-        ])
+        .arg("-f")
         .arg(format!("per_page={PAGE_SIZE}"))
         .arg("-f")
         .arg(format!("page={page}"))
@@ -454,20 +451,33 @@ fn linked_page(url: &str, endpoint: &str) -> Result<usize> {
         path.eq_ignore_ascii_case(endpoint) || numeric_repository,
         "invalid PR continuation path"
     );
-    let mut pages = query
-        .split('&')
-        .filter_map(|part| part.strip_prefix("page="));
-    let page = pages
-        .next()
-        .filter(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
+    // Rebuilding the request is safe only if the link keeps the same
+    // filters, ordering and page size.
+    let page_size = format!("per_page={PAGE_SIZE}");
+    let mut expected: HashSet<_> = LISTING_FILTERS
+        .into_iter()
+        .chain([page_size.as_str()])
+        .collect();
+    let mut page = None;
+    for parameter in query.split('&') {
+        if let Some(value) = parameter.strip_prefix("page=") {
+            ensure!(page.is_none(), "PR continuation repeats the page number");
+            page = Some(value);
+        } else {
+            ensure!(
+                expected.remove(parameter),
+                "PR continuation changes the listing query"
+            );
+        }
+    }
+    ensure!(
+        expected.is_empty(),
+        "PR continuation omits listing parameters"
+    );
+    page.filter(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|page| *page > 0)
-        .context("PR continuation has no valid page number")?;
-    ensure!(
-        pages.next().is_none() && !query.contains('#'),
-        "PR continuation has an invalid query"
-    );
-    Ok(page)
+        .context("PR continuation has no valid page number")
 }
 
 #[derive(Deserialize)]
@@ -515,12 +525,15 @@ mod tests {
     use super::*;
 
     const ENDPOINT: &str = "repos/test-owner/test-repo/pulls";
+    const QUERY: &str = "direction=asc&per_page=100&sort=created&state=all";
 
     #[test]
     fn response_separates_http_headers_from_json_and_reads_continuation() {
-        let first = b"HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/12/pulls?state=all&page=2>; rel=\"next\", <https://api.github.com/repositories/12/pulls?state=all&page=40>; rel=\"last\"\r\n\r\n[]";
+        let first = format!(
+            "HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/12/pulls?page=2&{QUERY}>; rel=\"next\", <https://api.github.com/repositories/12/pulls?{QUERY}&page=40>; rel=\"last\"\r\n\r\n[]"
+        );
         assert_eq!(
-            response_page(first, ENDPOINT, 1).unwrap(),
+            response_page(first.as_bytes(), ENDPOINT, 1).unwrap(),
             ("[]", true, Some(40))
         );
         let last = b"HTTP/2.0 200 OK\nLink: <https://api.github.com/repositories/12/pulls?page=39>; rel=\"prev\"\n\n[]";
@@ -533,18 +546,45 @@ mod tests {
     #[test]
     fn response_rejects_invalid_or_inconsistent_pagination() {
         for header in [
-            "Link: broken",
-            "Link: <https://api.github.com/repositories/12/pulls?page=1>; rel=\"next\"",
-            "Link: <https://api.github.com/repositories/12/pulls?page=2&page=2>; rel=\"next\"",
-            "Link: <https://api.github.com/repositories/12/pulls?page=2>; rel=\"last\"",
-            "Link: <https://api.github.com/repositories/12/pulls?page=2>; rel=\"next\", <https://api.github.com/repositories/12/pulls?page=2>; rel=\"next\"",
-            "Link: <https://api.github.com/repos/test-owner/other/pulls?page=2>; rel=\"next\"",
+            "Link: broken".into(),
+            format!("Link: <https://api.github.com/{ENDPOINT}?{QUERY}&page=1>; rel=\"next\""),
+            format!(
+                "Link: <https://api.github.com/{ENDPOINT}?{QUERY}&page=2&page=2>; rel=\"next\""
+            ),
+            format!("Link: <https://api.github.com/{ENDPOINT}?{QUERY}&page=2>; rel=\"last\""),
+            format!(
+                "Link: <https://api.github.com/{ENDPOINT}?{QUERY}&page=2>; rel=\"next\", <https://api.github.com/{ENDPOINT}?{QUERY}&page=2>; rel=\"next\""
+            ),
+            format!(
+                "Link: <https://api.github.com/repos/test-owner/other/pulls?{QUERY}&page=2>; rel=\"next\""
+            ),
         ] {
             let response = format!("HTTP/2.0 200 OK\n{header}\n\n[]");
             assert!(response_page(response.as_bytes(), ENDPOINT, 1).is_err());
         }
         assert!(response_page(b"[]", ENDPOINT, 1).is_err());
         assert!(response_page(b"HTTP/2.0 206 Partial Content\n\n[]", ENDPOINT, 1).is_err());
+    }
+
+    #[test]
+    fn response_rejects_continuations_that_change_the_listing_query() {
+        for query in [
+            QUERY.replace("per_page=100", "per_page=50"),
+            QUERY.replace("&per_page=100", ""),
+            QUERY.replace("state=all", "state=open"),
+            QUERY.replace("sort=created", "sort=updated"),
+            QUERY.replace("direction=asc", "direction=desc"),
+            format!("{QUERY}&head=test-owner:branch"),
+            format!("{QUERY}&state=all"),
+        ] {
+            let response = format!(
+                "HTTP/2.0 200 OK\nLink: <https://api.github.com/{ENDPOINT}?{query}&page=2>; rel=\"next\"\n\n[]"
+            );
+            assert!(
+                response_page(response.as_bytes(), ENDPOINT, 1).is_err(),
+                "{query}"
+            );
+        }
     }
 
     #[test]

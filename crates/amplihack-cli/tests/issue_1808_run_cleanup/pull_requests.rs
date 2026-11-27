@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 const SECOND_REPOSITORY: &str = "fixture-owner/second";
+const PAGE_SIZE: usize = 100;
 const PAGE_CAP: usize = 40;
 
 fn seed_worktree(fx: &Fx, checkout: &Path, group: &str, branch: &str) -> PathBuf {
@@ -32,6 +33,13 @@ fn closed_pr(number: usize, branch: &str, closed_hours_ago: i64) -> Value {
     let at = rfc3339_hours_ago(closed_hours_ago);
     json!({"number": number, "state": "closed", "head": {"ref": branch},
            "closed_at": at, "merged_at": at})
+}
+
+fn full_page(page: usize) -> Vec<Value> {
+    let offset = (page - 1) * PAGE_SIZE;
+    (offset + 1..=offset + PAGE_SIZE)
+        .map(|number| open_pr(number, "unrelated"))
+        .collect()
 }
 
 #[test]
@@ -204,8 +212,9 @@ fn failed_or_malformed_pages_keep_all_dependent_worktrees() {
     let fx = Fx::new();
     let first = seed_worktree(&fx, &fx.repo, "first", "first");
     let second = seed_worktree(&fx, &fx.repo, "first", "second");
-    let old_pr = closed_pr(1, "first", 72);
-    fx.gh_page(DEFAULT_REPOSITORY, 1, true, &json!([old_pr]).to_string());
+    let mut rows = full_page(1);
+    rows[0] = closed_pr(1, "first", 72);
+    fx.gh_page(DEFAULT_REPOSITORY, 1, true, &json!(rows).to_string());
     fx.gh_page(
         DEFAULT_REPOSITORY,
         2,
@@ -226,16 +235,46 @@ fn failed_or_malformed_pages_keep_all_dependent_worktrees() {
 }
 
 #[test]
+fn a_short_intermediate_page_keeps_worktrees() {
+    let fx = Fx::new();
+    let wt = seed_worktree(&fx, &fx.repo, "first", "on-missing-row");
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        1,
+        true,
+        &json!(full_page(1)).to_string(),
+    );
+    let mut short = full_page(2);
+    short.truncate(PAGE_SIZE / 2);
+    fx.gh_page(DEFAULT_REPOSITORY, 2, true, &json!(short).to_string());
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        3,
+        false,
+        &json!([open_pr(201, "unrelated")]).to_string(),
+    );
+
+    let report = fx.cleanup_json(&["--apply"]);
+    assert_kept(&report, &wt);
+    assert_eq!(fx.take_gh_calls().len(), 2);
+}
+
+#[test]
 fn a_terminal_page_before_the_advertised_last_page_keeps_worktrees() {
     let fx = Fx::new();
     let wt = seed_worktree(&fx, &fx.repo, "first", "on-unread-page");
-    fx.gh_page_with_links(DEFAULT_REPOSITORY, 1, &[("next", 2), ("last", 3)], "[]");
+    fx.gh_page_with_links(
+        DEFAULT_REPOSITORY,
+        1,
+        &[("next", 2), ("last", 3)],
+        &json!(full_page(1)).to_string(),
+    );
     fx.gh_page_with_links(DEFAULT_REPOSITORY, 2, &[("prev", 1)], "[]");
     fx.gh_page(
         DEFAULT_REPOSITORY,
         3,
         false,
-        &json!([open_pr(1, "on-unread-page")]).to_string(),
+        &json!([open_pr(201, "on-unread-page")]).to_string(),
     );
 
     let report = fx.cleanup_json(&["--apply"]);
@@ -253,25 +292,19 @@ fn cap_requires_an_end_signal_even_when_the_last_page_is_full() {
     let mut run = SeedRun::ended(72).owns_worktree(&old_merge, old_branch);
     run.run_json_mtime_hours_ago = 1;
     fx.seed_run(&run);
-    let old_pr = closed_pr(2, old_branch, 72);
-    fx.gh_page(
-        DEFAULT_REPOSITORY,
-        1,
-        true,
-        &json!([open_pr(1, "last-page"), old_pr]).to_string(),
-    );
+    let mut first = full_page(1);
+    first[0] = closed_pr(1, old_branch, 72);
+    fx.gh_page(DEFAULT_REPOSITORY, 1, true, &json!(first).to_string());
     for page in 2..PAGE_CAP {
-        // A short page can still have an explicit continuation.
-        fx.gh_page(DEFAULT_REPOSITORY, page, true, "[]");
+        fx.gh_page(
+            DEFAULT_REPOSITORY,
+            page,
+            true,
+            &json!(full_page(page)).to_string(),
+        );
     }
-    let sample = closed_pr(3, "other", 1);
-    let rows: Vec<_> = (3..103)
-        .map(|number| {
-            let mut row = sample.clone();
-            row["number"] = json!(number);
-            row
-        })
-        .collect();
+    let mut rows = full_page(PAGE_CAP);
+    rows[PAGE_SIZE - 1] = open_pr(PAGE_CAP * PAGE_SIZE, "last-page");
     let rows = json!(rows).to_string();
     fx.gh_page(DEFAULT_REPOSITORY, PAGE_CAP, true, &rows);
     let truncated = fx.cleanup_json(&["--apply"]);
@@ -295,12 +328,13 @@ fn advertised_history_past_the_cap_keeps_every_dependent_worktree() {
     let fx = Fx::new();
     let absent = seed_worktree(&fx, &fx.repo, "first", "absent");
     let on_first_page = seed_worktree(&fx, &fx.repo, "first", "old-closure");
-    let rows = json!([closed_pr(1, "old-closure", 72)]).to_string();
+    let mut rows = full_page(1);
+    rows[0] = closed_pr(1, "old-closure", 72);
     fx.gh_page_with_links(
         DEFAULT_REPOSITORY,
         1,
         &[("next", 2), ("last", PAGE_CAP + 1)],
-        &rows,
+        &json!(rows).to_string(),
     );
 
     let report = fx.cleanup_json(&["--apply"]);
@@ -349,13 +383,11 @@ fn mixed_host_fetch_remotes_keep_the_worktree_without_querying_the_mirror() {
     assert!(fx.gh_calls().is_empty());
 
     fx.git_ok(&fx.repo, &["config", "remote.github.gh-resolved", "base"]);
-    let report = fx.cleanup_json_with(&[], |c| {
+    let report = fx.cleanup_json_with(&["--apply"], |c| {
         c.env_remove("GH_HOST").env_remove("GH_REPO");
     });
-    assert_eq!(entry_for(&report, &wt)["action"], "would-remove");
-    let calls = fx.take_gh_calls();
-    assert_eq!(calls.len(), 1, "{calls:?}");
-    assert!(calls[0].contains("repos/fixture-owner/first/pulls"));
+    assert_kept(&report, &wt);
+    assert!(fx.gh_calls().is_empty());
 }
 
 #[test]
