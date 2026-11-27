@@ -240,8 +240,13 @@ fn cap_requires_an_end_signal_even_when_the_last_page_is_full() {
         // A short page can still have an explicit continuation.
         fx.gh_page(DEFAULT_REPOSITORY, "closed", page, true, "[]");
     }
+    let same_update = closed_pr(2, "other", 1, 1);
     let rows: Vec<_> = (2..102)
-        .map(|number| closed_pr(number, "other", 1, 1))
+        .map(|number| {
+            let mut row = same_update.clone();
+            row["number"] = json!(number);
+            row
+        })
         .collect();
     let rows = json!(rows).to_string();
     fx.gh_page(DEFAULT_REPOSITORY, "closed", last_closed_page, true, &rows);
