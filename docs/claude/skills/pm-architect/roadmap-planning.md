@@ -35,7 +35,7 @@ To update it, read the current roadmap, mark completed milestones, adjust target
 
 Read the roadmap and backlog together. An item supports a goal when its title or description contains a word from that goal, using the match in [Goal Alignment Score](REFERENCE.md#goal-alignment-score-10-weight).
 
-For each goal, count each done milestone as one and each in-progress milestone as half. Divide by the total milestones, multiply by 100, cap at 100, and round to a whole percent. Record zero progress for a goal with no milestones. Report each goal's progress, target, risks, and blockers.
+For each goal, count each done milestone as one and each in-progress milestone as half. Divide by the total milestones, multiply by 100, cap at 100, and round to a whole percent. Report each goal's progress, target, risks, and blockers.
 
 ## Strategic Recommendations
 

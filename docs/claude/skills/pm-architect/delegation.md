@@ -35,27 +35,36 @@ Use the complex feature row when it applies.
 
 ### Builder
 
-1. Read the requirements and relevant files.
-2. Design the simplest solution that follows existing patterns.
-3. Implement working code without stubs or placeholders.
-4. Add tests covering the stated requirements.
-5. Follow the architectural notes.
-6. Update the documentation.
+1. Analyze requirements and examine relevant files listed below
+2. Design solution following existing patterns
+3. Implement working code (no stubs or placeholders)
+4. Add comprehensive tests per test requirements
+5. Follow architectural notes
+6. Update documentation
+
+Focus on ruthless simplicity. Start with simplest solution that works.
 
 ### Reviewer
 
-1. Check the code against the project philosophy and architectural notes.
-2. Look for stubs, placeholders, or dead code.
-3. Check test coverage against the requirements.
-4. Flag unnecessary complexity.
-5. Verify that the documentation reflects the change.
+1. Review code for philosophy compliance
+2. Verify no stubs, placeholders, or dead code
+3. Check test coverage against requirements
+4. Validate architectural notes followed
+5. Look for unnecessary complexity
+6. Ensure documentation updated
+
+Focus on ruthless simplicity and zero-BS implementation.
 
 ### Tester
 
-1. Read the expected behavior, contracts, and test requirements.
-2. Design tests for normal behavior and edge cases.
-3. Implement coverage for the stated requirements and run the tests.
-4. Document the test scenarios.
+1. Analyze behavior and contracts
+2. Review test requirements below
+3. Design tests for edge cases
+4. Implement comprehensive coverage
+5. Verify all tests pass
+6. Document test scenarios
+
+Focus on testing behavior, not implementation details.
 
 ## Find Relevant Files
 

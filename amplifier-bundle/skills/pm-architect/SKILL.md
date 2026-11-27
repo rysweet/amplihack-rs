@@ -5,7 +5,7 @@ explicit_triggers:
   - /top5
 ---
 
-# PM Architect Skill (Orchestrator)
+# PM Architect Skill
 
 ## Role
 
