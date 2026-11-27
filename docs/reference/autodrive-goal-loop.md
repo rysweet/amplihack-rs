@@ -179,8 +179,9 @@ change it, such as GitHub being unreachable. It does not change the PR's draft
 or ready state. The text is written in the journalistic style with literal
 words. It never quotes guidance, task text or secrets.
 
-This applies when required checks cannot start, repeated waits change
-nothing, and the run cannot clear the cause. Name the owner and decision.
+When the required checks cannot start and each wait returns with nothing
+changed, the run cannot clear the cause: hand off under the hand-off rule,
+naming the owner and the decision.
 
 ### Merging off
 

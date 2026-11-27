@@ -49,11 +49,12 @@ input, carry out a later task step), then pick one action: the goal's
   cannot clear; or the merge. Otherwise, write only the turn record. Keep the
   required hand-off comments, answers to rejected outcomes, turn records and
   readings unchanged.
+- When the required checks cannot start and each wait returns with nothing
+  changed, the run cannot clear the cause: hand off under the hand-off rule,
+  naming the owner and the decision.
 - Hand off only for a decision that belongs to a named owner, or for a failure
   that keeps repeating that nothing you can do will change, saying which owner
   and what decision. Write it in the journalistic style with literal words.
-  This applies when required checks cannot start, repeated waits change
-  nothing, and the run cannot clear the cause. Name the owner and decision.
 - When the owner asks the run to stop, commit and push, then take `stop` with
   the continuation note.
 
