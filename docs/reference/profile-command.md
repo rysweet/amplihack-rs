@@ -325,11 +325,24 @@ HTTP date gives the earliest time a later caller can make a direct read
 for that login. The usage row shows that time. The usage command and every
 rotate mode, including `--dry-run`, share the deadline. An absent, invalid,
 or elapsed value leaves the next ordinary caller eligible.
-The deadline follows the login when it moves between profile slots or
-Amplihack refreshes its OAuth tokens. A caller that finds a usage request in
+The deadline is shared by callers using the same OAuth login or the same
+named profile. A profile moved into `~/.claude` keeps its profile scope,
+and a Claude or Amplihack token rewrite in that scope keeps the deadline.
+A replacement login under the same profile name also waits if the previous
+login left an active deadline there. A caller that finds a usage request in
 progress reports the probe as unread and returns without sending a request.
-If a request exits before recording a server deadline, the next ordinary
-caller can read once it acquires the lock.
+
+An interrupted request or failed deadline write leaves no known server
+deadline. Once the lock is available, the next ordinary caller may make one
+request. A later 429 replaces the incomplete record with the new server
+deadline. This can result in one additional early request after a failed
+publication.
+
+For a failed `profile usage` row, the table and JSON can show a direct
+reading up to 300 seconds old when the current OAuth credential matches
+the one used for that reading. The cached figures keep their original
+observation time and are for display only. Profile-name history and passive
+readings lack that credential match and cannot supply these figures.
 
 **Endpoint overrides.** Two variables point the direct read at another
 server, for tests or a local relay:

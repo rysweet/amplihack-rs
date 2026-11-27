@@ -225,7 +225,7 @@ pub(super) fn read_from(
     };
     match env.mode {
         ProbeMode::Auto | ProbeMode::Text | ProbeMode::ControlOnly => {
-            return declined(env, plan, retry_parent).unwrap_or_else(|| fall(env.mode, None));
+            return declined(env, plan, root, retry_parent).unwrap_or_else(|| fall(env.mode, None));
         }
         ProbeMode::Ordered | ProbeMode::Direct => {}
     }
@@ -234,7 +234,8 @@ pub(super) fn read_from(
         if direct_only {
             return Probe::direct_error(OVERFLOW_NEEDS_TEXT);
         }
-        return declined(env, plan, retry_parent).unwrap_or_else(|| fall(ProbeMode::Text, None));
+        return declined(env, plan, root, retry_parent)
+            .unwrap_or_else(|| fall(ProbeMode::Text, None));
     }
     match read_without_claude(env, plan, root, retry_parent, now) {
         Ok(p) => p,
@@ -258,8 +259,26 @@ pub(super) fn read_from(
 }
 
 #[cfg(unix)]
-pub(super) fn declined(env: &SourceEnv, plan: &Plan, retry_parent: &Path) -> Option<Probe> {
-    match usage_direct::active_retry(&env.endpoints, &plan.creds_dir, retry_parent, || {
+impl Plan {
+    pub(super) fn retry_slot(&self, root: &Path) -> PathBuf {
+        self.passive
+            .as_ref()
+            .map_or_else(|| self.creds_dir.clone(), |name| root.join(name.as_str()))
+    }
+}
+
+#[cfg(unix)]
+pub(super) fn declined(
+    env: &SourceEnv,
+    plan: &Plan,
+    root: &Path,
+    retry_parent: &Path,
+) -> Option<Probe> {
+    let location = super::usage_retry::Location {
+        parent: retry_parent,
+        slot: &plan.retry_slot(root),
+    };
+    match usage_direct::active_retry(&env.endpoints, &plan.creds_dir, location, || {
         env.endpoints.usage_now_ms()
     }) {
         Ok(None) => None,
@@ -273,7 +292,7 @@ pub(super) fn declined(env: &SourceEnv, plan: &Plan, retry_parent: &Path) -> Opt
 }
 
 #[cfg(not(unix))]
-pub(super) fn declined(_: &SourceEnv, _: &Plan, _: &Path) -> Option<Probe> {
+pub(super) fn declined(_: &SourceEnv, _: &Plan, _: &Path, _: &Path) -> Option<Probe> {
     None
 }
 
@@ -359,14 +378,10 @@ fn read_without_claude(
     if let Some(name) = &plan.passive
         && let Some(report) = super::usage_passive::fresh(root, name, env.passive_max_age, now)
     {
-        let mut p = Probe::read(report, Source::Passive);
-        if let Some(declined) = declined(env, plan, retry_parent) {
-            if declined.retry_until_ms.is_none() {
-                return Ok(declined);
-            }
-            p.retry_until_ms = declined.retry_until_ms;
+        if let Some(declined) = declined(env, plan, root, retry_parent) {
+            return Ok(declined);
         }
-        return Ok(p);
+        return Ok(Probe::read(report, Source::Passive));
     }
     let journals = journals(root);
     let req = usage_direct::Request {
@@ -377,7 +392,11 @@ fn read_without_claude(
         timeout: env.timeout,
         now_ms: env.endpoints.usage_now_ms(),
     };
-    usage_direct::read(&env.endpoints, &req, retry_parent)
+    let location = super::usage_retry::Location {
+        parent: retry_parent,
+        slot: &plan.retry_slot(root),
+    };
+    usage_direct::read(&env.endpoints, &req, location)
         .map(Probe::direct)
         .map_err(|failure| (failure.why, failure.retry_until_ms))
 }

@@ -73,7 +73,15 @@ fn confirm_via_fake(
         now_ms: chrono::Utc::now().timestamp_millis(),
     };
     let ep = EP.with(|e| e.borrow().clone().expect("endpoints set"));
-    let reading = usage_direct::read(&ep, &req, &ctx.home).expect("local usage response");
+    let reading = usage_direct::read(
+        &ep,
+        &req,
+        crate::commands::profile::usage_retry::Location {
+            parent: &ctx.home,
+            slot: &dir,
+        },
+    )
+    .expect("local usage response");
     (Probed::from_report(&reading.report), None)
 }
 
@@ -233,7 +241,16 @@ impl Fx {
             now_ms: chrono::Utc::now().timestamp_millis(),
         };
         let ep = EP.with(|e| e.borrow().clone().unwrap());
-        let r = usage_direct::read(&ep, &req, &self.home).unwrap().report;
+        let r = usage_direct::read(
+            &ep,
+            &req,
+            crate::commands::profile::usage_retry::Location {
+                parent: &self.home,
+                slot: dir,
+            },
+        )
+        .unwrap()
+        .report;
         (
             r.session.and_then(|w| w.resets_at),
             r.week_all.and_then(|w| w.resets_at),

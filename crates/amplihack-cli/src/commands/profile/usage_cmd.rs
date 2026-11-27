@@ -493,7 +493,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     #[cfg(unix)]
     let shown = {
         let mut shown = shown;
-        show_cached_usage(store, &mut shown, at, swapped.as_ref());
+        reader.show_cached_usage(&mut shown, at, swapped.as_ref());
         shown
     };
     print_output(
@@ -563,39 +563,6 @@ pub(super) fn shown_rows(store: &ProfileStore, rows: &[Row], at: i64) -> Vec<Row
 #[cfg(not(unix))]
 pub(super) fn shown_rows(_store: &ProfileStore, rows: &[Row], _at: i64) -> Vec<Row> {
     rows.to_vec()
-}
-
-#[cfg(unix)]
-pub(super) fn show_cached_usage(
-    store: &ProfileStore,
-    rows: &mut [Row],
-    now: i64,
-    swapped: Option<&ProfileName>,
-) {
-    let mut history = None;
-    for r in rows.iter_mut().filter(|r| r.is_login()) {
-        let Ok(name) = ProfileName::parse(&r.profile) else {
-            continue;
-        };
-        if swapped == Some(&name) {
-            continue;
-        }
-        let previous = if r.failure_label().is_some() {
-            let history =
-                history.get_or_insert_with(|| usage_history::last_observations(store.root(), now));
-            super::usage_passive::last_good(store.root(), &name, now, history.get(name.as_str()))
-        } else if r.source == Some(Source::Passive) && r.retry_until_ms.is_some() {
-            Some(r.report.clone())
-        } else {
-            None
-        };
-        r.cached = previous.and_then(|report| {
-            let age = now.checked_sub(report.observed_at?)?;
-            (0..=super::rotate::fresh::MAX_READING_AGE_SECS)
-                .contains(&age)
-                .then_some((report, age as u64))
-        });
-    }
 }
 
 /// The warning printed when `<root>/.auto-switch` exists but cannot be
@@ -1301,6 +1268,42 @@ pub(super) struct RowReader {
 }
 
 impl RowReader {
+    #[cfg(unix)]
+    pub(super) fn show_cached_usage(
+        &self,
+        rows: &mut [Row],
+        now: i64,
+        swapped: Option<&ProfileName>,
+    ) {
+        let root = self.store.root();
+        for row in rows
+            .iter_mut()
+            .filter(|row| row.is_login() && row.failure_label().is_some())
+        {
+            row.cached = (|| {
+                let name = ProfileName::parse(&row.profile).ok()?;
+                if swapped == Some(&name) {
+                    return None;
+                }
+                let plan = self.plan(&name, row.live_in)?;
+                let location = super::usage_retry::Location {
+                    parent: self.home.as_deref().unwrap_or(root),
+                    slot: &plan.retry_slot(root),
+                };
+                let report =
+                    super::usage_direct::cached(&self.env.endpoints, &plan.creds_dir, location)?;
+                let age = now.checked_sub(report.observed_at?)?;
+                let unexpired = report
+                    .week_all
+                    .as_ref()
+                    .and_then(|week| week.resets_at)
+                    .is_none_or(|reset| now < reset);
+                (unexpired && (0..=super::rotate::fresh::MAX_READING_AGE_SECS).contains(&age))
+                    .then_some((report, age as u64))
+            })();
+        }
+    }
+
     /// Issue #2218: whether `name` is in the auto-switch `exclude` list.
     pub(super) fn is_excluded(&self, name: &ProfileName) -> bool {
         self.excluded.as_ref().is_none_or(|l| l.contains(name))
@@ -1466,7 +1469,7 @@ impl RowReader {
             return Spend::Unknown;
         };
         let retry_parent = self.home.as_deref().unwrap_or(self.store.root());
-        if usage_source::declined(&self.env, &plan, retry_parent).is_some() {
+        if usage_source::declined(&self.env, &plan, self.store.root(), retry_parent).is_some() {
             return Spend::Unknown;
         }
         let Some(bin) = self.binary.get() else {

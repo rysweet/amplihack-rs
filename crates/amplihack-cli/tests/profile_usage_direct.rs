@@ -329,6 +329,91 @@ fn usage_command_and_rotator_share_the_server_retry_deadline() {
 }
 
 #[test]
+fn a_declined_replacement_login_cannot_display_the_previous_logins_usage() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let reject_original = Arc::new(AtomicBool::new(false));
+    let server_reject = Arc::clone(&reject_original);
+    let s = setup_with(|_| {
+        Endpoint::serve(move |_, auth| {
+            if auth == format!("Bearer {}", access("spare"))
+                && !server_reject.load(Ordering::Relaxed)
+            {
+                let reset = iso(chrono::Utc::now().timestamp() + 3600);
+                let limits = serde_json::json!({
+                    "five_hour": {"utilization": 51, "resets_at": reset},
+                    "seven_day": {"utilization": 80, "resets_at": reset}
+                });
+                (200, limits.to_string())
+            } else {
+                (429, "{}".to_string())
+            }
+        })
+    });
+    let usage = || {
+        let mut cmd = s.f.cmd(&["profile", "usage", "--json", "spare"]);
+        cmd.env(API_BASE_ENV, s.endpoint.base())
+            .env(
+                TOKEN_URL_ENV,
+                format!("{}/v1/oauth/token", s.endpoint.base()),
+            )
+            .env(PASSIVE_ENV, "0")
+            .env("AMPLIHACK_PROFILE_USAGE_PROBE", "direct");
+        let output = cmd.output().unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        json_rows(&output).remove(0)
+    };
+
+    assert_eq!(usage()["session"]["used_percentage"], 51.0);
+    reject_original.store(true, Ordering::Relaxed);
+    let still_original = usage();
+    assert_eq!(still_original["failure_label"], "HTTP 429");
+    assert_eq!(still_original["cached"]["session"]["used_percentage"], 51.0);
+    assert_eq!(
+        still_original["cached"]["week_all"]["used_percentage"],
+        80.0
+    );
+    assert!(still_original["session"].is_null());
+    assert!(still_original["week_all"].is_null());
+    assert!(still_original["cached"]["observed_at"].is_number());
+
+    write_executable(
+        &s.f.tools.join("claude"),
+        r#"#!/bin/sh
+case "$1" in --version) printf '2.1.316 (Claude Code)\n'; exit 0;; esac
+umask 077
+cat > "$CLAUDE_CONFIG_DIR/.credentials.json" <<'EOF'
+{"claudeAiOauth":{"accessToken":"SENTINEL-ACCESS-replacement","refreshToken":"SENTINEL-REFRESH-replacement","expiresAt":4102444800000}}
+EOF
+cat > "$CLAUDE_CONFIG_DIR/.claude.json" <<'EOF'
+{"oauthAccount":{"accountUuid":"uuid-replacement","emailAddress":"replacement@example.com"}}
+EOF
+"#,
+        0o755,
+    );
+    let login = s.f.cmd(&["profile", "login", "spare"]).output().unwrap();
+    assert!(login.status.success(), "{}", text(&login.stderr));
+
+    let replacement = usage();
+    assert_eq!(replacement["failure_label"], "HTTP 429");
+    assert!(replacement.get("cached").is_none(), "{replacement}");
+    assert!(replacement["session"].is_null());
+    assert!(replacement["week_all"].is_null());
+    assert_eq!(
+        s.endpoint
+            .requests()
+            .iter()
+            .filter_map(|line| line.split_once(" Bearer ").map(|(_, token)| token))
+            .collect::<Vec<_>>(),
+        [
+            access("spare"),
+            access("spare"),
+            "SENTINEL-ACCESS-replacement".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn sixteen_profiles_are_read_directly_without_claude() {
     let s = setup(0);
     let start = Instant::now();

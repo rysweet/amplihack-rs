@@ -682,6 +682,8 @@ pub(super) struct Ctx<'a> {
     transport_guard: Option<Duration>,
     #[cfg(test)]
     transport: Option<&'a dyn TestTransport>,
+    #[cfg(test)]
+    pub(super) publish_retry: fn(std::fs::File, i64) -> io::Result<()>,
 }
 
 #[cfg(test)]
@@ -702,6 +704,7 @@ impl<'a> Ctx<'a> {
             refreshing,
             transport_guard: Some(guard),
             transport: None,
+            publish_retry: usage_retry::Held::publish,
         }
     }
 
@@ -709,6 +712,15 @@ impl<'a> Ctx<'a> {
     pub(super) fn with_transport(mut self, transport: &'a dyn TestTransport) -> Self {
         self.transport = Some(transport);
         self
+    }
+
+    fn publish_retry(&self, record: std::fs::File, until: i64) -> io::Result<()> {
+        #[cfg(test)]
+        {
+            (self.publish_retry)(record, until)
+        }
+        #[cfg(not(test))]
+        usage_retry::Held::publish(record, until)
     }
 
     fn send(
@@ -747,6 +759,8 @@ impl<'a> Ctx<'a> {
             transport_guard: None,
             #[cfg(test)]
             transport: None,
+            #[cfg(test)]
+            publish_retry: usage_retry::Held::publish,
         }
     }
 }
@@ -844,23 +858,78 @@ fn retry_lock(parent: &Path, key: &usage_retry::Key) -> Result<usage_retry::Held
     })
 }
 
+/// Keep the slot locked through dispatch and publication. Its last key may
+/// refer to credentials that Claude has since replaced, so consult it before
+/// considering the current key.
+fn slot_retry(
+    ep: &Endpoints,
+    location: usage_retry::Location<'_>,
+    now_ms: &impl Fn() -> i64,
+) -> Result<usage_retry::Held, Failure> {
+    let slot = retry_lock(
+        location.parent,
+        &usage_retry::Key::slot(&ep.api, location.slot),
+    )?;
+    if let Some(key) = slot.bound_key().map_err(|_| reason::RETRY_STATE)? {
+        let previous = retry_lock(location.parent, &key)?;
+        check_retry(&previous, now_ms)?;
+    }
+    Ok(slot)
+}
+
+fn check_retry(held: &usage_retry::Held, now_ms: &impl Fn() -> i64) -> Result<(), Failure> {
+    let deadline = held.deadline(now_ms()).map_err(|_| reason::RETRY_STATE)?;
+    match deadline {
+        Some(until) => Err(Failure::declined(Some(until))),
+        None => Ok(()),
+    }
+}
+
 /// Check the server deadline when a caller already has a passive reading
 /// or selected a mode that does not make the direct request.
 pub(super) fn active_retry(
     ep: &Endpoints,
     creds_dir: &Path,
-    retry_parent: &Path,
-    now_ms: impl FnOnce() -> i64,
+    location: usage_retry::Location<'_>,
+    now_ms: impl Fn() -> i64,
 ) -> Result<Option<i64>, &'static str> {
-    if !ep.usable() || !usage_retry::exists(retry_parent).map_err(|_| reason::RETRY_STATE)? {
+    if !ep.usable() || !usage_retry::exists(location.parent).map_err(|_| reason::RETRY_STATE)? {
         return Ok(None);
     }
-    let Ok(creds) = load(creds_dir) else {
-        return Ok(None);
+    let check = || -> Result<(), Failure> {
+        let slot = slot_retry(ep, location, &now_ms)?;
+        if let Ok(creds) = load(creds_dir) {
+            let key = creds.retry_key(&ep.api);
+            let held = retry_lock(location.parent, &key)?;
+            let result = check_retry(&held, &now_ms);
+            if result.is_err() {
+                slot.bind(&key).map_err(|_| reason::RETRY_STATE)?;
+            }
+            result?;
+        }
+        Ok(())
     };
-    let held = retry_lock(retry_parent, &creds.retry_key(&ep.api))?;
-    held.deadline(now_ms()).map_err(|_| reason::RETRY_STATE)
+    match check() {
+        Ok(()) => Ok(None),
+        Err(Failure {
+            retry_until_ms: Some(until),
+            ..
+        }) => Ok(Some(until)),
+        Err(failure) => Err(failure.why),
+    }
 }
+
+pub(super) fn cached(
+    ep: &Endpoints,
+    creds_dir: &Path,
+    location: usage_retry::Location<'_>,
+) -> Option<UsageReport> {
+    let creds = load(creds_dir).ok()?;
+    let slot = usage_retry::Key::slot(&ep.api, location.slot);
+    let access = usage_retry::Key::new(&ep.api, creds.access.as_str());
+    usage_retry::cached(location.parent, &slot, &access)
+}
+
 /// The usage of the login in `req.creds_dir`. At most two GETs and one
 /// refresh POST, all within `req.timeout` from the start of the read; a 429
 /// is not retried and a redirect is not followed.
@@ -872,9 +941,9 @@ pub(super) fn active_retry(
 pub(super) fn read(
     ep: &Endpoints,
     req: &Request<'_>,
-    retry_parent: &Path,
+    location: usage_retry::Location<'_>,
 ) -> Result<Direct, Failure> {
-    read_on(ep, req, &Ctx::system(), Some(retry_parent))
+    read_on(ep, req, &Ctx::system(), Some(location))
 }
 
 /// Direct transport and refresh tests that do not exercise shared state.
@@ -891,7 +960,7 @@ pub(super) fn read_on(
     ep: &Endpoints,
     req: &Request<'_>,
     ctx: &Ctx<'_>,
-    retry_parent: Option<&Path>,
+    location: Option<usage_retry::Location<'_>>,
 ) -> Result<Direct, Failure> {
     let started = ctx.clock.now();
     let wall_now = || {
@@ -900,20 +969,30 @@ pub(super) fn read_on(
             .saturating_add(i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
     };
     let deadline = ctx.deadline(req.timeout);
-    let creds = load(req.creds_dir)?;
+    let creds = load(req.creds_dir);
     if !ep.usable() {
         // Preserve the account verdict when no refresh or network is possible.
-        require_refresh_token(&creds, req.now_ms)?;
+        require_refresh_token(&creds?, req.now_ms)?;
         return Err(reason::TRANSPORT.into());
     }
+    // A credential file caught mid-rewrite can still have a live slot
+    // deadline. Check it before giving the caller a reason to fall back.
+    let slot = if let Some(location) = location
+        && (creds.is_ok()
+            || usage_retry::exists(location.parent).map_err(|_| reason::RETRY_STATE)?)
+    {
+        Some(slot_retry(ep, location, &wall_now)?)
+    } else {
+        None
+    };
+    let creds = creds?;
     let take_retry = |key: &usage_retry::Key| -> Result<Option<usage_retry::Held>, Failure> {
-        let Some(parent) = retry_parent else {
+        let Some((location, slot)) = location.zip(slot.as_ref()) else {
             return Ok(None);
         };
-        let held = retry_lock(parent, key)?;
-        if let Some(until) = held.deadline(wall_now()).map_err(|_| reason::RETRY_STATE)? {
-            return Err(Failure::declined(Some(until)));
-        }
+        let held = retry_lock(location.parent, key)?;
+        slot.bind(key).map_err(|_| reason::RETRY_STATE)?;
+        check_retry(&held, &wall_now)?;
         Ok(Some(held))
     };
     let key = creds.retry_key(&ep.api);
@@ -922,7 +1001,7 @@ pub(super) fn read_on(
     let agent = agent(ep, req.timeout, deadline);
     let now_s = req.now_ms.div_euclid(1000);
     let usage = |creds: &Creds, held: Option<&usage_retry::Held>| {
-        get_usage(
+        let result = get_usage(
             &agent,
             ep,
             &creds.access,
@@ -931,7 +1010,14 @@ pub(super) fn read_on(
             ctx,
             held,
             &wall_now,
-        )
+        );
+        if let (Some(slot), Ok(direct)) = (slot.as_ref(), &result) {
+            let access = usage_retry::Key::new(&ep.api, creds.access.as_str());
+            let mut report = direct.report.clone();
+            report.observed_at = Some(wall_now().div_euclid(1000));
+            let _ = slot.cache(&access, report);
+        }
+        result
     };
     let refresh_and_read = |held: Option<usage_retry::Held>| {
         let fresh = refresh(ep, req, ctx, &creds.access, deadline)?;
@@ -1137,6 +1223,9 @@ fn get_usage(
     if !parsed_agrees(&req, &url) {
         return Err(reason::TRANSPORT.into());
     }
+    // Check the budget before creating a durable in-flight marker. If its
+    // sync takes the remaining time, clear it without sending the request.
+    deadline.transport_timeout()?;
     let record = held
         .map(usage_retry::Held::begin)
         .transpose()
@@ -1157,7 +1246,7 @@ fn get_usage(
     });
     if let Some((held, record)) = held.zip(record) {
         match retry_until_ms {
-            Some(until) => usage_retry::Held::publish(record, until).map_err(|_| Failure {
+            Some(until) => ctx.publish_retry(record, until).map_err(|_| Failure {
                 why: reason::RETRY_NOT_SAVED,
                 retry_until_ms,
             })?,

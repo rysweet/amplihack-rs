@@ -2,20 +2,38 @@
 //! request and publication of any server deadline.
 
 use amplihack_utils::secure_files::{
-    check_private_file, dir_writable_by_others, ensure_private_dir, euid, open_private_nofollow,
-    read_bounded_nofollow, write_private_atomic,
+    check_private_dir, check_private_file, dir_writable_by_others, ensure_private_dir, euid,
+    open_private_nofollow, read_bounded_nofollow, write_private_atomic,
+    write_private_atomic_nosync,
 };
 use chrono::{DateTime, NaiveDateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+use super::usage_parse::UsageReport;
+
 pub(super) struct Held {
     dir: PathBuf,
-    deadline_file: String,
+    id: String,
     lock: fs::File,
+}
+
+/// The shared state directory's parent and the login's logical profile
+/// path. The latter stays fixed when a named profile lives in ~/.claude.
+#[derive(Clone, Copy)]
+pub(super) struct Location<'a> {
+    pub(super) parent: &'a Path,
+    pub(super) slot: &'a Path,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Cached {
+    access: String,
+    report: UsageReport,
 }
 
 impl Drop for Held {
@@ -51,6 +69,15 @@ impl Key {
     pub(super) fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub(super) fn slot(endpoint: &str, path: &Path) -> Self {
+        let mut hash = Sha256::new();
+        hash.update(endpoint.as_bytes());
+        // Token keys cannot contain a second separator.
+        hash.update(b"\0slot\0");
+        hash.update(path.as_os_str().as_encoded_bytes());
+        Self(format!("{:x}", hash.finalize()))
+    }
 }
 
 /// A passive read should leave state untouched until there is retry state
@@ -80,13 +107,39 @@ impl Held {
         lock.try_lock().map_err(io::Error::from)?;
         Ok(Self {
             dir,
-            deadline_file: format!("{id}.deadline"),
+            id: id.to_owned(),
             lock,
         })
     }
 
+    fn name(&self, extension: &str) -> String {
+        format!("{}.{extension}", self.id)
+    }
+
+    /// Remember the credential key before a request can be sent. This
+    /// pointer lives outside the credentials, so a native rewrite leaves it
+    /// intact. Pure moves can still find the same deadline by credential key.
+    pub(super) fn bind(&self, key: &Key) -> io::Result<()> {
+        let name = self.name("slot");
+        if self.bound_key()?.as_ref() != Some(key) {
+            write_private_atomic(&self.dir, &name, key.as_str().as_bytes())?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn bound_key(&self) -> io::Result<Option<Key>> {
+        let Some((raw, meta)) = read_bounded_nofollow(&self.dir.join(self.name("slot")), 64)?
+        else {
+            return Ok(None);
+        };
+        check_private_file(&meta)?;
+        let key = std::str::from_utf8(&raw).ok().and_then(Key::parse);
+        key.map(Some)
+            .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "invalid usage retry slot"))
+    }
+
     pub(super) fn deadline(&self, now_ms: i64) -> io::Result<Option<i64>> {
-        let path = self.dir.join(&self.deadline_file);
+        let path = self.dir.join(self.name("deadline"));
         let Some((raw, meta)) = read_bounded_nofollow(&path, 32)? else {
             return Ok(None);
         };
@@ -125,18 +178,39 @@ impl Held {
     /// Open the deadline record before sending the request. Publication uses
     /// this descriptor even if the directory is moved during the request.
     pub(super) fn begin(&self) -> io::Result<fs::File> {
-        write_private_atomic(&self.dir, &self.deadline_file, PENDING)?;
-        open_private_nofollow(&self.dir.join(&self.deadline_file))
+        let name = self.name("deadline");
+        write_private_atomic(&self.dir, &name, PENDING)?;
+        open_private_nofollow(&self.dir.join(name))
     }
 
     pub(super) fn clear(&self) -> io::Result<()> {
-        fs::remove_file(self.dir.join(&self.deadline_file))
+        fs::remove_file(self.dir.join(self.name("deadline")))
     }
 
     pub(super) fn publish(mut record: fs::File, until_ms: i64) -> io::Result<()> {
         record.write_all(format!("\n{until_ms}\n").as_bytes())?;
         record.sync_all()
     }
+
+    /// The display cache is disposable. A failed save leaves the read itself
+    /// valid, and an atomic replacement is enough for concurrent readers.
+    pub(super) fn cache(&self, access: &Key, report: UsageReport) -> io::Result<()> {
+        let bytes = serde_json::to_vec(&Cached {
+            access: access.as_str().to_owned(),
+            report,
+        })?;
+        write_private_atomic_nosync(&self.dir, &self.name("usage"), &bytes)
+    }
+}
+
+pub(super) fn cached(parent: &Path, slot: &Key, access: &Key) -> Option<UsageReport> {
+    let dir = parent.join(DIR);
+    check_private_dir(&dir).ok()?;
+    let path = dir.join(format!("{}.usage", slot.as_str()));
+    let (raw, meta) = read_bounded_nofollow(&path, super::usage_direct::MAX_BODY).ok()??;
+    check_private_file(&meta).ok()?;
+    let cached: Cached = serde_json::from_slice(&raw).ok()?;
+    (cached.access == access.as_str()).then_some(cached.report)
 }
 
 /// A server deadline in Unix milliseconds, strictly after receipt.
