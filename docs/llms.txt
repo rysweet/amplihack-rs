@@ -26,7 +26,7 @@
 - [default-workflow](/.claude/skills/default-workflow/SKILL.md): Standard 23-step development workflow
 - [investigation-workflow](/.claude/skills/investigation-workflow/SKILL.md): 6-phase research and exploration
 - [smart-test](/.claude/skills/smart-test/SKILL.md): Intelligent test generation and execution
-- [code-smell-detector](/.claude/skills/code-smell-detector/SKILL.md): Anti-pattern detection
+- [code-philosophy](/.claude/skills/code-philosophy/SKILL.md): Code philosophy audit and anti-pattern detection
 - [mermaid-diagram-generator](/.claude/skills/mermaid-diagram-generator/SKILL.md): Architecture diagrams
 - [github-copilot-cli](/.claude/skills/github-copilot-cli/SKILL.md): Copilot CLI integration
 - [pdf](/.claude/skills/pdf/SKILL.md): PDF reading and analysis

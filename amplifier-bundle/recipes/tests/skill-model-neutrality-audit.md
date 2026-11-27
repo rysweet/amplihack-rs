@@ -152,7 +152,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | claude-agent-sdk | Pass | Yes |
 | code-atlas | Pass | No |
 | code-philosophy | Pass | No |
-| code-smell-detector | Pass | Yes |
 | code-visualizer | Pass | Yes |
 | computer-scientist-analyst | Pass | Yes |
 | consensus-voting | Pass | Yes |
@@ -215,7 +214,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | oxidizer-workflow | Pass | No |
 | pdf | Pass | Yes |
 | philosopher-analyst | Pass | Yes |
-| philosophy-compliance-workflow | Pass | Yes |
 | physicist-analyst | Pass | Yes |
 | pm-architect | Pass | Yes |
 | poet-analyst | Pass | Yes |

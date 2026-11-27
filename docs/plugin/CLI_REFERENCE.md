@@ -919,7 +919,7 @@ Documentation:
   mermaid-diagram-generator - Architecture diagram generation
 
 Code Analysis:
-  code-smell-detector      - Anti-pattern detection
+  code-philosophy          - Code philosophy audit
   code-visualizer          - Code flow diagram generation
 
 Development:

@@ -297,21 +297,9 @@ if not val or len(str(val)) < 8:
 
 echo "PASS[11]: Recipe registered in _recipe_manifest.json"
 
-# ─── Assertion 12: Recipe prompts reference correct skills ───────────────────
+# ─── Assertion 13: Finding ID patterns ───────────────────────────────────────
 
 RAW=$(cat "${RECIPE}")
-
-if ! echo "${RAW}" | grep -q "code-smell-detector"; then
-  fail "[12a] Recipe does not reference code-smell-detector"
-fi
-echo "PASS[12a]: Recipe references code-smell-detector"
-
-if ! echo "${RAW}" | grep -q "philosophy-compliance-workflow"; then
-  fail "[12b] Recipe does not reference philosophy-compliance-workflow"
-fi
-echo "PASS[12b]: Recipe references philosophy-compliance-workflow"
-
-# ─── Assertion 13: Finding ID patterns ───────────────────────────────────────
 
 for pattern in "L1-" "L2-" "L3-" "C-" "R-"; do
   if ! echo "${RAW}" | grep -q "${pattern}"; then

@@ -196,13 +196,12 @@ assert_in_file \
   "test.*file|test.*util|test.*exception|test.*allowed|tests.*unwrap" \
   "$SKILL_FILE"
 
-# ─── Test 7: Skill does NOT duplicate code-smell-detector ───────────────────
+# ─── Test 7: Skill documents its audit purpose ───────────────────
 
 echo ""
-echo "Test 7: Differentiation from code-smell-detector"
+echo "Test 7: Skill audit purpose"
 
-# code-philosophy is a 3-pass auditor; code-smell-detector is a pattern detector.
-# They should have different purposes.
+# Check that the skill explains its purpose as a philosophy auditor.
 assert_in_file \
   "SKILL.md documents its unique purpose (audit/compliance)" \
   "audit|compliance|philosophy.*check|three.*pass|3.pass|multi.pass" \

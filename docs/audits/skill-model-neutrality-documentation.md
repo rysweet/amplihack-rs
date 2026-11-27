@@ -93,7 +93,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | claude-agent-sdk | Enumerated | Yes |
 | code-atlas | Enumerated | No |
 | code-philosophy | Enumerated | No |
-| code-smell-detector | Enumerated | Yes |
 | code-visualizer | Enumerated | Yes |
 | computer-scientist-analyst | Enumerated | Yes |
 | consensus-voting | Enumerated | Yes |
@@ -156,7 +155,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | oxidizer-workflow | Enumerated | No |
 | pdf | Enumerated | Yes |
 | philosopher-analyst | Enumerated | Yes |
-| philosophy-compliance-workflow | Enumerated | Yes |
 | physicist-analyst | Enumerated | Yes |
 | pm-architect | Enumerated | Yes |
 | poet-analyst | Enumerated | Yes |

@@ -591,7 +591,6 @@ Modular, on-demand capabilities that extend amplihack:
 <!-- - [Documentation Writing](claude/skills/documentation-writing/SKILL.md) - Eight Rules compliance (Coming soon) -->
 - [Mermaid Diagrams](claude/skills/mermaid-diagram-generator/SKILL.md) - Visual documentation
 - [Test Gap Analyzer](claude/skills/test-gap-analyzer/SKILL.md) - Find untested code
-- [Code Smell Detector](claude/skills/code-smell-detector/SKILL.md) - Identify anti-patterns
 
 ### Scenario Tools
 

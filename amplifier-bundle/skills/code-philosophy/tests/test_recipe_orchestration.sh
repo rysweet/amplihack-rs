@@ -146,21 +146,15 @@ for i in "${!EXPECTED_STEPS[@]}"; do
   fi
 done
 
-# ─── Test 5: Layer 1 invokes code-smell-detector ────────────────────────────
+# ─── Test 5: Layer 1 covers anti-pattern categories ────────────────────────────
 
 echo ""
-echo "Test 5: Layer 1 invokes code-smell-detector"
+echo "Test 5: Layer 1 covers anti-pattern categories"
 
 L1_SECTION=$(sed -n '/id: "layer-1-anti-patterns"/,/id: "layer-2/p' "$RECIPE_FILE" 2>/dev/null || true)
 if [[ -z "$L1_SECTION" ]]; then
   fail "could not extract Layer 1 section from recipe"
 else
-  if echo "$L1_SECTION" | grep -qi "code-smell-detector"; then
-    pass "Layer 1 references code-smell-detector skill"
-  else
-    fail "Layer 1 must reference code-smell-detector skill"
-  fi
-
   # Must detect these anti-pattern categories
   for category in "over-abstraction" "inheritance" "large.function|50.*line" "tight.coupling" "missing.*export|__all__"; do
     if echo "$L1_SECTION" | grep -qiE "$category"; then
@@ -178,21 +172,15 @@ else
   fi
 fi
 
-# ─── Test 6: Layer 2 invokes philosophy-compliance-workflow ──────────────────
+# ─── Test 6: Layer 2 covers architecture alignment categories ──────────────────
 
 echo ""
-echo "Test 6: Layer 2 invokes philosophy-compliance-workflow"
+echo "Test 6: Layer 2 covers architecture alignment categories"
 
 L2_SECTION=$(sed -n '/id: "layer-2-architecture"/,/id: "layer-3/p' "$RECIPE_FILE" 2>/dev/null || true)
 if [[ -z "$L2_SECTION" ]]; then
   fail "could not extract Layer 2 section from recipe"
 else
-  if echo "$L2_SECTION" | grep -qi "philosophy-compliance-workflow"; then
-    pass "Layer 2 references philosophy-compliance-workflow skill"
-  else
-    fail "Layer 2 must reference philosophy-compliance-workflow skill"
-  fi
-
   # Must receive Layer 1 findings for dedup
   if echo "$L2_SECTION" | grep -qi "layer_1_findings"; then
     pass "Layer 2 receives Layer 1 findings for dedup"
@@ -523,16 +511,10 @@ if [[ -n "$LAYER3_SECTION" ]]; then
   fi
 fi
 
-# ─── Test 18: SKILL.md documents all 3 composed skills ──────────────────────
+# ─── Test 18: SKILL.md documents its role in the audit ──────────────────────
 
 echo ""
-echo "Test 18: SKILL.md documents skill composition"
-
-assert_in_file "SKILL.md references code-smell-detector" \
-  "code-smell-detector" "$SKILL_FILE"
-
-assert_in_file "SKILL.md references philosophy-compliance-workflow" \
-  "philosophy-compliance-workflow" "$SKILL_FILE"
+echo "Test 18: SKILL.md documents its role in the audit"
 
 assert_in_file "SKILL.md explains its role as Layer 3 + orchestrator" \
   "orchestrat|trigger|activation|Layer 3.*trigger|trigger.*Layer" "$SKILL_FILE"
@@ -590,26 +572,6 @@ for pattern in "L1-" "L2-" "L3-" "C-" "R-"; do
     fail "recipe missing finding ID pattern: ${pattern}xxx"
   fi
 done
-
-# ─── Test 22: No modification of composed skills ────────────────────────────
-
-echo ""
-echo "Test 22: Composed skills are not modified"
-
-# Verify that code-smell-detector and philosophy-compliance-workflow
-# SKILL.md files do NOT reference code-philosophy-audit
-SMELL_SKILL="$REPO_ROOT/amplifier-bundle/skills/code-smell-detector/SKILL.md"
-COMPLIANCE_SKILL="$REPO_ROOT/amplifier-bundle/skills/philosophy-compliance-workflow/SKILL.md"
-
-if [[ -f "$SMELL_SKILL" ]]; then
-  assert_not_in_file "code-smell-detector not modified to reference audit recipe" \
-    "code-philosophy-audit" "$SMELL_SKILL"
-fi
-
-if [[ -f "$COMPLIANCE_SKILL" ]]; then
-  assert_not_in_file "philosophy-compliance-workflow not modified to reference audit recipe" \
-    "code-philosophy-audit" "$COMPLIANCE_SKILL"
-fi
 
 # ─── Test 23: Recipe dedup rules in Layer 4 ──────────────────────────────────
 

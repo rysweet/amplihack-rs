@@ -1,7 +1,7 @@
 name: "code-philosophy-audit"
 description: |
-  Orchestrated code philosophy audit composing code-smell-detector,
-  philosophy-compliance-workflow, and the 3-pass brick/quality/spirit audit.
+  Orchestrated code philosophy audit using the code-philosophy reference
+  for anti-pattern detection, architecture alignment, and a 3-pass audit.
   Five layers: anti-patterns → architecture alignment → 3-pass audit →
   consolidation → conditional re-assessment.
 version: "1.0.0"
@@ -27,7 +27,7 @@ context:
 
 steps:
   # ========================================================================
-  # LAYER 1: Anti-Pattern Detection (code-smell-detector)
+  # LAYER 1: Anti-Pattern Detection
   # Detects: over-abstraction, complex inheritance, large functions,
   # tight coupling, missing __all__ exports.
   # ========================================================================
@@ -41,13 +41,11 @@ steps:
       **Target:** {{target_path}}
       **Task:** {{task_description}}
 
-      You are the first layer of a 5-layer philosophy audit. Your job is to
-      detect anti-patterns using the code-smell-detector skill.
+      Detect anti-patterns using the code-philosophy criteria.
+      Run `amplihack directory find code-philosophy` and read `reference.md`
+      beside the returned skill file. Apply "Layer 1 Anti-Pattern Detection"
+      under "Criteria for Layers 1 and 2" to the audit target.
 
-      **Invoke the skill:**
-      Activate Skill(skill="code-smell-detector") against the target path.
-      If the Skill tool does not know that name, run `amplihack directory find code-smell-detector`.
-      Read the returned skill file in full and follow it. Resolve resources relative to that file.
       Focus on these categories:
       1. Over-abstraction (unnecessary layers, single-impl traits)
       2. Complex inheritance (depth >2 levels)
@@ -63,7 +61,7 @@ steps:
       ```json
       {
         "layer": 1,
-        "source": "code-smell-detector",
+        "source": "anti-patterns",
         "findings": [
           {
             "id": "L1-001",
@@ -85,7 +83,7 @@ steps:
     output: "layer_1_findings"
 
   # ========================================================================
-  # LAYER 2: Architecture Alignment (philosophy-compliance-workflow)
+  # LAYER 2: Architecture Alignment
   # Checks: ruthless simplicity, brick philosophy, Zen minimalism.
   # Has access to Layer 1 findings to avoid re-reporting.
   # ========================================================================
@@ -102,13 +100,11 @@ steps:
       **Layer 1 findings (already reported — do NOT duplicate):**
       {{layer_1_findings}}
 
-      You are the second layer. Your job is to check architecture alignment
-      using the philosophy-compliance-workflow skill.
+      Check architecture alignment using the code-philosophy criteria.
+      Run `amplihack directory find code-philosophy` and read `reference.md`
+      beside the returned skill file. Apply "Layer 2 Architecture Alignment"
+      under "Criteria for Layers 1 and 2" to the audit target.
 
-      **Invoke the skill:**
-      Activate Skill(skill="philosophy-compliance-workflow") against the target.
-      If the Skill tool does not know that name, run `amplihack directory find philosophy-compliance-workflow`.
-      Read the returned skill file in full and follow it. Resolve resources relative to that file.
       Focus on:
       1. Ruthless simplicity — over-engineered solutions where simpler exists
       2. Brick philosophy — modules not self-contained or regeneratable
@@ -125,7 +121,7 @@ steps:
       ```json
       {
         "layer": 2,
-        "source": "philosophy-compliance-workflow",
+        "source": "architecture",
         "findings": [
           {
             "id": "L2-001",

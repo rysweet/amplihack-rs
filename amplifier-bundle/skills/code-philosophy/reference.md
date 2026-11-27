@@ -12,10 +12,10 @@ five layers, each as a separate recipe step.
 ### Layer Interactions
 
 ```
-Layer 1 (code-smell-detector)
+Layer 1 (anti-pattern detection)
   │ findings passed forward
   ▼
-Layer 2 (philosophy-compliance-workflow)
+Layer 2 (architecture alignment)
   │ receives L1 findings for dedup, adds architecture findings
   ▼
 Layer 3 (3-pass audit)
@@ -53,8 +53,6 @@ Non-overlapping findings pass through to consolidation unchanged.
 | Mode | Command |
 |------|---------|
 | Full audit (all 5 layers) | `amplihack recipe run code-philosophy-audit -c target_path="src/" -c task_description="Full audit" -c repo_path=.` |
-| Layer 1 only | `Skill(skill="code-smell-detector")` |
-| Layer 2 only | `Skill(skill="philosophy-compliance-workflow")` |
 | Layer 3 only | `Skill(skill="code-philosophy")` — launches full recipe if runtime supports `recipe:` frontmatter |
 
 Audit scope is controlled by `target_path`: a file, directory, or empty for full repo.
@@ -73,8 +71,8 @@ All context variables passed via `-c key=value` to the recipe:
 
 | Variable | Set By | Description |
 |----------|--------|-------------|
-| `layer_1_findings` | Layer 1 | JSON findings from code-smell-detector |
-| `layer_2_findings` | Layer 2 | JSON findings from philosophy-compliance-workflow |
+| `layer_1_findings` | Layer 1 | JSON findings from anti-pattern detection |
+| `layer_2_findings` | Layer 2 | JSON findings from architecture alignment |
 | `layer_3_findings` | Layer 3 | JSON findings from 3-pass audit |
 | `consolidation_report` | Layer 4 | Unified deduplicated report with verdict |
 | `fix_results` | External | Set externally by user/dev-orchestrator after fixes are applied. The recipe does NOT invoke dev-orchestrator itself — fix delegation is a manual step between Layer 4 output and Layer 5 re-assessment. |
@@ -243,6 +241,28 @@ prompts. For large codebases, this can consume significant tokens. Strategies:
 | Layer 5 changed-file list is empty | Skip re-assessment |
 
 ---
+
+## Criteria for Layers 1 and 2
+
+### Layer 1 Anti-Pattern Detection
+
+- **Over-abstraction** follows §3.4. Also review abstractions with two implementations when they serve no meaningful interface. Use the implementations directly when the abstraction adds no value.
+- **Inheritance** follows §1.4.
+- **Large function** follows §1.2. Exclude Python docstrings from the body line count. Flag nesting deeper than three levels and extract focused helpers.
+- **Tight coupling** includes concrete dependencies constructed inside functions or methods, deep access into another object's internals, hardcoded implementation names in conditionals, wildcard imports, and circular dependencies. Pass dependencies through the constructor for classes or as arguments for functions.
+- **Missing exports** covers Python modules, including `__init__.py`, with missing or incomplete `__all__`. List the intended public exports explicitly in `__all__`.
+
+### Layer 2 Architecture Alignment
+
+Use §3.1 for ruthless simplicity and Zen minimalism, §3.3 for brick modularity, §3.6 for future-proofing, and §1.4 for composition.
+
+Ask five questions about each component.
+
+1. Do we need this for a problem we have today?
+2. What is the simplest way to solve that problem?
+3. Can this be a self-contained brick with one responsibility and clear connection points?
+4. Can an agent rebuild it from a specification with a clear contract and well-defined dependencies?
+5. Does the complexity add proportional value, and what would break if we simplified it?
 
 ## Pass 1: BRICK RULE Compliance — Detection Criteria
 
@@ -761,7 +781,7 @@ contract between layers and with downstream consumers.
 ```json
 {
   "layer": 1,
-  "source": "code-smell-detector",
+  "source": "anti-patterns",
   "findings": [{
     "id": "L1-001",
     "category": "over-abstraction|inheritance|large-function|tight-coupling|missing-exports",
