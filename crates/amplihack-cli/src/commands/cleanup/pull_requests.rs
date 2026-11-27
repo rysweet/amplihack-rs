@@ -22,9 +22,26 @@ pub(super) struct Repository {
     use_default_host: bool,
 }
 
+#[derive(Default)]
+struct Remote {
+    public_repositories: HashSet<String>,
+    local_fetch: bool,
+    unrecognized_fetch: bool,
+    nonlocal_push: bool,
+}
+
+impl Remote {
+    fn is_unrecognized(&self) -> bool {
+        // gh can try the push URL when the fetch URL supplies no repository.
+        self.unrecognized_fetch
+            || (self.nonlocal_push && (self.local_fetch || self.public_repositories.is_empty()))
+    }
+}
+
 /// Resolve the checkout's GitHub repository without contacting its remotes.
 /// Honor GH_REPO, then the selection saved by gh repo set-default. Otherwise
-/// the GitHub fetch remotes must agree. GH_HOST applies unless GH_REPO names
+/// all remotes that could supply a PR repository must agree on a public
+/// repository. GH_HOST applies unless GH_REPO names
 /// a host explicitly. Diagnostics omit selection values.
 pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repository> {
     if let Some(value) = std::env::var_os("GH_REPO").filter(|value| !value.is_empty()) {
@@ -60,15 +77,23 @@ pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repos
         "git remote output is too large"
     );
     let remotes = std::str::from_utf8(&output.stdout).context("git remotes are not UTF-8")?;
-    let mut remotes_by_name = HashSet::new();
+    let mut remotes_by_name = HashMap::<_, Remote>::new();
     for line in remotes.lines() {
         let (remote, url) = line.split_once('\t').context("invalid git remote output")?;
-        let Some(url) = url.strip_suffix(" (fetch)") else {
-            ensure!(url.ends_with(" (push)"), "invalid git remote output");
-            continue;
-        };
-        if let Some(name) = public_github_repository(url) {
-            remotes_by_name.insert((remote, name));
+        let remote = remotes_by_name.entry(remote).or_default();
+        if let Some(url) = url.strip_suffix(" (fetch)") {
+            if let Some(name) = public_github_repository(url) {
+                remote.public_repositories.insert(name);
+            } else if is_local_remote(url) {
+                remote.local_fetch = true;
+            } else {
+                remote.unrecognized_fetch = true;
+            }
+        } else {
+            let url = url
+                .strip_suffix(" (push)")
+                .context("invalid git remote output")?;
+            remote.nonlocal_push |= !is_local_remote(url);
         }
     }
     if let Some(name) = configured_repository(checkout, git_timeout, &remotes_by_name)? {
@@ -77,7 +102,15 @@ pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repos
             use_default_host: false,
         });
     }
-    let mut names = remotes_by_name.into_iter().map(|(_, name)| name);
+    ensure!(
+        remotes_by_name
+            .values()
+            .all(|remote| !remote.is_unrecognized()),
+        "checkout has a remote with an unrecognized PR repository"
+    );
+    let mut names = remotes_by_name
+        .into_values()
+        .flat_map(|remote| remote.public_repositories);
     let name = names
         .next()
         .context("checkout has no identifiable GitHub repository")?;
@@ -89,6 +122,14 @@ pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repos
         name,
         use_default_host: false,
     })
+}
+
+fn is_local_remote(url: &str) -> bool {
+    let path = url.strip_prefix("file://").unwrap_or(url);
+    !path.starts_with("//")
+        && !path.contains(':')
+        && !path.contains(char::is_whitespace)
+        && (path.starts_with('/') || path.starts_with("./") || path.starts_with("../"))
 }
 
 fn check_gh_host() -> Result<()> {
@@ -105,7 +146,7 @@ fn check_gh_host() -> Result<()> {
 fn configured_repository(
     checkout: &Path,
     git_timeout: Duration,
-    remotes: &HashSet<(&str, String)>,
+    remotes: &HashMap<&str, Remote>,
 ) -> Result<Option<String>> {
     let mut command = hardened_git();
     command.arg("-C").arg(checkout).args([
@@ -142,8 +183,13 @@ fn configured_repository(
                 ))
             })
             .context("invalid GitHub repository selection")?;
-        let mut names = remotes.iter().filter(|(key, _)| *key == remote);
-        let (_, remote_repo) = names
+        let remote = remotes.get(remote).context("selected remote is missing")?;
+        ensure!(
+            !remote.is_unrecognized(),
+            "selected remote has an unrecognized PR repository"
+        );
+        let mut names = remote.public_repositories.iter();
+        let remote_repo = names
             .next()
             .context("selected remote has no public GitHub fetch URL")?;
         let name = if value == "base" {

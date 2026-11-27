@@ -328,6 +328,58 @@ fn conflicting_repository_identities_keep_the_worktree_without_a_listing() {
 }
 
 #[test]
+fn mixed_host_fetch_remotes_keep_the_worktree_without_querying_the_mirror() {
+    let fx = Fx::new();
+    let wt = seed_worktree(&fx, &fx.repo, "first", "enterprise-pr");
+    fx.git_ok(
+        &fx.repo,
+        &[
+            "remote",
+            "add",
+            "upstream",
+            "https://ghe.example/fixture-owner/first.git",
+        ],
+    );
+    fx.gh_page(DEFAULT_REPOSITORY, 1, false, "[]");
+
+    let report = fx.cleanup_json_with(&["--apply"], |c| {
+        c.env_remove("GH_HOST").env_remove("GH_REPO");
+    });
+    assert_kept(&report, &wt);
+    assert!(fx.gh_calls().is_empty());
+
+    fx.git_ok(&fx.repo, &["config", "remote.github.gh-resolved", "base"]);
+    let report = fx.cleanup_json_with(&[], |c| {
+        c.env_remove("GH_HOST").env_remove("GH_REPO");
+    });
+    assert_eq!(entry_for(&report, &wt)["action"], "would-remove");
+    let calls = fx.take_gh_calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].contains("repos/fixture-owner/first/pulls"));
+}
+
+#[test]
+fn local_fetch_with_an_unrecognized_push_keeps_the_worktree() {
+    let fx = Fx::new();
+    let wt = seed_worktree(&fx, &fx.repo, "first", "enterprise-pr");
+    fx.git_ok(
+        &fx.repo,
+        &[
+            "config",
+            "remote.origin.pushurl",
+            "https://ghe.example/fixture-owner/first.git",
+        ],
+    );
+    fx.gh_page(DEFAULT_REPOSITORY, 1, false, "[]");
+
+    let report = fx.cleanup_json_with(&["--apply"], |c| {
+        c.env_remove("GH_HOST").env_remove("GH_REPO");
+    });
+    assert_kept(&report, &wt);
+    assert!(fx.gh_calls().is_empty());
+}
+
+#[test]
 fn unsupported_gh_host_keeps_worktrees_without_requesting_a_listing() {
     let fx = Fx::new();
     let wt = seed_worktree(&fx, &fx.repo, "first", "old-worktree");

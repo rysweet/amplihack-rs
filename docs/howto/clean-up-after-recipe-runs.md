@@ -933,9 +933,12 @@ older or interrupted runs, a worktree is **eligible** in either of these cases:
 
 In report and apply mode, `amplihack cleanup` matches pull requests by exact
 head branch name. It reads `GH_REPO` before the checkout's `gh repo set-default`
-selection. Without either selection, the checkout's GitHub fetch remotes
-must identify the same repository. Checkouts of the same repository share
-REST evidence. Cleanup reads all PR states in ascending creation order from
+selection. Without either selection, all remotes that could supply a PR
+repository must identify the same public GitHub repository. An unrecognized
+fetch URL, such as a GitHub Enterprise upstream, leaves the PR repository
+unresolved. A local fetch URL can also be ambiguous if the remote has a
+nonlocal push URL. Checkouts of the same repository share REST evidence.
+Cleanup reads all PR states in ascending creation order from
 `GET /repos/{owner}/{repo}/pulls`. Closing or reopening a PR leaves its
 position in the listing unchanged. The listing uses pages of 100, with a
 limit of 40 requests per repository and a 30-second timeout per request.
@@ -2007,7 +2010,7 @@ check `gh auth status` for github.com. Cleanup keeps dependent items when
 the required PR evidence is unavailable or exceeds the request limit.
 
 **Skipped with `cannot identify repository`.** Check `GH_REPO` if set.
-Otherwise, check the worktree's GitHub fetch remotes with `git remote -v`.
+Otherwise, check the worktree's remote URLs with `git remote -v`.
 For a checkout with a fork and an upstream remote, use `gh repo set-default`
 to select its PR repository.
 
