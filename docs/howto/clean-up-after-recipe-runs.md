@@ -937,13 +937,26 @@ selection. Without either selection, all remotes that could supply a PR
 repository must identify the same public GitHub repository. An unrecognized
 fetch URL, such as a GitHub Enterprise upstream, leaves the PR repository
 unresolved. A local fetch URL can also be ambiguous if the remote has a
-nonlocal push URL. Checkouts of the same repository share REST evidence.
+nonlocal push URL. A saved selection for a dotted remote name is also
+ambiguous because GitHub CLI reads the part before the first dot as the
+remote name. Checkouts of the same repository share REST evidence.
+
 Cleanup reads all PR states in ascending creation order from
 `GET /repos/{owner}/{repo}/pulls`. Closing or reopening a PR leaves its
-position in the listing unchanged. The listing uses pages of 100, with a
-limit of 40 requests per repository and a 30-second timeout per request.
-Cleanup keeps dependent items and reports why if it cannot resolve the
-repository or read a complete listing within that limit.
+position in this listing unchanged. Cleanup requests pages of 100, with
+a limit of 40 requests per repository and a 30-second timeout per request.
+If the listing advertises a history beyond this limit and there is room for
+two requests, cleanup requires a complete single page of open PRs followed
+by one page of all PR states ordered by most recent update. That second page
+must reach the keep-period cutoff or finish the listing. A close or reopen
+between the requests appears in the most recent updates. When sufficient
+evidence covers open PRs and recent closures, old run activity can authorize
+removal. A recently touched `run.json` still requires a matching older
+closure for removal.
+
+Cleanup keeps dependent items and reports why if the repository is
+ambiguous or the required pages are incomplete. An empty response to an
+advertised continuation is treated as incomplete.
 
 These rules decide worktrees, and targets recorded in the legacy format. A
 run's legacy targets are removed only when every worktree the run still has is

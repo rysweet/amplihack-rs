@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 const SECOND_REPOSITORY: &str = "fixture-owner/second";
 const PAGE_SIZE: usize = 100;
 const PAGE_CAP: usize = 40;
+const OPEN_FILTERS: [&str; 3] = ["open", "created", "asc"];
+const UPDATED_FILTERS: [&str; 3] = ["all", "updated", "desc"];
 
 fn seed_worktree(fx: &Fx, checkout: &Path, group: &str, branch: &str) -> PathBuf {
     let wt = fx.add_worktree(checkout, group, branch);
@@ -32,7 +34,7 @@ fn open_pr(number: usize, branch: &str) -> Value {
 fn closed_pr(number: usize, branch: &str, closed_hours_ago: i64) -> Value {
     let at = rfc3339_hours_ago(closed_hours_ago);
     json!({"number": number, "state": "closed", "head": {"ref": branch},
-           "closed_at": at, "merged_at": at})
+           "closed_at": at, "merged_at": at, "updated_at": at})
 }
 
 fn full_page(page: usize) -> Vec<Value> {
@@ -269,7 +271,12 @@ fn a_terminal_page_before_the_advertised_last_page_keeps_worktrees() {
         &[("next", 2), ("last", 3)],
         &json!(full_page(1)).to_string(),
     );
-    fx.gh_page_with_links(DEFAULT_REPOSITORY, 2, &[("prev", 1)], "[]");
+    fx.gh_page_with_links(
+        DEFAULT_REPOSITORY,
+        2,
+        &[("prev", 1)],
+        &json!([open_pr(101, "unrelated")]).to_string(),
+    );
     fx.gh_page(
         DEFAULT_REPOSITORY,
         3,
@@ -280,6 +287,23 @@ fn a_terminal_page_before_the_advertised_last_page_keeps_worktrees() {
     let report = fx.cleanup_json(&["--apply"]);
     assert_kept(&report, &wt);
     assert_eq!(fx.gh_calls().lines().count(), 2);
+}
+
+#[test]
+fn an_empty_advertised_last_page_keeps_the_worktree() {
+    let fx = Fx::new();
+    let wt = seed_worktree(&fx, &fx.repo, "first", "on-empty-page");
+    fx.gh_page_with_links(
+        DEFAULT_REPOSITORY,
+        1,
+        &[("next", 2), ("last", 2)],
+        &json!(full_page(1)).to_string(),
+    );
+    fx.gh_page_with_links(DEFAULT_REPOSITORY, 2, &[("prev", 1)], "[]");
+
+    let report = fx.cleanup_json(&["--apply"]);
+    assert_kept(&report, &wt);
+    assert_eq!(fx.take_gh_calls().len(), 2);
 }
 
 #[test]
@@ -324,7 +348,97 @@ fn cap_requires_an_end_signal_even_when_the_last_page_is_full() {
 }
 
 #[test]
-fn advertised_history_past_the_cap_keeps_every_dependent_worktree() {
+fn oversized_history_uses_open_prs_and_recent_updates() {
+    let fx = Fx::new();
+    let absent = seed_worktree(&fx, &fx.repo, "first", "absent");
+    let open = seed_worktree(&fx, &fx.repo, "first", "old-open");
+    let recent = seed_worktree(&fx, &fx.repo, "first", "recently-closed");
+    let reopened = seed_worktree(&fx, &fx.repo, "first", "reopened");
+    let old = fx.worktree("old-closure");
+    let touched_without_pr = fx.worktree("touched-without-pr");
+    let mut run = SeedRun::ended(72)
+        .owns_worktree(&old, "old-closure")
+        .owns_worktree(&touched_without_pr, "touched-without-pr");
+    run.run_json_mtime_hours_ago = 1;
+    fx.seed_run(&run);
+
+    let pr_count = PAGE_CAP * PAGE_SIZE + 1;
+    let first: Vec<_> = (1..=PAGE_SIZE)
+        .map(|number| closed_pr(number, "unrelated", 9000))
+        .collect();
+    let recent_page = |max_age| {
+        let mut reopened = open_pr(130, "reopened");
+        reopened["updated_at"] = json!(rfc3339_hours_ago(0));
+        let mut rows = vec![reopened, closed_pr(129, "recently-closed", 1)];
+        rows.extend((pr_count - PAGE_SIZE + 3..=pr_count).map(|number| {
+            let branch = if number == pr_count {
+                "old-closure"
+            } else {
+                "unrelated"
+            };
+            closed_pr(number, branch, max_age)
+        }));
+        json!(rows).to_string()
+    };
+    fx.gh_page_with_links(
+        DEFAULT_REPOSITORY,
+        1,
+        &[("next", 2), ("last", PAGE_CAP + 1)],
+        &json!(first).to_string(),
+    );
+    fx.gh_page_with_filters(
+        DEFAULT_REPOSITORY,
+        OPEN_FILTERS,
+        1,
+        &[],
+        &json!([open_pr(128, "old-open")]).to_string(),
+    );
+    let links = [("next", 2), ("last", PAGE_CAP + 1)];
+    fx.gh_page_with_filters(
+        DEFAULT_REPOSITORY,
+        UPDATED_FILTERS,
+        1,
+        &links,
+        &recent_page(2),
+    );
+
+    let truncated = fx.cleanup_json(&["--apply"]);
+    for wt in [
+        &absent,
+        &open,
+        &recent,
+        &reopened,
+        &old,
+        &touched_without_pr,
+    ] {
+        assert_kept(&truncated, wt);
+    }
+    assert_eq!(fx.take_gh_calls().len(), 3);
+
+    fx.gh_page_with_filters(
+        DEFAULT_REPOSITORY,
+        UPDATED_FILTERS,
+        1,
+        &links,
+        &recent_page(9000),
+    );
+    let complete = fx.cleanup_json(&["--apply"]);
+    for wt in [&absent, &old] {
+        assert_eq!(entry_for(&complete, wt)["action"], "removed");
+        assert!(!wt.exists(), "{wt:?}");
+    }
+    for wt in [&open, &recent, &reopened, &touched_without_pr] {
+        assert_kept(&complete, wt);
+    }
+    let calls = fx.take_gh_calls();
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    assert!(calls[0].contains("sort=created") && calls[0].contains("state=all"));
+    assert!(calls[1].contains("state=open"));
+    assert!(calls[2].contains("sort=updated") && calls[2].contains("state=all"));
+}
+
+#[test]
+fn oversized_history_and_incomplete_open_listing_keep_every_dependent_worktree() {
     let fx = Fx::new();
     let absent = seed_worktree(&fx, &fx.repo, "first", "absent");
     let on_first_page = seed_worktree(&fx, &fx.repo, "first", "old-closure");
@@ -336,11 +450,18 @@ fn advertised_history_past_the_cap_keeps_every_dependent_worktree() {
         &[("next", 2), ("last", PAGE_CAP + 1)],
         &json!(rows).to_string(),
     );
+    fx.gh_page_with_filters(
+        DEFAULT_REPOSITORY,
+        OPEN_FILTERS,
+        1,
+        &[("next", 2), ("last", 2)],
+        &json!(full_page(2)).to_string(),
+    );
 
     let report = fx.cleanup_json(&["--apply"]);
     assert_kept(&report, &absent);
     assert_kept(&report, &on_first_page);
-    assert_eq!(fx.take_gh_calls().len(), 1);
+    assert_eq!(fx.take_gh_calls().len(), 2);
 }
 
 #[test]
@@ -491,6 +612,33 @@ fn configured_github_repository_selects_the_upstream_of_a_fork() {
             .iter()
             .all(|call| call.contains("repos/fixture-owner/second/pulls"))
     );
+}
+
+#[test]
+fn dotted_saved_remote_keeps_the_upstream_worktree_without_querying_the_fork() {
+    let fx = Fx::new();
+    let wt = seed_worktree(&fx, &fx.repo, "first", "upstream-open");
+    for (remote, url) in [
+        ("upstream", "git@github.com:fixture-owner/second.git"),
+        ("upstream.fork", "git@github.com:fixture-owner/first.git"),
+    ] {
+        fx.git_ok(&fx.repo, &["remote", "add", remote, url]);
+    }
+    fx.git_ok(
+        &fx.repo,
+        &["config", "remote.upstream.fork.gh-resolved", "base"],
+    );
+    fx.gh_page(
+        SECOND_REPOSITORY,
+        1,
+        false,
+        &json!([open_pr(1, "upstream-open")]).to_string(),
+    );
+    fx.gh_page(DEFAULT_REPOSITORY, 1, false, "[]");
+
+    let report = fx.cleanup_json(&["--apply"]);
+    assert_kept(&report, &wt);
+    assert!(fx.gh_calls().is_empty());
 }
 
 #[test]

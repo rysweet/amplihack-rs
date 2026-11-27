@@ -87,19 +87,29 @@ test "$1" = api || exit 64
 endpoint=
 page=
 state=
+sort=
+direction=
 for a in "$@"; do
   case "$a" in
     repos/*/pulls) endpoint=$a ;;
     page=*) page=${a#page=} ;;
-    state=all) state=all ;;
+    state=*) state=${a#state=} ;;
+    sort=*) sort=${a#sort=} ;;
+    direction=*) direction=${a#direction=} ;;
   esac
 done
-test -n "$endpoint" && test -n "$page" && test -n "$state" || exit 64
+test -n "$endpoint" && test -n "$page" || exit 64
+query="$state-$sort-$direction"
+case "$query" in
+  all-created-asc|open-created-asc|all-updated-desc) ;;
+  *) exit 64 ;;
+esac
 repository=${endpoint#repos/}
 repository=${repository%/pulls}
 dir="$FAKE_GH_DIR/$repository"
 if [ -f "$dir/$page.fail" ]; then echo 'fake gh: simulated failure' >&2; exit 1; fi
-if [ -f "$dir/$page.http" ]; then cat "$dir/$page.http"; exit 0; fi
+if [ -f "$dir/$query-$page.http" ]; then cat "$dir/$query-$page.http"; exit 0; fi
+test "$query" = all-created-asc || exit 64
 printf 'HTTP/2.0 200 OK\n\n'
 if [ "$page" = 1 ] && [ -f "$dir/pulls.json" ]; then
   cat "$dir/pulls.json"
@@ -449,16 +459,31 @@ impl Fx {
         links: &[(&str, usize)],
         rows: &str,
     ) {
+        self.gh_page_with_filters(repository, ["all", "created", "asc"], page, links, rows);
+    }
+
+    pub fn gh_page_with_filters(
+        &self,
+        repository: &str,
+        [state, sort, direction]: [&str; 3],
+        page: usize,
+        links: &[(&str, usize)],
+        rows: &str,
+    ) {
         let mut response = String::from("HTTP/2.0 200 OK\r\n");
         for (relation, linked_page) in links {
             response.push_str(&format!(
-                "Link: <https://api.github.com/repos/{repository}/pulls?state=all&sort=created&direction=asc&per_page=100&page={linked_page}>; rel=\"{relation}\"\r\n",
+                "Link: <https://api.github.com/repos/{repository}/pulls?state={state}&sort={sort}&direction={direction}&per_page=100&page={linked_page}>; rel=\"{relation}\"\r\n",
             ));
         }
         response.push_str("\r\n");
         response.push_str(rows);
         let dir = self.gh_listing_dir(repository);
-        fs::write(dir.join(format!("{page}.http")), response).unwrap();
+        fs::write(
+            dir.join(format!("{state}-{sort}-{direction}-{page}.http")),
+            response,
+        )
+        .unwrap();
     }
 
     pub fn take_gh_calls(&self) -> Vec<String> {

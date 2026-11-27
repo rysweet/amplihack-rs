@@ -15,7 +15,9 @@ const GH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT: usize = 1024 * 1024;
 const PAGE_SIZE: usize = 100;
 const MAX_PAGES: usize = 40;
-const LISTING_FILTERS: [&str; 3] = ["state=all", "sort=created", "direction=asc"];
+const HISTORY_FILTERS: [&str; 3] = ["state=all", "sort=created", "direction=asc"];
+const OPEN_FILTERS: [&str; 3] = ["state=open", "sort=created", "direction=asc"];
+const UPDATED_FILTERS: [&str; 3] = ["state=all", "sort=updated", "direction=desc"];
 
 #[derive(PartialEq, Eq, Hash)]
 pub(super) struct Repository {
@@ -186,6 +188,13 @@ fn configured_repository(
                 ))
             })
             .context("invalid GitHub repository selection")?;
+        // gh splits the config key at the first two dots, so it associates
+        // remote.upstream.fork.gh-resolved with upstream. The two parsers
+        // cannot establish a shared selection for a dotted marker.
+        ensure!(
+            !remote.contains('.'),
+            "GitHub repository selection has an ambiguous dotted remote name"
+        );
         let remote = remotes.get(remote).context("selected remote is missing")?;
         let mut names = remote.public_repositories.iter();
         let remote_repo = names
@@ -249,37 +258,113 @@ fn public_github_repository(url: &str) -> Option<String> {
     github_repository_from_remote_url(url).map(|name| name.to_ascii_lowercase())
 }
 
-/// Complete PR evidence from one repository. Ascending creation order keeps
-/// PRs in the same position when other PRs are closed, reopened, or updated.
+/// Shared PR evidence from one repository, covering at least all open PRs
+/// and all closures within the keep period.
 pub(super) struct Listing {
     branches: HashMap<String, PrInfo>,
+    complete_history: bool,
 }
 
 impl Listing {
-    pub(super) fn read(repository: &Repository) -> Result<Self, String> {
+    pub(super) fn read(
+        repository: &Repository,
+        now: DateTime<Utc>,
+        keep: Duration,
+    ) -> Result<Self> {
         let endpoint = format!("repos/{}/pulls", repository.name);
         let mut listing = Self {
             branches: HashMap::new(),
+            complete_history: false,
         };
         let mut seen = HashSet::new();
         let mut advertised_last = 1;
+        // Creation order keeps PRs in place when they close, reopen, or
+        // receive updates, so this listing can safely span multiple pages.
         for page in 1..=MAX_PAGES {
-            let next_page = read_page(repository, &endpoint, page, &mut advertised_last)
-                .and_then(|(rows, has_next)| {
-                    for row in rows {
-                        let (branch, pr) = row.into_pr()?;
-                        // Repeated rows can indicate that the listing shifted.
-                        ensure!(seen.insert(pr.number), "PR listing repeated a pull request");
-                        listing.record(branch, pr);
-                    }
-                    Ok(has_next)
-                })
-                .map_err(|error| format!("PR listing page {page}: {error:#}"))?;
-            if !next_page {
+            let response = read_page(repository, &endpoint, &HISTORY_FILTERS, page)
+                .with_context(|| format!("PR history page {page}"))?;
+            advertised_last = advertised_last.max(response.last_page.unwrap_or(1));
+            ensure!(
+                response.has_next || page >= advertised_last,
+                "PR listing ended before advertised page {advertised_last}"
+            );
+            listing
+                .record_page(response.rows, &mut seen)
+                .with_context(|| format!("PR history page {page}"))?;
+            // Leave room for both narrower requests. Incomplete pages are
+            // rejected above, even when a narrower query would fit.
+            if advertised_last > MAX_PAGES && page <= MAX_PAGES - 2 {
+                listing.read_open_and_recent(repository, &endpoint, now, keep)?;
+                return Ok(listing);
+            }
+            ensure!(
+                advertised_last <= MAX_PAGES,
+                "PR listing exceeds the {MAX_PAGES}-request limit"
+            );
+            if !response.has_next {
+                listing.complete_history = true;
                 return Ok(listing);
             }
         }
-        Err(format!("PR listing exceeds the {MAX_PAGES}-request limit"))
+        bail!("PR listing exceeds the {MAX_PAGES}-request limit")
+    }
+
+    fn record_page(&mut self, rows: Vec<RawPr>, seen: &mut HashSet<u64>) -> Result<()> {
+        for row in rows {
+            let (branch, pr) = row.into_pr()?;
+            // Repeated rows can indicate that the listing shifted.
+            ensure!(seen.insert(pr.number), "PR listing repeated a pull request");
+            self.record(branch, pr);
+        }
+        Ok(())
+    }
+
+    fn read_open_and_recent(
+        &mut self,
+        repository: &Repository,
+        endpoint: &str,
+        now: DateTime<Utc>,
+        keep: Duration,
+    ) -> Result<()> {
+        let open = read_page(repository, endpoint, &OPEN_FILTERS, 1).context("open PR listing")?;
+        ensure!(!open.has_next, "open PR listing requires multiple pages");
+        ensure!(
+            open.rows.iter().all(|row| row.state == "open"),
+            "open PR listing returned a different state"
+        );
+        self.record_page(open.rows, &mut HashSet::new())?;
+
+        // Read all states after the open snapshot. PRs that close or reopen
+        // between these requests appear among the recent updates either way.
+        // Neither filtered nor update-ordered evidence can safely cross an
+        // offset boundary, since a state change or update can move rows.
+        let recent =
+            read_page(repository, endpoint, &UPDATED_FILTERS, 1).context("recent PR listing")?;
+        let mut oldest_update = None;
+        for row in &recent.rows {
+            let updated = row.updated_at.context("PR is missing its update time")?;
+            ensure!(
+                oldest_update.is_none_or(|previous| updated <= previous)
+                    && row
+                        .closed_at
+                        .or(row.merged_at)
+                        .is_none_or(|closed| closed <= updated),
+                "PR listing has inconsistent update times"
+            );
+            oldest_update = Some(updated);
+        }
+        let cutoff = chrono::TimeDelta::from_std(keep)
+            .ok()
+            .and_then(|keep| now.checked_sub_signed(keep));
+        ensure!(
+            !recent.has_next
+                || oldest_update
+                    .zip(cutoff)
+                    .is_some_and(|(updated, cutoff)| updated <= cutoff),
+            "recent PR listing did not reach the keep-period cutoff on its first page"
+        );
+        self.record_page(recent.rows, &mut HashSet::new())?;
+        Ok(())
     }
 
     fn record(&mut self, branch: String, pr: PrInfo) {
@@ -308,39 +393,61 @@ impl Listing {
         keep: Duration,
         no_pr: Verdict,
     ) -> Verdict {
-        self.branches
-            .get(branch)
-            .map_or(no_pr, |pr| pr_verdict(pr, now, keep))
+        if let Some(pr) = self.branches.get(branch) {
+            return pr_verdict(pr, now, keep);
+        }
+        if self.complete_history {
+            return no_pr;
+        }
+        match no_pr {
+            Verdict::Eligible { .. } => Verdict::Eligible {
+                reason: "no open or recent PR; run activity is outside the keep period".into(),
+            },
+            Verdict::Skip { .. } => Verdict::Skip {
+                reason: "run activity is within the keep period and full PR history is unavailable"
+                    .into(),
+            },
+        }
     }
+}
+
+struct Page {
+    rows: Vec<RawPr>,
+    has_next: bool,
+    last_page: Option<usize>,
 }
 
 fn read_page(
     repository: &Repository,
     endpoint: &str,
+    filters: &[&str],
     page: usize,
-    advertised_last: &mut usize,
-) -> Result<(Vec<RawPr>, bool)> {
-    let body = request_page(repository, endpoint, page)?;
-    let (payload, has_next, last_page) = response_page(&body, endpoint, page)?;
-    *advertised_last = (*advertised_last).max(last_page.unwrap_or(1));
-    ensure!(
-        has_next || page >= *advertised_last,
-        "PR listing ended before advertised page {advertised_last}"
-    );
-    ensure!(
-        *advertised_last <= MAX_PAGES,
-        "PR listing exceeds the {MAX_PAGES}-request limit"
-    );
+) -> Result<Page> {
+    let body = request_page(repository, endpoint, filters, page)?;
+    let (payload, has_next, last_page) = response_page(&body, endpoint, filters, page)?;
     let rows: Vec<RawPr> = serde_json::from_str(payload).context("cannot parse PR listing")?;
     ensure!(rows.len() <= PAGE_SIZE, "PR listing exceeds the page size");
+    ensure!(
+        page == 1 || !rows.is_empty(),
+        "PR listing has an empty continuation page"
+    );
     ensure!(
         !has_next || rows.len() == PAGE_SIZE,
         "PR listing has a short page before its continuation"
     );
-    Ok((rows, has_next))
+    Ok(Page {
+        rows,
+        has_next,
+        last_page,
+    })
 }
 
-fn request_page(repository: &Repository, endpoint: &str, page: usize) -> Result<Vec<u8>> {
+fn request_page(
+    repository: &Repository,
+    endpoint: &str,
+    filters: &[&str],
+    page: usize,
+) -> Result<Vec<u8>> {
     let mut command = Command::new("gh");
     amplihack_git::scrub(&mut command);
     command.arg("api");
@@ -349,7 +456,7 @@ fn request_page(repository: &Repository, endpoint: &str, page: usize) -> Result<
         command.args(["--hostname", "github.com"]);
     }
     command.args(["--include", "--method", "GET"]).arg(endpoint);
-    for filter in LISTING_FILTERS {
+    for filter in filters {
         command.args(["-f", filter]);
     }
     command
@@ -360,7 +467,7 @@ fn request_page(repository: &Repository, endpoint: &str, page: usize) -> Result<
         .arg("--jq")
         .arg(concat!(
             "if type == \"array\" then ",
-            "map({number, state, closed_at, merged_at, head: {ref: .head.ref}}) ",
+            "map({number, state, updated_at, closed_at, merged_at, head: {ref: .head.ref}}) ",
             "else error(\"expected an array of pull requests\") end",
         ))
         .stdin(Stdio::null())
@@ -380,6 +487,7 @@ fn request_page(repository: &Repository, endpoint: &str, page: usize) -> Result<
 fn response_page<'a>(
     output: &'a [u8],
     endpoint: &str,
+    filters: &[&str],
     page: usize,
 ) -> Result<(&'a str, bool, Option<usize>)> {
     let text = std::str::from_utf8(output).context("gh output is not UTF-8")?;
@@ -419,10 +527,10 @@ fn response_page<'a>(
                 );
                 match relation {
                     "next" => ensure!(
-                        linked_page(url, endpoint)? == page + 1,
+                        linked_page(url, endpoint, filters)? == page + 1,
                         "PR continuation does not advance to the next page"
                     ),
-                    "last" => last_page = Some(linked_page(url, endpoint)?),
+                    "last" => last_page = Some(linked_page(url, endpoint, filters)?),
                     _ => {}
                 }
             }
@@ -436,7 +544,7 @@ fn response_page<'a>(
     Ok((payload, has_next, last_page))
 }
 
-fn linked_page(url: &str, endpoint: &str) -> Result<usize> {
+fn linked_page(url: &str, endpoint: &str, filters: &[&str]) -> Result<usize> {
     let (path, query) = url
         .strip_prefix("https://api.github.com/")
         .and_then(|url| url.split_once('?'))
@@ -454,8 +562,9 @@ fn linked_page(url: &str, endpoint: &str) -> Result<usize> {
     // Rebuilding the request is safe only if the link keeps the same
     // filters, ordering and page size.
     let page_size = format!("per_page={PAGE_SIZE}");
-    let mut expected: HashSet<_> = LISTING_FILTERS
-        .into_iter()
+    let mut expected: HashSet<_> = filters
+        .iter()
+        .copied()
         .chain([page_size.as_str()])
         .collect();
     let mut page = None;
@@ -484,6 +593,7 @@ fn linked_page(url: &str, endpoint: &str) -> Result<usize> {
 struct RawPr {
     number: u64,
     state: String,
+    updated_at: Option<DateTime<Utc>>,
     closed_at: Option<DateTime<Utc>>,
     merged_at: Option<DateTime<Utc>>,
     head: PrHead,
@@ -533,12 +643,12 @@ mod tests {
             "HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/12/pulls?page=2&{QUERY}>; rel=\"next\", <https://api.github.com/repositories/12/pulls?{QUERY}&page=40>; rel=\"last\"\r\n\r\n[]"
         );
         assert_eq!(
-            response_page(first.as_bytes(), ENDPOINT, 1).unwrap(),
+            response_page(first.as_bytes(), ENDPOINT, &HISTORY_FILTERS, 1).unwrap(),
             ("[]", true, Some(40))
         );
         let last = b"HTTP/2.0 200 OK\nLink: <https://api.github.com/repositories/12/pulls?page=39>; rel=\"prev\"\n\n[]";
         assert_eq!(
-            response_page(last, ENDPOINT, MAX_PAGES).unwrap(),
+            response_page(last, ENDPOINT, &HISTORY_FILTERS, MAX_PAGES).unwrap(),
             ("[]", false, None)
         );
     }
@@ -560,10 +670,18 @@ mod tests {
             ),
         ] {
             let response = format!("HTTP/2.0 200 OK\n{header}\n\n[]");
-            assert!(response_page(response.as_bytes(), ENDPOINT, 1).is_err());
+            assert!(response_page(response.as_bytes(), ENDPOINT, &HISTORY_FILTERS, 1).is_err());
         }
-        assert!(response_page(b"[]", ENDPOINT, 1).is_err());
-        assert!(response_page(b"HTTP/2.0 206 Partial Content\n\n[]", ENDPOINT, 1).is_err());
+        assert!(response_page(b"[]", ENDPOINT, &HISTORY_FILTERS, 1).is_err());
+        assert!(
+            response_page(
+                b"HTTP/2.0 206 Partial Content\n\n[]",
+                ENDPOINT,
+                &HISTORY_FILTERS,
+                1
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -581,7 +699,7 @@ mod tests {
                 "HTTP/2.0 200 OK\nLink: <https://api.github.com/{ENDPOINT}?{query}&page=2>; rel=\"next\"\n\n[]"
             );
             assert!(
-                response_page(response.as_bytes(), ENDPOINT, 1).is_err(),
+                response_page(response.as_bytes(), ENDPOINT, &HISTORY_FILTERS, 1).is_err(),
                 "{query}"
             );
         }
