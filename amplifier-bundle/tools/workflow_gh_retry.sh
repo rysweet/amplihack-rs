@@ -561,8 +561,16 @@ _gh_goal_wait_for_reset() {
   fi
   if [ "$deadline" -le "$reported_at" ]; then
     printf 'GitHub declined a %s read and supplied no future retry deadline. The read is pending.\n' "$resource" >&2
-    _gh_goal_wait_for_guidance
-    return $?
+    rc=0
+    _gh_goal_wait_for_guidance || rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    if [ "$rc" -eq 0 ]; then
+      GH_READ_DEFERRED_ERROR="GitHub declined the read without a retry deadline. Guidance arrived while it was pending"
+    else
+      GH_READ_DEFERRED_ERROR="GitHub declined the read without a retry deadline and the guidance wait failed"
+    fi
+    GH_READ_ERROR="$GH_READ_DEFERRED_ERROR"
+    return 1
   fi
   now="$(date +%s)" || return 1
   if [ "$deadline" -gt "$now" ]; then
@@ -603,6 +611,11 @@ gh_goal_read() {
   fi
   GH_READ_BODY="$raw"
   GH_READ_ERROR=""
+  GH_READ_STATUS=""
+  if [ -n "${GH_READ_DEFERRED_ERROR:-}" ]; then
+    GH_READ_ERROR="$GH_READ_DEFERRED_ERROR"
+    return 1
+  fi
   while :; do
     rc=0
     GH_READ_STATUS=""
@@ -633,9 +646,9 @@ gh_goal_read() {
         { [ "$(_gh_header "$headers" x-ratelimit-remaining)" = 0 ] ||
           [ -n "$(_gh_header "$headers" retry-after)" ]; }; } ||
       [ "$(classify_gh_error "$diagnostic" explicit)" = rate_limit ]; then
-      GH_READ_RETRIED=true
       reported_at="$(date +%s)" || return 1
       _gh_goal_wait_for_reset "$resource" "$headers" "$reported_at" || return $?
+      GH_READ_RETRIED=true
     else
       GH_READ_ERROR="$(gh_safe_stderr "$diagnostic")"
       [ "$rc" -ne 0 ] || rc=1
@@ -695,10 +708,11 @@ gh_rest_get() {
 # the next page number from that header and keep the request on the same
 # endpoint and host. No request is made for a page GitHub did not report.
 gh_rest_pages() {
-  local endpoint="$1" cache="$2" validate="$3" select_items="$4" page=1
+  local endpoint="$1" cache="$2" validate="$3" select_items="$4" page=1 separator='?'
   local next_link='<[^>]*[?&]page=([0-9]+)(&[^>]*)?>;[[:space:]]*rel="next"'
+  if [[ "$endpoint" == *'?'* ]]; then separator='&'; fi
   while :; do
-    gh_rest_get "${endpoint}?per_page=100&page=$page" "$cache" "$validate" || return $?
+    gh_rest_get "${endpoint}${separator}per_page=100&page=$page" "$cache" "$validate" || return $?
     jq -c "$select_items" "$GH_READ_BODY" || return 1
     if [[ "$GH_REST_LINK" != *'rel="next"'* ]]; then return 0; fi
     page=$((page + 1))
@@ -709,10 +723,171 @@ gh_rest_pages() {
   done
 }
 
+# Read both sources of required-check policy, preserving known requirements
+# when one source is unreadable. Return the policy in GH_BRANCH_POLICY.
+gh_read_branch_policy() {
+  local repo="$1" base="$2" cache="$3"
+  local required='[]' policy_error="" strict=null strict_source="" strict_error="" rules_read=false
+  local check_fields base_path rules protection protection_source classic_error classic_strict rc
+  GH_BRANCH_POLICY=""
+  # shellcheck disable=SC2016
+  check_fields='
+    def context: type == "string" and length > 0;
+    def app_id: . == null or . == -1 or (type == "number" and . > 0 and floor == .);
+    def source: if . == -1 then null else . end;
+    def classic($branch):
+      select((.strict | type) == "boolean" or ($branch and .strict == null))
+      | select((.contexts | type == "array") or (.checks | type == "array"))
+      | select((.contexts | . == null or (type == "array" and all(.[]; context)))
+           and (.checks | . == null or (type == "array" and all(.[]; (.context | context) and (.app_id | app_id)))))
+      | [(.checks // [])[] | {name:.context, app_id:(.app_id | source)}
+          + (if $branch and (has("app_id") | not) then {source_known:false} else {} end)] as $checks
+      | {strict, required:($checks + [(.contexts // [])[] as $name
+          | select(all($checks[]; .name != $name)) | {name:$name, app_id:null}
+          + (if $branch then {source_known:false} else {} end)])};
+  '
+  if [ -n "$base" ] && [[ "$base" != -* ]] && git check-ref-format "refs/heads/$base" >/dev/null 2>&1; then
+    base_path="$(jq -nr --arg base "$base" '$base | @uri')"
+    gh_rest_pages "repos/$repo/rules/branches/$base_path" "$cache" \
+      'type == "array" and all(.[]; (.type | type == "string"))' \
+      '.[] | select(.type == "required_status_checks" or .type == "workflows")' > "$GH_READ_DIR/rules.jsonl"; rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    if [ "$rc" -eq 0 ] && rules="$(jq -sce "$check_fields"'
+      [.[] | select(.type == "required_status_checks")] as $status_rules
+      | select(all($status_rules[]; .parameters.required_status_checks
+        | type == "array" and all(.[]; (.context | context) and (.integration_id | app_id))))
+      | {strict:any($status_rules[]; .parameters.strict_required_status_checks_policy == true),
+         required:[$status_rules[].parameters.required_status_checks[] | {name:.context, app_id:(.integration_id | source)}],
+         workflows:any(.[]; .type == "workflows")}
+    ' "$GH_READ_DIR/rules.jsonl" 2>/dev/null)"; then
+      rules_read=true
+      required="$(jq -c '.required' <<< "$rules")"
+      if jq -e '.strict' <<< "$rules" >/dev/null; then strict=true; strict_source=rules; fi
+      if jq -e '.workflows' <<< "$rules" >/dev/null; then
+        policy_error="required workflow results cannot be verified from check runs and commit statuses"
+      fi
+    else policy_error="rules endpoint: ${GH_READ_ERROR:-unreadable response}"; fi
+    protection=""; protection_source=protection
+    gh_rest_get "repos/$repo/branches/$base_path/protection/required_status_checks" "$cache" 'type == "object"'; rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    if [ "$rc" -ne 0 ] || ! protection="$(jq -sce "$check_fields"'
+      select(length == 1) | .[0] | objects | classic(false)
+    ' "$GH_READ_BODY" 2>/dev/null)"; then
+      protection=""
+      case "$GH_READ_STATUS:${GH_READ_ERROR% }" in
+        '404:gh: Branch not protected (HTTP 404)'|'404:gh: Required status checks not enabled (HTTP 404)')
+          protection='{"strict":false,"required":[]}'
+          protection_source="rules (no strict status check rule)" ;;
+        *)
+          classic_error="${GH_READ_ERROR:-unreadable response}"
+          # The administration endpoint may return a generic 404 to a
+          # non-admin. The regular branch object can still list the checks.
+          gh_rest_get "repos/$repo/branches/$base_path" "$cache" 'type == "object"'; rc=$?
+          case "$rc" in 75|79) return "$rc" ;; esac
+          if [ "$rc" -eq 0 ] && protection="$(jq -sce "$check_fields"'
+            select(length == 1) | .[0] | objects | select(.protected | type == "boolean")
+            | if .protected == false or .protection.enabled == false or
+                 .protection.required_status_checks.enforcement_level == "off" then
+                {strict:false, required:[]}
+              else .protection.required_status_checks | objects | classic(true) end
+          ' "$GH_READ_BODY" 2>/dev/null)"; then
+            protection_source=branch
+          else
+            policy_error="${policy_error:+$policy_error; }classic protection: $classic_error; branch policy: ${GH_READ_ERROR:-unreadable response}"
+          fi ;;
+      esac
+    fi
+    if [ -n "$protection" ]; then
+      required="$(jq -c --argjson rules "$required" '$rules + .required' <<< "$protection")"
+      if [ "$strict" != true ]; then
+        classic_strict="$(jq -r '.strict' <<< "$protection")"
+        if [ "$classic_strict" = null ]; then
+          strict_error="the branch policy did not report strict status checks"
+        elif [ "$classic_strict" = true ] || [ "$rules_read" = true ]; then
+          strict="$classic_strict"; strict_source="$protection_source"
+        fi
+      fi
+    fi
+  else policy_error="the base name was refused"; fi
+  GH_BRANCH_POLICY="$(jq -cn --argjson required "$required" --arg error "$policy_error" \
+    --argjson strict "$strict" --arg source "$strict_source" --arg strict_error "${policy_error:+$policy_error${strict_error:+; }}$strict_error" '
+    {required:($required | unique), error:$error,
+     strict_status_checks:$strict, strict_source:(if $source == "" then null else $source end),
+     strict_unreadable:(if $strict == null then $strict_error else null end)}')"
+}
+
+# Verify the policy used for the scan before publishing a pass.
+gh_verify_branch_policy() {
+  gh_read_branch_policy "$1" "$2" "$3" || return $?
+  jq -e --argjson required "$4" --argjson strict "$5" '
+    .error == "" and .required == ($required | unique) and .strict_status_checks == $strict
+  ' <<< "$GH_BRANCH_POLICY" >/dev/null
+}
+
 # The PR body is scoped to the head the caller is verifying.
 gh_rest_pr() {
   gh_rest_get "repos/$1/pulls/$2" "$3" \
-    '(.head.sha | type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$"))' "$4"
+    'def sha: type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$");
+     (.head.sha | sha) and (.base.sha | sha) and (.base.ref | type == "string" and length > 0)' "$4"
+}
+
+gh_pr_base_matches() {
+  jq -e --arg ref "$1" --arg sha "$2" '.base.ref == $ref and .base.sha == $sha' "$GH_READ_BODY" >/dev/null
+}
+
+# The check-runs endpoint can still serve the previous attempt's jobs while
+# Actions has a rerun queued. Verify the workflow state independently and
+# require check-run IDs from the current attempt after a rerun completes.
+_gh_verify_actions_checks() {
+  local repo="$1" head="$2" cache="$3" aggregate="$4" run attempt suite rc
+  local runs="$GH_READ_DIR/workflow-runs.jsonl" reruns="$GH_READ_DIR/reruns.tsv" jobs="$GH_READ_DIR/attempt-jobs.jsonl"
+  GH_EXECUTION_STATE=unverified
+  GH_EXECUTION_DETAIL="the current GitHub Actions workflow runs could not be verified"
+  gh_rest_pages "repos/$repo/actions/runs?head_sha=$head" "$cache" '
+    (.workflow_runs | type == "array") and all(.workflow_runs[];
+      (.id | type == "number" and . > 0 and floor == .) and
+      (.run_attempt | type == "number" and . >= 1 and floor == .) and
+      (.status | type == "string"))
+  ' '.workflow_runs[] | {id, head_sha, check_suite_id, run_attempt, status}' > "$runs" || {
+    rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
+    return "$rc"
+  }
+  jq -rs --arg head "$head" --slurpfile summary "$aggregate" '
+    . as $runs
+    | ($summary[0].actions | map(.suite_id) | unique) as $suites
+    | $suites | map(. as $suite | [$runs[] | select(.head_sha == $head and .check_suite_id == $suite)])
+    | if any(.[]; length != 1 or .[0].check_suite_id == null) then error("unmatched workflow run")
+      else map(.[0]) end
+    | if any(.[]; .status != "completed") then ["pending"]
+      else .[] | select(.run_attempt > 1) | [.id, .run_attempt, .check_suite_id] end
+    | @tsv
+  ' "$runs" > "$reruns" 2>/dev/null || return 0
+  while IFS=$'\t' read -r run attempt suite; do
+    if [ "$run" = pending ]; then
+      GH_EXECUTION_STATE=pending
+      GH_EXECUTION_DETAIL="a GitHub Actions workflow for the checks is still running or queued"
+      return 0
+    fi
+    GH_EXECUTION_DETAIL="the check runs could not be matched to the current GitHub Actions attempt"
+    gh_rest_pages "repos/$repo/actions/runs/$run/attempts/$attempt/jobs" "$cache" '
+      .jobs | type == "array"
+    ' '.jobs[] | objects | select(.status == "completed" and .conclusion == "success")
+      | .check_run_url | strings' > "$jobs" || {
+      rc=$?
+      case "$rc" in 75|79) return "$rc" ;; esac
+      [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
+      return "$rc"
+    }
+    jq -es --arg repo "$repo" --argjson suite "$suite" --slurpfile summary "$aggregate" '
+      map(ascii_downcase) as $jobs
+      | all($summary[0].actions[] | select(.suite_id == $suite);
+          .id != null and ("https://api.github.com/repos/\($repo)/check-runs/\(.id)" | ascii_downcase | IN($jobs[])))
+    ' "$jobs" >/dev/null || return 0
+  done < "$reruns"
+  GH_EXECUTION_STATE=passed
+  GH_EXECUTION_DETAIL=""
 }
 
 # gh_head_checks <owner/repo> <sha> <cache_dir> <required_checks_json> <required_only> <policy_error>
@@ -721,13 +896,14 @@ gh_rest_pr() {
 # no reported checks are pending. The display is capped separately from counts.
 gh_head_checks() {
   local commit="repos/$1/commits/$2" cache="$3" required="$4" required_only="$5" policy_error="$6"
-  local rows="$GH_READ_DIR/checks.jsonl"
+  local rows="$GH_READ_DIR/checks.jsonl" aggregate="$GH_READ_DIR/checks-summary.json"
   gh_rest_pages "$commit/check-runs" "$cache" '
     (.check_runs | type == "array") and all(.check_runs[];
       (.name | type == "string" and length > 0) and (.status | type == "string") and
       (.conclusion | . == null or type == "string"))
   ' '
-    .check_runs[] | {name, app_id:.app.id, link:(.html_url // .details_url // ""), state:(
+    .check_runs[] | {name, app_id:.app.id, link:(.html_url // .details_url // ""),
+      actions:(if .app.slug == "github-actions" then {id, suite_id:.check_suite.id} else null end), state:(
       if .status != "completed" or .conclusion == null then "pending"
       elif .conclusion == "success" then "pass"
       elif .conclusion == "skipped" or .conclusion == "neutral" then "skipping"
@@ -752,12 +928,13 @@ gh_head_checks() {
     | [$required[] | . as $need | select(all($all[]; . as $check | $need | matches($check) | not))] as $missing
     | ([$all[] | . as $check
         | [$required[] | select(matches($check))] as $matches
-        | [$missing[] | select(has_unattributed_status([$check])) | .app_id] as $expected_apps
+        | ([$required[] | select(.app_id != null and has_unattributed_status([$check])) | .app_id] | unique) as $expected_apps
         | select(($required | length) == 0 or ($required_only | not) or $policy_error != "" or
                  ($matches | length) > 0 or ($expected_apps | length) > 0)
         | if .state == "pending" then .
           elif ($expected_apps | length) > 0 then
-            . + {observed_state:.state, state:"unverified", unverified_reason:"status_app_unverified", expected_app_ids:$expected_apps}
+            . + {observed_state:.state, state:(if .state == "fail" then "fail" else "unverified" end),
+                 unverified_reason:"status_app_unverified", expected_app_ids:$expected_apps}
           elif any($matches[]; .source_known == false) then
             . + {observed_state:.state, state:"unverified", unverified_reason:"required_app_unreadable"}
           elif .state == "skipping" and ($matches | length) > 0 then
@@ -770,12 +947,28 @@ gh_head_checks() {
          $checks | map(if .state == "skipping" then . + {unverified_reason:"skipped_or_neutral"} else . end)
        else $checks end) as $display
     | [$display[] | select(.unverified_reason)] as $unverified
-    | {checks:$display[:200], unverified_checks:$unverified[:200],
+    | {checks:($display[:200] | map(del(.actions))), unverified_checks:($unverified[:200] | map(del(.actions))),
+       actions:[$checks[] | select(.state == "pass") | .actions | objects],
        required_error:(if $policy_error == "" then null else $policy_error end),
        counts:{total:($checks | length), passed:($n.pass // 0), unverified:($unverified | length),
         failing:(($n.fail // 0) + ($n.cancel // 0)), pending:($n.pending // 0), skipped:($n.skipping // 0)}}
     | .state = (if .counts.total == 0 or .counts.pending > 0 then "pending"
         elif .counts.failing > 0 then "failed"
         elif .counts.unverified > 0 or $policy_error != "" then "unverified" else "passed" end)
-  ' "$rows"
+  ' "$rows" > "$aggregate" || return $?
+  if jq -e '.state == "passed" and (.actions | length > 0)' "$aggregate" >/dev/null; then
+    _gh_verify_actions_checks "$1" "$2" "$cache" "$aggregate" || return $?
+    jq -c --arg state "$GH_EXECUTION_STATE" --arg detail "$GH_EXECUTION_DETAIL" '
+      del(.actions) | .state = $state
+      | if $detail == "" then .
+        else . + {execution_detail:$detail}
+          | {name:"GitHub Actions workflow execution", state:$state, link:"", elapsed:""} as $execution
+          | .counts.total += 1
+          | .checks = ([$execution] + .checks)[:200]
+          | .counts[$state] += 1
+        end
+    ' "$aggregate"
+  else
+    jq -c 'del(.actions)' "$aggregate"
+  fi
 }

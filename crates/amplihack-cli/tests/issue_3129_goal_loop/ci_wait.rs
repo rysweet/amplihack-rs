@@ -158,6 +158,41 @@ printf '%040d\n' 7 > "$GH_STATE/moved-head""#,
 }
 
 #[test]
+fn the_wait_discards_a_pass_if_the_target_or_its_policy_changed() {
+    for (change, outcome) in [
+        (
+            "printf 'release\\n' > \"$GH_STATE/moved-base\"",
+            "base-changed",
+        ),
+        (
+            "printf '%040d\\n' 7 > \"$GH_STATE/moved-base-sha\"",
+            "base-changed",
+        ),
+        (
+            r#"printf '%s\n' '{"strict":false,"contexts":["integration"]}' > "$GH_STATE/protection.json""#,
+            "policy-changed",
+        ),
+    ] {
+        let h = Harness::new();
+        h.set_checks("build\tpending\t0\n");
+        h.classic_protection(&json!({"strict":false,"contexts":["build"]}));
+        read_and_decide(&h, true);
+        fake_sleep(
+            &h,
+            &format!(
+                r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
+{change}
+printf 'build\tpass\t0\n' > "$GH_STATE/checks""#
+            ),
+        );
+        let result = wait(&h, "37");
+        assert_eq!(result["outcome"], outcome, "{result}");
+        assert!(result["checks_state"].is_null(), "{result}");
+        assert_eq!(sleeps(&h), [37]);
+    }
+}
+
+#[test]
 fn a_required_check_on_the_next_page_can_complete_the_wait_with_failure() {
     let h = Harness::new();
     h.classic_protection(&json!({"strict":false,"contexts":["integration"]}));
@@ -217,8 +252,35 @@ printf 'build\tpass\t0\t\t23\nbuild\tfail\t0\t\t99\nintegration\tpass\t0\t\t42\n
     );
     let result = wait(&h, "");
     assert_eq!(result["outcome"], "checks-complete", "{result}");
-    assert_eq!(result["checks_state"], "passed", "{result}");
+    assert_eq!(result["checks_state"], "unverified", "{result}");
+    assert_eq!(
+        result["unverified_checks"][0]["unverified_reason"],
+        "status_app_unverified"
+    );
     assert_eq!(sleeps(&h), [120]);
+}
+
+#[test]
+fn required_only_keeps_a_failed_status_alongside_a_passing_app_check() {
+    let h = Harness::new();
+    h.classic_protection(&json!({"strict":false,"checks":[{"context":"build","app_id":42}]}));
+    h.set_checks("build\tpass\t0\t\t42\n");
+    fs::write(
+        h.gh.join("statuses.json"),
+        r#"{"statuses":[{"context":"build","state":"failure"}]}"#,
+    )
+    .unwrap();
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["checks"]["state"], "failed", "{reading}");
+    assert_eq!(reading["checks"]["counts"]["passed"], 1);
+    assert_eq!(reading["checks"]["counts"]["failing"], 1);
+    assert_eq!(
+        reading["checks"]["unverified_checks"][0]["expected_app_ids"],
+        json!([42])
+    );
+    let result = wait(&h, "");
+    assert_eq!(result["outcome"], "checks-complete", "{result}");
+    assert_eq!(result["checks_state"], "failed", "{result}");
 }
 
 #[test]
@@ -466,6 +528,26 @@ fn the_reading_discards_completed_checks_if_the_head_moves_during_the_status_ret
 }
 
 #[test]
+fn the_reading_discards_completed_checks_if_the_pr_is_retargeted_during_a_retry() {
+    let h = Harness::new();
+    h.set_checks("build\tpass\t0\n");
+    fs::write(h.gh.join("decline-core-status"), "1\n").unwrap();
+    fake_sleep(&h, r#"printf 'release\n' > "$GH_STATE/moved-base""#);
+
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["pr"]["head"], h.origin_head(PR_BRANCH), "{reading}");
+    assert!(reading["pr"]["base"].is_null(), "{reading}");
+    assert!(
+        reading["checks"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("target branch")),
+        "{reading}"
+    );
+    assert!(reading["checks"]["counts"].is_null(), "{reading}");
+    assert_eq!(sleeps(&h).len(), 1);
+}
+
+#[test]
 fn completed_checks_are_discarded_if_the_head_moves_during_a_rate_limit_sleep() {
     let h = Harness::new();
     read_and_decide(&h, false);
@@ -506,6 +588,57 @@ esac"#,
 }
 
 #[test]
+fn a_rerun_cannot_use_cached_successes_from_an_older_attempt() {
+    let h = Harness::new();
+    let check = |id| {
+        json!({"check_runs":[{"name":"build","status":"completed","conclusion":"success",
+            "app":{"slug":"github-actions","id":15368},"id":id,"check_suite":{"id":42}}]})
+        .to_string()
+    };
+    let run = |attempt, status| {
+        json!({"workflow_runs":[{"id":17,"head_sha":h.initial_head,"check_suite_id":42,
+            "run_attempt":attempt,"status":status}]})
+        .to_string()
+    };
+    let runs = h.gh.join("workflow-runs.json");
+    let checks = h.gh.join("check-runs.json");
+    fs::write(&checks, check(100)).unwrap();
+    fs::write(&runs, run(1, "completed")).unwrap();
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["checks"]["state"], "passed", "{reading}");
+
+    fs::write(&runs, run(2, "queued")).unwrap();
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["checks"]["state"], "pending", "{reading}");
+    assert_eq!(reading["checks"]["counts"]["passed"], 1, "{reading}");
+    assert_eq!(reading["checks"]["counts"]["pending"], 1, "{reading}");
+    fs::write(h.gh.join("completed-rerun.json"), run(2, "completed")).unwrap();
+    fs::write(
+        h.gh.join("attempt-jobs.json"),
+        r#"{"jobs":[{"status":"completed","conclusion":"success","check_run_url":"https://api.github.com/repos/o/r/check-runs/101"}]}"#,
+    )
+    .unwrap();
+    fake_sleep(
+        &h,
+        r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
+mv "$GH_STATE/completed-rerun.json" "$GH_STATE/workflow-runs.json""#,
+    );
+    let stale = wait(&h, "37");
+    assert_eq!(sleeps(&h), [37]);
+    assert_eq!(stale["checks_state"], "unverified", "{stale}");
+    assert!(
+        fs::read_to_string(h.gh.join("responses.log"))
+            .unwrap()
+            .lines()
+            .any(|line| line.starts_with("304 ") && line.contains("/check-runs?"))
+    );
+    fs::write(&checks, check(101)).unwrap();
+    let current = wait(&h, "37");
+    assert_eq!(current["checks_state"], "passed", "{current}");
+    assert_eq!(sleeps(&h), [37]);
+}
+
+#[test]
 fn a_secondary_decline_without_a_deadline_waits_for_guidance_without_retrying() {
     let h = Harness::new();
     read_and_decide(&h, false);
@@ -527,6 +660,48 @@ fn a_secondary_decline_without_a_deadline_waits_for_guidance_without_retrying() 
     let out = live.finish();
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(h.result("001")["outcome"], "guidance-arrived");
+    let calls = h.calls();
+    assert_eq!(
+        calls.iter().filter(|c| c.contains("/check-runs?")).count(),
+        1
+    );
+    assert_eq!(calls.iter().filter(|c| *c == "api rate_limit").count(), 1);
+    assert!(sleeps(&h).is_empty());
+}
+
+#[test]
+fn a_declined_read_without_a_deadline_delivers_guidance_to_the_same_turn() {
+    let h = Harness::new();
+    fs::write(h.gh.join("no-retry-after"), "").unwrap();
+    fs::write(h.gh.join("hold-rate-limit"), "").unwrap();
+    fs::write(h.gh.join("decline-core-check-runs"), "2\n").unwrap();
+    fake_sleep(&h, "exit 0");
+    h.policy(
+        r#"echo '{"action":"handoff","args":{"owner":"operator","decision":"recover the GitHub login","text":"The CI read is unresolved."},"why":"The check read is unresolved."}'"#,
+    );
+    let mut live = fifo_release::start(
+        h.drive_command("auto-drive-to-merge", &["no_merge=true"]),
+        &h.gh.join("release.fifo"),
+        "the rate-limited turn reading",
+    );
+    h.guide("Check the GitHub login before reading the checks again.");
+    let out = live.finish();
+    assert_eq!(
+        Harness::outcome(&out)["stop_reason"],
+        "handoff",
+        "{}",
+        describe(&out)
+    );
+    assert_eq!(h.turns(), ["001"]);
+    let reading = h.reading("001");
+    assert_eq!(reading["guidance"][0]["new"], true, "{reading}");
+    assert!(
+        reading["goal"]["checks"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Guidance arrived")),
+        "{reading}"
+    );
+    assert!(h.turn_prompt("001").contains("Check the GitHub login"));
     let calls = h.calls();
     assert_eq!(
         calls.iter().filter(|c| c.contains("/check-runs?")).count(),
@@ -577,10 +752,10 @@ fn graphql_secondary_decline_uses_the_response_deadline_with_quota_remaining() {
 fn rate_limit_deadlines_resume_the_reading_and_wait_without_extra_agent_turns() {
     let h = Harness::new();
     fs::write(h.gh.join("decline-graphql"), "1\n").unwrap();
-    fs::write(h.gh.join("decline-core"), "2\n").unwrap();
     fake_sleep(&h, "exit 0");
     h.policy(
         r#"if [ "${TURN##*/}" = 001 ]; then
+  printf '2\n' > "$GH_STATE/decline-core"
   echo '{"action":"wait","args":{},"why":"Read the checks."}'
 else
   echo '{"action":"handoff","args":{"owner":"operator","decision":"next work","text":"Checks are complete."},"why":"The wait finished."}'
@@ -629,12 +804,14 @@ fi"#,
             "rate_limit",
             "reading",
             "head",
-            "rate_limit",
             "head",
             "rate_limit",
             "head",
+            "rate_limit",
             "head",
-            "reading"
+            "head",
+            "reading",
+            "head"
         ]
     );
     let sleeps = sleeps(&h);

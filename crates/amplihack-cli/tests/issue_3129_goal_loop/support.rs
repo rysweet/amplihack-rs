@@ -74,6 +74,7 @@ G="$GH_STATE"; O="$GH_ORIGIN"; BR="$GH_PR_BRANCH"; BASE=main
 printf '%s\n' "$*" >> "$G/calls.log"
 gitO() { git --git-dir="$O" "$@"; }
 head() { gitO rev-parse "refs/heads/$BR"; }
+base_head() { gitO rev-parse "refs/heads/$BASE"; }
 state() { if [ -e "$G/merged" ]; then echo MERGED; elif [ -e "$G/closed" ]; then echo CLOSED; else echo OPEN; fi; }
 mergeable() { if gitO merge-tree --write-tree "refs/heads/$BASE" "refs/heads/$BR" >/dev/null 2>&1; then echo MERGEABLE; else echo CONFLICTING; fi; }
 behind() { [ "$(gitO rev-list --count "refs/heads/$BR..refs/heads/$BASE")" != 0 ]; }
@@ -152,8 +153,8 @@ case "${1:-} ${2:-}" in
   "pr view")
     case "$*" in *mergeStateStatus,isDraft*) decline graphql ;; esac
     jq -cn --arg h "$(head)" --arg s "$(state)" --arg m "$(mergeable)" --arg ms "$(mss)" --arg b "$BR" --arg x "$([ -e "$G/cross" ] && echo true || echo false)" \
-      --arg bn "$(cat "$G/basename" 2>/dev/null || echo main)" \
-      '{number:7,state:$s,headRefOid:$h,headRefName:$b,baseRefName:$bn,mergeable:$m,mergeStateStatus:$ms,
+      --arg bn "$(cat "$G/basename" 2>/dev/null || echo main)" --arg base "$(base_head)" \
+      '{number:7,state:$s,headRefOid:$h,headRefName:$b,baseRefName:$bn,baseRefOid:$base,mergeable:$m,mergeStateStatus:$ms,
         isDraft:false,isCrossRepository:($x=="true"),title:"Fixture",body:"Fixture body",url:"https://github.com/o/r/pull/7",
         reviews:[],reviewDecision:"",headRepository:{name:"r"},headRepositoryOwner:{login:"o"},
         author:{login:"alice"},files:[{path:"widget.txt"}]}' | filter "$@" ;;
@@ -218,6 +219,10 @@ case "${1:-} ${2:-}" in
     done
     case "$endpoint" in
       rate_limit)
+        if [ -e "$G/hold-rate-limit" ]; then
+          read -r _ < "$G/release.fifo"
+          rm -f -- "$G/hold-rate-limit" "$G/no-retry-after"
+        fi
         resource="$(cat "$G/declined")"
         remaining=10
         if [ "$resource" = graphql ] && [ ! -e "$G/graphql-secondary" ]; then remaining=0; fi
@@ -228,8 +233,10 @@ case "${1:-} ${2:-}" in
         decline core
         conditional=true
         api_head="$(cat "$G/moved-head" 2>/dev/null || head)"
-        http 200 "$(jq -cn --arg head "$api_head" --arg branch "$BR" \
-          '{state:"open",head:{sha:$head,ref:$branch,repo:{full_name:"o/r"}}}')" ;;
+        api_base="$(cat "$G/moved-base" 2>/dev/null || cat "$G/basename" 2>/dev/null || echo main)"
+        api_base_sha="$(cat "$G/moved-base-sha" 2>/dev/null || base_head)"
+        http 200 "$(jq -cn --arg head "$api_head" --arg branch "$BR" --arg base "$api_base" --arg tip "$api_base_sha" \
+          '{state:"open",head:{sha:$head,ref:$branch,repo:{full_name:"o/r"}},base:{ref:$base,sha:$tip}}')" ;;
       repos/o/r/commits/*/check-runs\?*)
         decline core check-runs
         if [ -f "$G/decline-core-after-checks" ]; then
@@ -243,6 +250,10 @@ case "${1:-} ${2:-}" in
         if [ -f "$G/checks-page-2.json" ]; then
           link="<https://api.github.com/${endpoint%&page=1}&page=2>; rel=\"next\""
         fi
+        if [ -f "$G/check-runs.json" ]; then
+          http 200 "$(cat "$G/check-runs.json")"
+          exit $?
+        fi
         http 200 "$(jq -Rn '[inputs | split("\t") | {name:.[0], html_url:.[3], app:{id:((.[4] | tonumber?) // null)},
           status:(if .[1] == "pending" then "in_progress" else "completed" end),
           conclusion:(if .[1] == "pending" then null elif .[1] == "pass" then "success"
@@ -252,6 +263,12 @@ case "${1:-} ${2:-}" in
         decline core status
         conditional=true
         http 200 "$(cat "$G/statuses.json" 2>/dev/null || echo '{"statuses":[]}')" ;;
+      repos/o/r/actions/runs\?head_sha=*)
+        conditional=true
+        http 200 "$(cat "$G/workflow-runs.json" 2>/dev/null || echo '{"workflow_runs":[]}')" ;;
+      repos/o/r/actions/runs/*/attempts/*/jobs\?*)
+        conditional=true
+        http 200 "$(cat "$G/attempt-jobs.json" 2>/dev/null || echo '{"jobs":[]}')" ;;
       *rules/branches*) if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
         elif [[ "$endpoint" == *'&page=2' ]]; then http 200 "$(cat "$G/rules-page-2.json")" "${args[@]}"
         elif [ -f "$G/rules.json" ]; then

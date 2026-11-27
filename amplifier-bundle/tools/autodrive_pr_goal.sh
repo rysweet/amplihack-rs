@@ -53,6 +53,9 @@ ci_result() {
       elif .state == "failed" then "the checks at the head completed and at least one failed"
       else "the checks at the head completed with unverified results" end)}
     + (if (.unverified_checks | length) > 0 then {unverified_checks} else {} end)
+    | if $ci.execution_detail then
+        . + ($ci | {execution_detail}) | .summary += ". " + .execution_detail
+      else . end
     | if $ci.required_error then
         . + ($ci | {counts, required_error})
         | .summary += ". The required-check policy is incomplete: " + .required_error
@@ -125,14 +128,16 @@ checks_watch_interval() {
 }
 
 # Run in its own shell so the guidance wake can interrupt an API call, a
-# rate-limit wait or an ordinary interval sleep. Exit 10 signals a new head.
+# rate-limit wait or an ordinary interval sleep. Exits 10–12 discard stale evidence.
 do_ci_wait() {
   # shellcheck source=workflow_gh_retry.sh
   . "$HERE/workflow_gh_retry.sh" || return 2
-  local build_branch="${1:-}" head slug required required_only policy_error="" cache interval rc state=pending
+  local build_branch="${1:-}" head base base_sha slug required required_only strict policy_error="" cache interval rc state=pending
   local GH_READ_RETRIED=false
   local reading="$TD/reading.json"
   head="$(jq -r '.goal.pr.head // empty | strings' "$reading")"
+  base="$(jq -r '.goal.pr.base // empty | strings' "$reading")"
+  base_sha="$(jq -r '.goal.pr.base_sha // empty | strings' "$reading")"
   slug="$(goal_github_pr_repo "$(jq -r '.goal.pr.url // empty | strings' "$reading")" "$PR")"
   if ! goal_is_sha "$head" || [ -z "$slug" ]; then
     echo 'the reading has no usable pull request repository or head' >&2
@@ -140,6 +145,7 @@ do_ci_wait() {
   fi
   required_only="$(jq -r '.args.required == true' "$TD/decision.json")" || return 2
   required="$(jq -ce '.goal.checks.required_checks | arrays' "$reading")" || required='[]'
+  strict="$(jq -c '.goal.repository.strict_status_checks' "$reading")" || return 2
   if ! jq -e '.goal.checks | .required_known == true and (.required_checks | type) == "array"' "$reading" >/dev/null; then
     policy_error="$(jq -r '.goal.checks.required_error // empty | strings' "$reading")"
     policy_error="${policy_error:-the reading has no complete required-check policy}"
@@ -166,10 +172,12 @@ do_ci_wait() {
       return 2
     fi
     [ "$(jq -r '.head.sha' "$GH_READ_BODY")" = "$head" ] || return 10
+    gh_pr_base_matches "$base" "$base_sha" || return 11
 
     # A rate-limit retry can span a rerun even while the head stays the same.
     # Read the checks again if any request since the start of the scan retried.
     if [ "$state" != pending ] && [ "$GH_READ_RETRIED" = false ]; then
+      [ "$state" != policy-changed ] || return 12
       ci_result "$GH_READ_DIR/ci.json" || return 2
       return 0
     fi
@@ -183,7 +191,16 @@ do_ci_wait() {
     esac
     state="$(jq -r '.state' "$GH_READ_DIR/ci.json")"
     case "$state" in
-      passed|failed|unverified) ;; # Revalidate the head before using the result.
+      passed)
+        if [ "$GH_READ_RETRIED" = false ]; then
+          gh_verify_branch_policy "$slug" "$base" "$cache" "$required" "$strict"; rc=$?
+          case "$rc" in
+            75|79) return "$rc" ;;
+            0) ;;
+            *) state=policy-changed ;;
+          esac
+        fi ;;
+      failed|unverified) ;;
       pending) gh_goal_command sleep "$interval" || return 2 ;;
       *) echo 'the CI read returned an unknown state' >&2; return 2 ;;
     esac
@@ -212,6 +229,8 @@ do_act_wait() {
     79|75) exit "$code" ;;
     0) return 0 ;; # The completed wait wrote result.json.
     10) result head-changed "the pull request head changed during the wait" ;;
+    11) result base-changed "the pull request target branch or its tip changed during the wait" ;;
+    12) result policy-changed "the required-check policy changed or could not be verified during the wait" ;;
     *) result wait-error "the CI wait exited ${code:-unknown}. $(tail -n 1 "$TD/wait.err" | goal_clean_line 300)" ;;
   esac
 }

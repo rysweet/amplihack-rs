@@ -50,16 +50,14 @@ goal_github_pr_repo() {
   printf '%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 }
 
-# Advance only the retry's cursor. The driver still delivers the guidance to
-# the agent from its own mark once the reading finishes.
+# The driver delivers the entry from its own mark when the reading returns.
 goal_read_guidance() {
   local rc=0 entry response="$GH_READ_DIR/rate-limit-guidance.json"
   gh_goal_command "${AMPLIHACK_BIN:-amplihack}" recipe guidance wait "--since=$GUIDANCE_SINCE" \
     ${GUIDANCE_TARGET:+"$GUIDANCE_TARGET"} >"$response" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
   entry="$(jq -r 'select(.event == "guidance") | .entry // empty | strings' "$response")"
-  [ -n "$entry" ] && goal_is_entry "$entry" || return 1
-  GUIDANCE_SINCE="$entry"
+  [ -n "$entry" ] && goal_is_entry "$entry"
 }
 
 goal_ci_cache_dir() {

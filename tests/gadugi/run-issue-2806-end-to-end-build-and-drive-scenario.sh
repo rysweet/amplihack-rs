@@ -398,9 +398,10 @@ take_text() {
 }
 
 pr_json() {
-  local branch oid pr_state="OPEN" merged_at=null rollup draft=false
+  local branch oid base_oid pr_state="OPEN" merged_at=null rollup draft=false
   branch="$(cat "$branch_file" 2>/dev/null || true)"
   oid="$(git --git-dir="$root/origin.git" rev-parse "refs/heads/$branch" 2>/dev/null || true)"
+  base_oid="$(git --git-dir="$root/origin.git" rev-parse refs/heads/main)"
   [ ! -e "$state/draft" ] || draft=true
   [ -f "$state/title" ] || printf 'qa change' > "$state/title"
   [ -f "$state/body" ] || printf 'qa' > "$state/body"
@@ -413,11 +414,11 @@ pr_json() {
   else
     rollup='[{"__typename":"CheckRun","name":"ci","status":"IN_PROGRESS","conclusion":null}]'
   fi
-  jq -nc --arg b "$branch" --arg o "$oid" --arg s "$pr_state" --argjson r "$rollup" \
+  jq -nc --arg b "$branch" --arg o "$oid" --arg base "$base_oid" --arg s "$pr_state" --argjson r "$rollup" \
     --argjson m "$merged_at" --argjson d "$draft" \
     --rawfile t "$state/title" --rawfile body "$state/body" \
     '{number:42,url:"https://github.com/qa-owner/qa-repo/pull/42",state:$s,title:$t,
-      body:$body,headRefName:$b,headRefOid:$o,baseRefName:"main",isCrossRepository:false,
+      body:$body,headRefName:$b,headRefOid:$o,baseRefName:"main",baseRefOid:$base,isCrossRepository:false,
       isDraft:$d,mergeable:"MERGEABLE",mergeStateStatus:"CLEAN",reviewDecision:"APPROVED",
       statusCheckRollup:$r,mergedAt:$m,mergeCommit:null,
       headRepositoryOwner:{login:"qa-owner",id:"qa-owner-id"},
@@ -459,16 +460,16 @@ case "${1-} ${2-}" in
   # The goal loop's reading (#3129) names the repository from the PR URL and
   # asks whether the base requires strict status checks: no ruleset, and no
   # classic protection (GitHub's own 404 for an unprotected branch).
-  "api repos/qa-owner/qa-repo/rules/branches/main") emit '[]' "$@"; exit 0 ;;
+  "api repos/qa-owner/qa-repo/rules/branches/main"*) emit '[]' "$@"; exit 0 ;;
   "api repos/qa-owner/qa-repo/branches/main/protection/required_status_checks")
     if [ "$include" = true ]; then printf 'HTTP/2 404\r\n\r\n'; fi
     echo "gh: Branch not protected (HTTP 404)" >&2; exit 1 ;;
   "api repos/qa-owner/qa-repo/pulls/42")
     [ "$include" = true ] || exit 96
     pr="$(pr_json)"
-    head="$(jq -r '.headRefOid' <<< "$pr")"
+    snapshot="$(jq -c '{head:{sha:.headRefOid},base:{ref:.baseRefName,sha:.baseRefOid}}' <<< "$pr")"
     : > "$state/wait-read-head"
-    conditional "\"$head\"" "$(jq -c '{head:{sha:.headRefOid}}' <<< "$pr")"
+    conditional "\"$(printf '%s' "$snapshot" | git hash-object --stdin)\"" "$snapshot"
     exit $? ;;
   "api repos/qa-owner/qa-repo/commits/"*"/check-runs?"*)
     if [ "$(cat "$state/checks")" = SUCCESS ]; then

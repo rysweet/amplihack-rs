@@ -432,16 +432,26 @@ Under `judge` and `file_all` the agent files each issue with
 
 ## Waiting
 
-- Checks completing or the head changing. The wait reads the pull request head
-  immediately, then reads the check runs and commit statuses if the head is
-  unchanged. While checks are pending, it sleeps for the configured interval
-  before reading again. It rechecks the head before returning a completed
-  result. Both the turn reading and the wait repeat check collection after a
-  rate-limit retry during the scan because a rerun can start at the same head.
-  The turn reading revalidates its head after a rate-limit retry that follows
-  the PR lookup. Both repeat the scan when head revalidation retries.
+- Checks completing or the pull request changing. The wait reads the head,
+  target branch, and target tip immediately, then reads the check runs and
+  commit statuses for that snapshot. While checks are pending, it sleeps for
+  the configured interval before reading again. The wait and the turn reading
+  verify the target's required-check policy and PR snapshot before reporting
+  a pass. Changes to the head, target branch, target tip, or policy require a
+  new reading. A rate-limit retry during the scan or final PR verification
+  requires another scan. The turn reading also revalidates the PR snapshot
+  after a rate-limit retry between the first PR lookup and the scan.
+  A candidate pass based on GitHub Actions check runs also reads their
+  workflow runs. A queued or running workflow keeps the result pending even
+  while the check runs still show the previous attempt's passes. After a
+  rerun, a pass requires matching successful job IDs from the current attempt.
+  Missing attempt evidence leaves the result unverified, which can happen
+  when a partial rerun does not execute every check used for the pass.
   With `args.required: true` and readable required names, the wait selects the
-  required checks by name and expected App. A commit status can satisfy a
+  required checks by name and expected App. When a check run and a commit
+  status share a required name, both are retained. A failed status blocks
+  a pass even when the check run passed, and an App-specific requirement
+  retains the status's unknown source attribution. A commit status can satisfy a
   requirement that allows any source. Skipped and neutral required jobs,
   a completed commit status whose required App cannot be verified, and a
   completed check whose required App policy is unreadable appear in
@@ -469,12 +479,14 @@ When GitHub declines a call because of a rate limit, the response's
 `Retry-After`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers
 determine the deadline when available. The turn captures these headers from
 GraphQL reads in the build and PR turns as well as REST CI reads. The `gh api rate_limit`
-lookup can supply a missing reset when its counter is exhausted. The turn sleeps once
-until the deadline and retries that call. If there is no future deadline, the
-operation stays pending until guidance or cancellation. The lookup can show
-a counter with room even though the original request was declined, leaving
-the turn waiting for guidance. Guidance allows the reading to retry and ends
-a CI wait.
+lookup can supply a missing reset when its counter is exhausted. The turn
+sleeps once until the deadline and retries that call. There is no fixed
+recheck period or reset-window count for these retries. With no future
+deadline, the read waits for guidance or cancellation without retrying.
+The lookup can show a different counter with room even though the original
+request was declined, so the guidance wait can be long. Guidance returns the
+declined read as unresolved and reaches the agent in that turn. For a CI
+wait, guidance ends the wait and reaches the agent on the next turn.
 
 ### CI check interval
 
