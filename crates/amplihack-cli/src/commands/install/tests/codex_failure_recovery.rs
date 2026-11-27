@@ -268,12 +268,13 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     // measured after that. #3345 removes three agent files, which lowers it
     // by three. #3365 removes four skills and the `collaboration` folder,
     // which the package copied, so the floor is the count measured after
-    // that, five lower.
+    // that, five lower. #3380 removes five more skills. The floor is
+    // the package count after that removal in a fresh checkout.
     let names = fs::read_dir(skills)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    assert!(names.len() >= 161, "{} packaged skills", names.len());
+    assert!(names.len() >= 156, "{} packaged skills", names.len());
     assert!(
         names
             .iter()
