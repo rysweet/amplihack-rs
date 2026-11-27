@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # autodrive_goal_loop.sh drives one fresh goal-loop turn at a time.
-# It dispatches state and actions without timers or retry counters.
+# It dispatches each turn at constant depth without timers or retry counters.
 # Repeated identical pre-agent failures publish one hand-off, then use the
 # existing owner wait until guidance, pull-request, worktree, or stop changes.
 # See docs/reference/autodrive-goal-loop.md for the contract and records.
