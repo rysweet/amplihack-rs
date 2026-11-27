@@ -87,6 +87,13 @@ A fresh reading between actions is what keeps the loop from judging a stale
 state (#3090). An agent's tool call also cannot block for a 30-minute check,
 which is why waiting is an action and not part of the agent step.
 
+Write a PR comment or other message to a person only when the reader has
+something to act on: a push and what changed; the final check result before
+merge or readiness; a question or decision for a named owner; a block the run
+cannot clear; or the merge. Otherwise, write only the turn record. Keep the
+required hand-off comments, answers to rejected outcomes, turn records and
+readings unchanged.
+
 ## The reading
 
 `reading.json` (schema 1) holds, for this turn:
@@ -176,6 +183,10 @@ owner, or for a failure that keeps repeating when nothing the agent can do will
 change it, such as GitHub being unreachable. It does not change the PR's draft
 or ready state. The text is written in the journalistic style with literal
 words. It never quotes guidance, task text or secrets.
+
+When the required checks cannot start and each wait returns with nothing
+changed, the run cannot clear the cause: hand off under the hand-off rule,
+naming the owner and the decision.
 
 ### Merging off
 

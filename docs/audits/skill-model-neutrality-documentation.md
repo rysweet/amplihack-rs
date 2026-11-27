@@ -95,7 +95,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | code-philosophy | Enumerated | No |
 | code-smell-detector | Enumerated | Yes |
 | code-visualizer | Enumerated | Yes |
-| collaboration/creating-pull-requests | Enumerated | Yes |
 | computer-scientist-analyst | Enumerated | Yes |
 | consensus-voting | Enumerated | Yes |
 | context-management | Enumerated | No |
@@ -106,7 +105,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | dependency-resolver | Enumerated | No |
 | design-patterns-expert | Enumerated | Yes |
 | dev-orchestrator | Enumerated | No |
-| development/architecting-solutions | Enumerated | Yes |
 | development/setting-up-projects | Enumerated | Yes |
 | documentation-writing | Enumerated | Yes |
 | docx | Enumerated | Yes |
@@ -165,13 +163,11 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | political-scientist-analyst | Enumerated | Yes |
 | pptx | Enumerated | Yes |
 | pr-guide | Enumerated | No |
-| pr-review-assistant | Enumerated | Yes |
 | pre-commit-manager | Enumerated | No |
 | property-based-testing | Enumerated | No |
 | psychologist-analyst | Enumerated | Yes |
 | qa-team | Enumerated | Yes |
 | quality/reviewing-code | Enumerated | Yes |
-| quality/testing-code | Enumerated | Yes |
 | quality-audit | Enumerated | Yes |
 | repository-oom-audit | Enumerated | No |
 | research/researching-topics | Enumerated | Yes |

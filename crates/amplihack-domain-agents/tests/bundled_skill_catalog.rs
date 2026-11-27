@@ -82,14 +82,14 @@ fn real_catalog_loads_every_bundled_skill_and_body() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/skills");
     let mut files = Vec::new();
     skill_files(&root, &mut files);
-    assert_eq!(files.len(), 127, "fixed recursive inventory");
+    assert_eq!(files.len(), 123, "fixed recursive inventory");
     assert_eq!(
         files
             .iter()
             .filter(|file| file.strip_prefix(&root).unwrap().components().count() > 2)
             .count(),
-        7,
-        "all seven nested skills must be present"
+        4,
+        "all four nested skills must be present"
     );
     let mut paths = std::collections::BTreeMap::new();
     let mut bodies = std::collections::BTreeMap::new();

@@ -541,7 +541,7 @@ Good project setup:
 
 ## Related Capabilities
 
-- **Skill**: "Architecting Solutions" for design decisions
+- **Agent**: `architect` for design decisions
 - **Skill**: "Reviewing Code" for quality validation
 - **Agent**: Builder agent for code generation
 - **Documentation**: `Specs/PreCommitHooks.md`

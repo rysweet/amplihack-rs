@@ -40,6 +40,7 @@ impl Fx {
             archive_dir: self.work.path.join("archive"),
             categories: categories.iter().copied().collect(),
             apply: true,
+            pull_requests: PullRequests::LocalOnly,
             report_unrecorded: false,
             deadline: None,
             recipe_log_dir: None,
@@ -363,8 +364,8 @@ fn end_of_run_categories_are_run_owned_only() {
     );
 }
 
-/// `--short` would print `heads/feat` here, which `gh pr list --head` does
-/// not match; the full ref is stripped of `refs/heads/` instead.
+/// The full ref supplies the exact head branch for pull request matching,
+/// even when a tag shares the branch name.
 #[test]
 fn checked_out_branch_ignores_a_tag_with_the_same_name() {
     let dir = tempfile::tempdir().unwrap();

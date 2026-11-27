@@ -77,11 +77,11 @@ use crate::commands::profile::name::ProfileName;
 
 #[path = "live_series.rs"]
 mod series;
-pub use series::{Held, Series, Window, week_resets, window};
+pub use series::{Held, Point, Series, Window, week_resets, window};
 use series::{session_resets, stale_at};
 // Used inside the series and the step; the tests check them on their own.
 #[cfg(test)]
-pub use series::{MAX_POINTS, Point, SAME_WINDOW_SECS, SESSION_WINDOW_SECS, contradicts};
+pub use series::{MAX_POINTS, SAME_WINDOW_SECS, SESSION_WINDOW_SECS, contradicts};
 
 /// Unchanged cycles after which a cached (passive) live reading is frozen:
 /// the third identical cached reading in a row.

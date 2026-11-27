@@ -467,7 +467,7 @@ cleanup:
 - Ensure test YAML follows ruthless simplicity
 - Verify tests focus on behavior, not implementation
 
-**pr-review-assistant**:
+**reviewing-code**:
 
 - Include outside-in tests in PR reviews
 - Verify tests cover changed functionality

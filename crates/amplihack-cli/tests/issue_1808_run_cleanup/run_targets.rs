@@ -384,6 +384,7 @@ fn only_run_target_keeps_a_created_target_and_says_why() {
 
     assert!(wt.exists(), "{report:#}");
     assert_kept(&report, &tgt, "worktree kept: run-worktree not selected");
+    assert!(fx.gh_calls().is_empty());
 }
 
 /// Review of PR #2152: with `--only run-worktree` there is no rule (a) item,

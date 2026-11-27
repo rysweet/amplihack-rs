@@ -526,7 +526,7 @@ Good code review:
 - **Agent**: Security agent for deep security analysis
 - **Agent**: Tester agent for test improvements
 - **Slash Command**: `/fix` to implement suggestions
-- **Skill**: "Testing Code" for test generation
+- **Skill**: `test-gap-analyzer` for test generation
 
 ---
 
