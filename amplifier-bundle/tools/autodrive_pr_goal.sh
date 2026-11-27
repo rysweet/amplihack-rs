@@ -188,8 +188,22 @@ do_ci_wait() {
     # A rate-limit retry can span a rerun even while the head stays the same.
     # Read the checks again if any request since the start of the scan retried.
     if [ "$state" != pending ] && [ "$GH_READ_RETRIED" = false ]; then
-      ci_result "$GH_READ_DIR/ci.json" || return 2
-      return 0
+      gh_revalidate_actions_checks "$slug" "$head" "$cache" "$GH_READ_DIR/ci.json"
+      rc=$?
+      case "$rc" in
+        75|79) return "$rc" ;;
+        0) ;;
+        *) printf 'the Actions revalidation failed (exit %s): %s\n' "$rc" "${GH_READ_ERROR:-unreadable response}" >&2; return 2 ;;
+      esac
+      if [ "$GH_READ_RETRIED" = false ]; then
+        if jq -e '.state == "pending"' "$GH_READ_DIR/ci.json" >/dev/null; then
+          state=pending
+          gh_goal_command sleep "$interval" || return 2
+          continue
+        fi
+        ci_result "$GH_READ_DIR/ci.json" || return 2
+        return 0
+      fi
     fi
     GH_READ_RETRIED=false
     gh_head_checks "$slug" "$head" "$cache" "$required" "$required_only" "$policy_error" > "$GH_READ_DIR/ci.json"
@@ -202,10 +216,11 @@ do_ci_wait() {
     state="$(jq -r '.state' "$GH_READ_DIR/ci.json")"
     case "$state" in
       passed|pending)
-        # A removed requirement can keep a scan pending without any change
-        # to the PR. Refresh policy when a synthesized check is pending.
+        # A removed requirement can remain queued on the same PR. Refresh
+        # policy on the existing interval while waiting on required checks.
         if [ "$GH_READ_RETRIED" = false ] &&
-          { [ "$state" = passed ] || jq -e '.missing_required' "$GH_READ_DIR/ci.json" >/dev/null; }; then
+          { [ "$state" = passed ] || [ "$required_only" = true ] ||
+            jq -e '.missing_required' "$GH_READ_DIR/ci.json" >/dev/null; }; then
           gh_verify_branch_policy "$slug" "$base" "$cache" "$required" "$strict" "$policy_error"; rc=$?
           case "$rc" in
             75|79) return "$rc" ;;

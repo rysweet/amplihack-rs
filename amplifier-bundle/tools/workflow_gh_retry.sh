@@ -853,12 +853,31 @@ _gh_read_actions_attempts() {
   ' "$runs" 2>/dev/null
 }
 
+_gh_compare_actions_attempts() {
+  local current="$GH_READ_DIR/current-attempts.json" rc
+  GH_EXECUTION_STATE=unverified
+  GH_EXECUTION_DETAIL="the current GitHub Actions workflow runs could not be revalidated"
+  _gh_read_actions_attempts "$@" > "$current" || {
+    rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
+    return "$rc"
+  }
+  if cmp -s "$GH_READ_DIR/attempts.json" "$current"; then
+    GH_EXECUTION_STATE=verified
+    GH_EXECUTION_DETAIL=""
+  else
+    GH_EXECUTION_STATE=pending
+    GH_EXECUTION_DETAIL="a GitHub Actions workflow changed during attempt verification"
+  fi
+}
+
 # The check-runs endpoint can still serve the previous attempt's jobs while
 # Actions has a rerun queued. Verify the workflow state independently and
 # match check-run IDs and conclusions to the current attempt after it completes.
 _gh_verify_actions_checks() {
   local repo="$1" head="$2" cache="$3" aggregate="$4" run attempt suite rc
-  local attempts="$GH_READ_DIR/attempts.json" current="$GH_READ_DIR/current-attempts.json"
+  local attempts="$GH_READ_DIR/attempts.json"
   local reruns="$GH_READ_DIR/reruns.tsv" jobs="$GH_READ_DIR/attempt-jobs.jsonl"
   GH_EXECUTION_STATE=unverified
   GH_EXECUTION_DETAIL="the current GitHub Actions workflow runs could not be verified"
@@ -896,21 +915,35 @@ _gh_verify_actions_checks() {
   if [ -s "$reruns" ]; then
     # Pinned jobs remain readable after another attempt queues. Check all
     # matched runs again after the jobs reads, before accepting their IDs.
-    GH_EXECUTION_DETAIL="the current GitHub Actions workflow runs could not be revalidated"
-    _gh_read_actions_attempts "$repo" "$head" "$cache" "$aggregate" > "$current" || {
-      rc=$?
-      case "$rc" in 75|79) return "$rc" ;; esac
-      [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
-      return "$rc"
-    }
-    if ! cmp -s "$attempts" "$current"; then
-      GH_EXECUTION_STATE=pending
-      GH_EXECUTION_DETAIL="a GitHub Actions workflow changed during attempt verification"
-      return 0
-    fi
+    _gh_compare_actions_attempts "$repo" "$head" "$cache" "$aggregate"
+    return $?
   fi
   GH_EXECUTION_STATE=verified
   GH_EXECUTION_DETAIL=""
+}
+
+_gh_checks_with_execution() {
+  jq -c --arg state "$GH_EXECUTION_STATE" --arg detail "$GH_EXECUTION_DETAIL" '
+    del(.actions)
+    | if $state == "verified" then .
+      else . + {state:$state, execution_detail:$detail}
+        | {name:"GitHub Actions workflow execution", state:$state, link:"", elapsed:""} as $execution
+        | .counts.total += 1
+        | .checks = ([$execution] + .checks)[:200]
+        | .counts[$state] += 1
+      end
+  ' "$1"
+}
+
+# Revalidate the Actions attempts from the last check scan after policy and
+# PR reads. A same-head rerun can queue while those reads are in flight.
+gh_revalidate_actions_checks() {
+  local result="$4" updated="$GH_READ_DIR/revalidated-ci.json"
+  [ "$GH_EXECUTION_STATE" = verified ] || return 0
+  _gh_compare_actions_attempts "$1" "$2" "$3" "$GH_READ_DIR/checks-summary.json" || return $?
+  if [ "$GH_EXECUTION_STATE" != verified ]; then
+    _gh_checks_with_execution "$result" > "$updated" && mv -- "$updated" "$result"
+  fi
 }
 
 # gh_head_checks <owner/repo> <sha> <cache_dir> <required_checks_json> <required_only> <policy_error>
@@ -920,6 +953,7 @@ _gh_verify_actions_checks() {
 gh_head_checks() {
   local commit="repos/$1/commits/$2" cache="$3" required="$4" required_only="$5" policy_error="$6"
   local rows="$GH_READ_DIR/checks.jsonl" aggregate="$GH_READ_DIR/checks-summary.json"
+  GH_EXECUTION_STATE=""
   gh_rest_pages "$commit/check-runs" "$cache" '
     (.check_runs | type == "array") and all(.check_runs[];
       (.name | type == "string" and length > 0) and (.status | type == "string") and
@@ -983,16 +1017,7 @@ gh_head_checks() {
   ' "$rows" > "$aggregate" || return $?
   if jq -e '(.state == "passed" or .state == "failed") and (.actions | length > 0)' "$aggregate" >/dev/null; then
     _gh_verify_actions_checks "$1" "$2" "$cache" "$aggregate" || return $?
-    jq -c --arg state "$GH_EXECUTION_STATE" --arg detail "$GH_EXECUTION_DETAIL" '
-      del(.actions)
-      | if $state == "verified" then .
-        else . + {state:$state, execution_detail:$detail}
-          | {name:"GitHub Actions workflow execution", state:$state, link:"", elapsed:""} as $execution
-          | .counts.total += 1
-          | .checks = ([$execution] + .checks)[:200]
-          | .counts[$state] += 1
-        end
-    ' "$aggregate"
+    _gh_checks_with_execution "$aggregate"
   else
     jq -c 'del(.actions)' "$aggregate"
   fi

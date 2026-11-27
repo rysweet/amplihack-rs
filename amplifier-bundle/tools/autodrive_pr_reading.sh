@@ -241,7 +241,7 @@ else
   checks_error=""
   revalidate_pr="$GH_READ_RETRIED"
   # A reset wait can straddle a push, retarget or rerun. A pass always
-  # requires a freshly verified policy and PR, even without a retry.
+  # requires a freshly verified policy, PR and Actions attempt.
   while :; do
     GH_READ_RETRIED=false
     gh_head_checks "$SLUG" "$HEAD" "$cache" "$REQUIRED" true "$WHY" > "$S/ci.json"; rc=$?; passup "$rc"
@@ -285,7 +285,13 @@ else
       rc=1
       break
     fi
-    [ "$scan_retried" = true ] || [ "$GH_READ_RETRIED" = true ] || break
+    [ "$scan_retried" = false ] && [ "$GH_READ_RETRIED" = false ] || continue
+    gh_revalidate_actions_checks "$SLUG" "$HEAD" "$cache" "$S/ci.json"; rc=$?; passup "$rc"
+    if [ "$rc" -ne 0 ]; then
+      checks_error="the Actions attempt could not be revalidated: ${GH_READ_ERROR:-unreadable response}"
+      break
+    fi
+    [ "$GH_READ_RETRIED" = true ] || break
   done
   [ "$rc" -eq 0 ] || printf '{}\n' > "$S/ci.json"
   put checks "$(jq -c --arg why "$WHY" --argjson required "$REQUIRED" --argjson rc "$rc" '

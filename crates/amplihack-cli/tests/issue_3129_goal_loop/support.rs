@@ -285,6 +285,9 @@ case "${1:-} ${2:-}" in
           http 200 '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[]}}]' "${args[@]}"
         else http 200 '[]' "${args[@]}"; fi ;;
       *protection*) conditional=true
+        if [ -f "$G/rerun-during-policy.json" ] && grep -Fq '/actions/runs?head_sha=' "$G/calls.log"; then
+          mv "$G/rerun-during-policy.json" "$G/workflow-runs.json"
+        fi
         if [ -e "$G/policy403" ] || [ -e "$G/classic403" ]; then http 403 "Resource not accessible by integration"
         elif [ -e "$G/classic404" ]; then http 404 "Not Found"
         elif [ -e "$G/protection.json" ]; then http 200 "$(cat "$G/protection.json")" "${args[@]}"

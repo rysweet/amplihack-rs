@@ -190,8 +190,25 @@ esac"#
 
 #[test]
 fn removing_an_absent_requirement_unblocks_the_wait_at_the_same_head_and_base() {
+    assert_removing_requirement_unblocks_wait(false);
+}
+
+#[test]
+fn removing_a_queued_requirement_unblocks_the_wait_at_the_same_head_and_base() {
+    assert_removing_requirement_unblocks_wait(true);
+}
+
+fn assert_removing_requirement_unblocks_wait(reported: bool) {
     let h = Harness::new();
-    h.set_checks("integration\tpass\t0\n");
+    if reported {
+        fs::write(
+            h.gh.join("check-runs.json"),
+            r#"{"check_runs":[{"name":"build","status":"queued","conclusion":null},{"name":"integration","status":"completed","conclusion":"success"}]}"#,
+        )
+        .unwrap();
+    } else {
+        h.set_checks("integration\tpass\t0\n");
+    }
     h.classic_protection(&json!({"strict":false,"contexts":["build", "integration"]}));
     let reading = read_and_decide(&h, true);
     assert_eq!(reading["checks"]["state"], "pending", "{reading}");
@@ -737,6 +754,69 @@ printf 'build\tfail\t0\n' > "$GH_STATE/checks""#,
     assert!(actions[0].starts_with("304 ") && actions[0].contains("/actions/runs?"));
     assert!(actions[1].starts_with("304 ") && actions[1].contains("/attempts/2/jobs?"));
     assert!(actions[2].starts_with("200 ") && actions[2].contains("/actions/runs?"));
+}
+
+#[test]
+fn the_reading_discards_a_pass_when_a_rerun_queues_during_final_policy_verification() {
+    let h = Harness::new();
+    passing_actions_check(&h);
+    queue_rerun_during_policy(&h);
+
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["pr"]["head"], h.initial_head, "{reading}");
+    assert_eq!(reading["checks"]["required_known"], true, "{reading}");
+    assert_eq!(reading["checks"]["state"], "pending", "{reading}");
+    assert_eq!(reading["checks"]["counts"]["pending"], 1, "{reading}");
+    assert!(!h.gh.join("rerun-during-policy.json").exists());
+    assert!(sleeps(&h).is_empty());
+}
+
+#[test]
+fn a_rerun_queued_during_final_policy_verification_keeps_the_wait_pending() {
+    let h = Harness::new();
+    passing_actions_check(&h);
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["checks"]["state"], "passed", "{reading}");
+    fs::remove_file(h.gh.join("calls.log")).unwrap();
+    queue_rerun_during_policy(&h);
+    fake_sleep(
+        &h,
+        r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
+test ! -e "$GH_STATE/rerun-during-policy.json"
+sed 's/"queued"/"completed"/' "$GH_STATE/workflow-runs.json" > "$GH_STATE/completed-rerun.json"
+mv "$GH_STATE/completed-rerun.json" "$GH_STATE/workflow-runs.json"
+printf '%s\n' '{"check_runs":[{"name":"build","status":"completed","conclusion":"failure","app":{"slug":"github-actions","id":15368},"id":101,"check_suite":{"id":42}}]}' > "$GH_STATE/check-runs.json"
+printf '%s\n' '{"jobs":[{"status":"completed","conclusion":"failure","check_run_url":"https://api.github.com/repos/o/r/check-runs/101"}]}' > "$GH_STATE/attempt-jobs.json""#,
+    );
+
+    let result = wait(&h, "37");
+    assert_eq!(result["outcome"], "checks-complete", "{result}");
+    assert_eq!(result["checks_state"], "failed", "{result}");
+    assert_eq!(sleeps(&h), [37]);
+}
+
+fn passing_actions_check(h: &Harness) {
+    h.classic_protection(&json!({"strict":false,"contexts":["build"]}));
+    fs::write(
+        h.gh.join("check-runs.json"),
+        r#"{"check_runs":[{"name":"build","status":"completed","conclusion":"success","app":{"slug":"github-actions","id":15368},"id":100,"check_suite":{"id":42}}]}"#,
+    )
+    .unwrap();
+    set_actions_attempt(h, "workflow-runs.json", 1, "completed");
+}
+
+fn queue_rerun_during_policy(h: &Harness) {
+    set_actions_attempt(h, "rerun-during-policy.json", 2, "queued");
+}
+
+fn set_actions_attempt(h: &Harness, file: &str, attempt: i32, status: &str) {
+    fs::write(
+        h.gh.join(file),
+        json!({"workflow_runs":[{"id":17,"head_sha":h.initial_head,"check_suite_id":42,
+            "run_attempt":attempt,"status":status}]})
+        .to_string(),
+    )
+    .unwrap();
 }
 
 #[test]
