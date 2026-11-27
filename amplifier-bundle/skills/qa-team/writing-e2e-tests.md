@@ -1,6 +1,6 @@
 # Writing End-to-End Tests
 
-When the repository already has end-to-end tests in a suitable framework, write new tests in that framework and in the existing suite location. Otherwise, use the [Repo-Type Detection table](SKILL.md#repo-type-detection) to choose tooling.
+When the repository already has an end-to-end suite, write new tests in that suite's framework and location. When no existing end-to-end suite exists, use the [Repo-Type Detection table](SKILL.md#repo-type-detection) to choose tooling.
 
 | App type | Preferred output |
 | --- | --- |
@@ -23,5 +23,5 @@ When the repository already has end-to-end tests in a suitable framework, write 
 
 - Provide runnable tests and the command that runs them.
 - Assert observable behavior at the user entry point.
-- Add a framework only when there is no suitable end-to-end path and the selected tooling requires one.
+- Add a framework only when no existing end-to-end suite exists and the selected tooling requires one.
 - Document each unsupported journey and explain why it is unsupported.

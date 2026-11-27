@@ -5,7 +5,7 @@ explicit_triggers:
   - /top5
 ---
 
-# PM Architect Skill
+# PM Architect Skill (Orchestrator)
 
 ## Role
 
@@ -72,3 +72,7 @@ Combine git activity, workstream health, backlog changes, and roadmap progress i
 | [EXAMPLES.md](EXAMPLES.md)                 | You want to see a project management workflow in use.            |
 | [delegation.md](delegation.md)             | You are preparing work for a coding agent.                       |
 | [roadmap-planning.md](roadmap-planning.md) | You are creating, updating, or reviewing a roadmap.              |
+
+## Success Criteria
+
+Users can manage projects, prioritize work, delegate to agents, track progress, and align work with goals effectively.
