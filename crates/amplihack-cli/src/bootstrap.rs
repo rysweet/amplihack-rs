@@ -1310,18 +1310,9 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let previous_home = crate::test_support::set_home(temp.path());
-        let previous_codex_home = std::env::var_os("CODEX_HOME");
-        unsafe { std::env::remove_var("CODEX_HOME") };
+        let codex_home = crate::test_support::EnvGuard::unset(["CODEX_HOME"]);
 
         let result = configure_codex();
-
-        let restore = || {
-            match &previous_codex_home {
-                Some(value) => unsafe { std::env::set_var("CODEX_HOME", value) },
-                None => unsafe { std::env::remove_var("CODEX_HOME") },
-            }
-            crate::test_support::restore_home(previous_home.clone());
-        };
 
         // Reads the config the same way Codex does at startup, and reports
         // anything it could not load.
@@ -1388,7 +1379,8 @@ mod tests {
             Ok(())
         })();
 
-        restore();
+        drop(codex_home);
+        crate::test_support::restore_home(previous_home);
         outcome.unwrap();
     }
 

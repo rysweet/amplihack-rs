@@ -54,6 +54,10 @@ fn stamp() -> Option<String> {
 
 #[test]
 fn force_refresh_with_a_same_version_amplihack_home_stages_from_it_without_a_fetch() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let mut fx = InstallEnv::new();
     let tree = versioned_tree(&fx.source_path("tag-worktree"), crate::VERSION);
     mark_tree(&tree, "from-tag-worktree");
@@ -100,6 +104,10 @@ fn the_false_message_and_the_main_download_are_gone_from_the_source() {
 
 #[test]
 fn force_refresh_with_an_older_amplihack_home_stages_the_release_tag() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let mut fx = InstallEnv::new();
     let tree = versioned_tree(&fx.source_path("old"), &older_than_binary());
     mark_tree(&tree, "from-old-tree");
@@ -121,6 +129,10 @@ fn force_refresh_with_an_older_amplihack_home_stages_the_release_tag() {
 
 #[test]
 fn the_fetch_asks_for_the_binarys_exact_version_with_the_explicit_budget() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _fx = InstallEnv::new();
     let fetcher = FakeFetcher::serving(crate::VERSION);
 
@@ -145,6 +157,10 @@ fn the_budgets_are_the_agreed_ones() {
 
 #[test]
 fn an_implicit_install_fetches_with_the_shorter_budget() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     // Forced, because the compile-time root would match this test build.
     let fetcher = FakeFetcher::serving(crate::VERSION);
@@ -186,6 +202,10 @@ fn assert_refused_with_no_change(fx: &InstallEnv, action: impl FnOnce() -> anyho
 
 #[test]
 fn install_with_an_older_amplihack_home_is_refused_before_anything_changes() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let mut fx = InstallEnv::new();
     let tree = versioned_tree(&fx.source_path("old"), &older_than_binary());
     fx.env.set("AMPLIHACK_HOME", &tree);
@@ -197,6 +217,10 @@ fn install_with_an_older_amplihack_home_is_refused_before_anything_changes() {
 
 #[test]
 fn install_from_an_older_current_directory_is_refused_before_anything_changes() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     let tree = versioned_tree(&fx.source_path("old-checkout"), &older_than_binary());
     mark_repository(&tree);
@@ -208,6 +232,10 @@ fn install_from_an_older_current_directory_is_refused_before_anything_changes() 
 
 #[test]
 fn install_with_a_newer_amplihack_home_is_refused_before_anything_changes() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let mut fx = InstallEnv::new();
     let tree = versioned_tree(&fx.source_path("new"), &newer_than_binary());
     fx.env.set("AMPLIHACK_HOME", &tree);
@@ -218,6 +246,10 @@ fn install_with_a_newer_amplihack_home_is_refused_before_anything_changes() {
 
 #[test]
 fn a_refusal_comes_before_the_interactive_wizard() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // Asked for `--interactive`, a refusal must come before any question.
     let mut fx = InstallEnv::new();
     let tree = versioned_tree(&fx.source_path("old"), &older_than_binary());
@@ -243,6 +275,10 @@ fn a_refusal_comes_before_the_interactive_wizard() {
 
 #[test]
 fn local_stages_an_older_tree_and_self_heal_then_leaves_it_alone() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     let tree = versioned_tree(&fx.source_path("old"), &older_than_binary());
     mark_tree(&tree, "chosen");
@@ -278,6 +314,10 @@ fn local_stages_an_older_tree_and_self_heal_then_leaves_it_alone() {
 
 #[test]
 fn local_wins_over_force_refresh() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     let tree = versioned_tree(&fx.source_path("chosen"), &older_than_binary());
     mark_tree(&tree, "chosen");
@@ -330,6 +370,10 @@ fn assert_failure_keeps_install(
 
 #[test]
 fn a_failed_fetch_exits_non_zero_and_keeps_the_bundle_and_stamp() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     staged_install(&fx.home, Some(&older_than_binary()));
     let fetcher = FakeFetcher::failing("network request timed out");
@@ -366,6 +410,10 @@ fn the_failed_fetch_error_says_what_was_kept_and_how_to_recover() {
 
 #[test]
 fn a_build_that_may_not_fetch_fails_without_calling_the_fetcher() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     staged_install(&fx.home, Some(&older_than_binary()));
     let fetcher = FakeFetcher::serving(crate::VERSION);
@@ -392,6 +440,10 @@ fn a_build_that_may_not_fetch_fails_without_calling_the_fetcher() {
 
 #[test]
 fn a_fetched_tree_with_the_wrong_version_fails_and_no_older_tree_is_tried() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     staged_install(&fx.home, Some(&older_than_binary()));
     let fetcher = FakeFetcher::serving(&older_than_binary());
@@ -415,6 +467,10 @@ fn a_fetched_tree_with_the_wrong_version_fails_and_no_older_tree_is_tried() {
 
 #[test]
 fn a_fetched_tree_with_no_version_fails_the_same_way() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let fx = InstallEnv::new();
     staged_install(&fx.home, Some(&older_than_binary()));
     let fetcher = FakeFetcher::new(|destination| {
@@ -437,6 +493,10 @@ fn a_fetched_tree_with_no_version_fails_the_same_way() {
 
 #[test]
 fn the_fetched_tree_outlives_the_decision_and_is_removed_afterwards() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     // SEC-13: it has to live until the install returns, in a private temp dir.
     let _fx = InstallEnv::new();
     let seen = std::rc::Rc::new(std::cell::RefCell::new(None::<PathBuf>));

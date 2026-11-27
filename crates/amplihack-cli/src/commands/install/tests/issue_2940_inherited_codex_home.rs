@@ -8,6 +8,10 @@ use std::fs;
 
 #[test]
 fn native_install_leaves_an_inherited_codex_home_unchanged() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
     let scratch = tempdir_outside_framework_roots();
     let inherited_home = scratch.path().join("inherited-codex");

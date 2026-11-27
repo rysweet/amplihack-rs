@@ -221,6 +221,10 @@ fn a_relative_claude_config_dir_is_ignored() {
 
 #[test]
 fn an_unparseable_file_is_reported_by_each_pass_and_never_written() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let f = fixture();
     let path = f.home_settings();
     fs::create_dir_all(path.parent().unwrap()).unwrap();

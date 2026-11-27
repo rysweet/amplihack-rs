@@ -119,9 +119,11 @@ pub fn ensure_assets_match_binary_version(args: &[OsString]) -> Result<()> {
         return Ok(());
     }
 
-    ensure_assets_match_binary_version_with(args, &mut std::io::stderr(), || {
-        crate::commands::install::repair_framework_assets()
-    })
+    ensure_assets_match_binary_version_prepared(
+        args,
+        &mut std::io::stderr(),
+        crate::commands::install::prepare_framework_repair,
+    )
 }
 
 /// Use parsed CLI provider intent for startup repair, ahead of inherited hints.
@@ -275,6 +277,7 @@ pub(crate) use crate::install_lock::with_install_lock;
 /// `crate::update::post_install::run_post_update_install` so unit tests
 /// can verify the decision tree without running a real install or touching
 /// stderr.
+#[cfg(test)]
 pub(crate) fn ensure_assets_match_binary_version_with<W, F>(
     args: &[OsString],
     notice: &mut W,
@@ -282,6 +285,19 @@ pub(crate) fn ensure_assets_match_binary_version_with<W, F>(
 ) -> Result<()>
 where
     W: Write,
+    F: FnOnce() -> Result<()>,
+{
+    ensure_assets_match_binary_version_prepared(args, notice, || Ok(install_fn))
+}
+
+pub(crate) fn ensure_assets_match_binary_version_prepared<W, P, F>(
+    args: &[OsString],
+    notice: &mut W,
+    prepare: P,
+) -> Result<()>
+where
+    W: Write,
+    P: FnOnce() -> Result<F>,
     F: FnOnce() -> Result<()>,
 {
     if args_should_skip(args) {
@@ -330,10 +346,14 @@ where
     // current stamp must still repair). So it cannot be reordered away.
     // Instead it is memoised on a stat fingerprint of the bundle inputs:
     // ~58 KB of recipe YAML is parsed only when the bundle actually changed.
-    let installed_bundle_issue = installed_bundle_compatibility_issue_cached()
-        .context("checking installed framework bundle compatibility")?;
+    // A cache miss must not write installation state before source preflight.
+    let installed_bundle_issue = bundle_compat_cache::compatibility_issue_read_only(
+        &installed_bundle_path()?,
+        &bundle_compat_cache_path()?,
+    );
 
     if env_bypass_set() {
+        let _ = installed_bundle_compatibility_issue_cached()?;
         if !stamp_match || installed_bundle_issue.is_some() {
             let stamp_str = stamp.as_deref().unwrap_or("<missing>");
             let bundle_status = installed_bundle_issue.as_deref().unwrap_or("compatible");
@@ -349,6 +369,7 @@ where
     }
 
     if stamp_match && installed_bundle_issue.is_none() {
+        let _ = installed_bundle_compatibility_issue_cached()?;
         tracing::debug!("self_heal: stamp matches binary version {expected}");
         return Ok(());
     }
@@ -370,6 +391,11 @@ where
             }
         }
     }
+
+    let install_fn = match prepare() {
+        Ok(install) => install,
+        Err(error) => return keep_bundle_after_fetch_failure(notice, error),
+    };
 
     // Issue #502 R5: serialise installer + stamp write across processes
     // via an advisory `flock` on `~/.amplihack/.install.lock`. The second
@@ -397,23 +423,7 @@ where
             // The install writes the stamp itself (issue #1526: not after a
             // refused binary deploy, which only it knows about).
             if let Err(error) = install_fn() {
-                let error = error.context("running install during startup self-heal");
-                let Some(failed) = error.downcast_ref::<SourceFetchFailed>() else {
-                    return Err(error);
-                };
-                if let Some(issue) = installed_bundle_compatibility_issue_uncached()
-                    .context("checking the installed bundle after a failed fetch")?
-                {
-                    tracing::debug!("self_heal: installed bundle can't be kept: {issue}");
-                    return Err(error);
-                }
-                // Best effort: the command runs whether or not the warning is written.
-                if let Err(e) =
-                    notice.write_all(format_kept_bundle_warning(failed, expected).as_bytes())
-                {
-                    tracing::debug!("self_heal: failed to emit kept-bundle warning: {e}");
-                }
-                return Ok(());
+                return keep_bundle_after_fetch_failure(notice, error);
             }
             // The bundle just changed under us; drop the memoised verdict so the
             // next invocation revalidates once and re-primes the cache.
@@ -429,6 +439,26 @@ where
         },
     )
     .map(|_| ())
+}
+
+/// Preserve the existing offline fallback for source acquisition and staging.
+/// Other errors, including incomplete source input, always propagate.
+fn keep_bundle_after_fetch_failure<W: Write>(notice: &mut W, error: anyhow::Error) -> Result<()> {
+    let error = error.context("running install during startup self-heal");
+    let Some(failed) = error.downcast_ref::<SourceFetchFailed>() else {
+        return Err(error);
+    };
+    if let Some(issue) = installed_bundle_compatibility_issue_uncached()
+        .context("checking the installed bundle after a failed fetch")?
+    {
+        tracing::debug!("self_heal: installed bundle can't be kept: {issue}");
+        return Err(error);
+    }
+    if let Err(e) = notice.write_all(format_kept_bundle_warning(failed, crate::VERSION).as_bytes())
+    {
+        tracing::debug!("self_heal: failed to emit kept-bundle warning: {e}");
+    }
+    Ok(())
 }
 
 /// The outcome of a re-stage attempt (issue #1582), decided by
@@ -1458,11 +1488,10 @@ steps:
     #[test]
     fn missing_home_skips_gracefully() {
         // Acquire the env lock and unset HOME for the duration.
-        let lock = crate::test_support::env_lock()
+        let _lock = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let prior_home = std::env::var_os("HOME");
-        let prior_skip = std::env::var_os(SKIP_ENV);
+        let _env = crate::test_support::EnvGuard::capture(&["HOME", SKIP_ENV]);
         // SAFETY: serialized via env_lock.
         unsafe {
             std::env::remove_var("HOME");
@@ -1476,20 +1505,6 @@ steps:
             &mut buf,
             counting_installer(&calls, crate::VERSION),
         );
-
-        // Restore env BEFORE asserting so a panic doesn't poison other tests.
-        // SAFETY: serialized via env_lock held in `lock`.
-        unsafe {
-            match prior_home {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-            match prior_skip {
-                Some(v) => std::env::set_var(SKIP_ENV, v),
-                None => std::env::remove_var(SKIP_ENV),
-            }
-        }
-        drop(lock);
 
         result.expect("HOME-unset must be a graceful skip, not an error");
         assert_eq!(calls.get(), 0, "installer must not run when HOME unset");
@@ -1510,11 +1525,10 @@ steps:
         // Hold the env_lock for the whole test so the two threads share
         // a stable HOME. EnvGuard takes the same lock; we set HOME
         // manually to avoid double-locking.
-        let env_lock = crate::test_support::env_lock()
+        let _lock = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let prior_home = std::env::var_os("HOME");
-        let prior_skip = std::env::var_os(SKIP_ENV);
+        let _env = crate::test_support::EnvGuard::capture(&["HOME", SKIP_ENV]);
         // SAFETY: serialized via env_lock above.
         unsafe {
             std::env::set_var("HOME", tmp.path());
@@ -1547,20 +1561,6 @@ steps:
         let h2 = spawn();
         let r1 = h1.join().unwrap();
         let r2 = h2.join().unwrap();
-
-        // Restore env.
-        // SAFETY: serialized via env_lock held above.
-        unsafe {
-            match prior_home {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-            match prior_skip {
-                Some(v) => std::env::set_var(SKIP_ENV, v),
-                None => std::env::remove_var(SKIP_ENV),
-            }
-        }
-        drop(env_lock);
 
         r1.expect("thread 1 ok");
         r2.expect("thread 2 ok");

@@ -193,6 +193,10 @@ fn a_refused_codex_write_warns_and_does_not_fail_the_install() {
 /// passes, so the policy is applied on update as well as on install.
 #[test]
 fn the_post_update_install_path_applies_the_policy() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
@@ -208,6 +212,10 @@ fn the_post_update_install_path_applies_the_policy() {
 
 #[test]
 fn skip_install_applies_nothing() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
@@ -376,6 +384,10 @@ fn clearing_an_empty_record_changes_nothing() {
 /// the Codex home it manages.
 #[test]
 fn the_explicit_install_route_writes_the_codex_rules_file() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     use super::super::run_install;
     use super::helpers::{create_exe_stub, create_source_repo};
     use crate::test_support::EnvGuard;
@@ -423,6 +435,10 @@ fn the_explicit_install_route_writes_the_codex_rules_file() {
 /// work (SEC-C3).
 #[test]
 fn the_launch_bootstrap_route_writes_the_rules_file_and_clears_a_stale_record() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     use super::helpers::{create_exe_stub, create_source_repo};
     use crate::test_support::EnvGuard;
 

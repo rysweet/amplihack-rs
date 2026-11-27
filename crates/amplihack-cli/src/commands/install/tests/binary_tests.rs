@@ -123,27 +123,22 @@ fn validate_hook_command_string_accepts_valid_python_path() {
 
 #[test]
 fn deploy_binaries_copies_hooks_binary_to_local_bin_with_755_perms() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
-    let previous = crate::test_support::set_home(temp.path());
+    let _home = crate::test_support::HomeGuard::set(temp.path());
 
     let hooks_stub = create_exe_stub(temp.path(), "amplihack-hooks");
 
-    let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
-    unsafe {
-        std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
-    }
+    let mut env =
+        crate::test_support::EnvGuard::capture(&["PATH", "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH"]);
+    env.assign("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
 
     let result = binary::deploy_binaries(InstallMode::Explicit, None);
-
-    if let Some(v) = prev_hooks {
-        unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
-    } else {
-        unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
-    }
-    crate::test_support::restore_home(previous);
 
     let (deployed, kept) = result.expect("deploy_binaries must succeed");
     assert!(!deployed.is_empty(), "must return deployed paths");
@@ -167,32 +162,23 @@ fn deploy_binaries_copies_hooks_binary_to_local_bin_with_755_perms() {
 
 #[test]
 fn deploy_binaries_succeeds_when_local_bin_not_in_path() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
-    let previous = crate::test_support::set_home(temp.path());
+    let _home = crate::test_support::HomeGuard::set(temp.path());
 
     let hooks_stub = create_exe_stub(temp.path(), "amplihack-hooks");
 
-    let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
-    let prev_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
-        std::env::set_var("PATH", "/usr/bin:/bin"); // ~/.local/bin intentionally absent
-    }
+    let mut env =
+        crate::test_support::EnvGuard::capture(&["PATH", "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH"]);
+    env.assign("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+    env.assign("PATH", "/usr/bin:/bin"); // ~/.local/bin intentionally absent
 
     let result = binary::deploy_binaries(InstallMode::Explicit, None);
-
-    if let Some(v) = prev_hooks {
-        unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
-    } else {
-        unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
-    }
-    if let Some(v) = prev_path {
-        unsafe { std::env::set_var("PATH", v) };
-    }
-    crate::test_support::restore_home(previous);
 
     assert!(
         result.is_ok(),
@@ -333,7 +319,7 @@ fn find_hooks_binary_path_lookup_wins_over_local_bin() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
-    let previous = crate::test_support::set_home(temp.path());
+    let _home = crate::test_support::HomeGuard::set(temp.path());
 
     let local_bin = temp.path().join(".local").join("bin");
     fs::create_dir_all(&local_bin).unwrap();
@@ -360,7 +346,6 @@ fn find_hooks_binary_path_lookup_wins_over_local_bin() {
     if let Some(v) = prev_path {
         unsafe { std::env::set_var("PATH", v) };
     }
-    crate::test_support::restore_home(previous);
 
     let resolved = result.expect("find_hooks_binary must find the binary");
     assert_eq!(
@@ -375,7 +360,7 @@ fn find_hooks_binary_reinstall_after_uninstall_removes_local_bin() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
-    let previous = crate::test_support::set_home(temp.path());
+    let _home = crate::test_support::HomeGuard::set(temp.path());
 
     let local_bin = temp.path().join(".local").join("bin");
     fs::create_dir_all(&local_bin).unwrap();
@@ -401,7 +386,6 @@ fn find_hooks_binary_reinstall_after_uninstall_removes_local_bin() {
     if let Some(v) = prev_path {
         unsafe { std::env::set_var("PATH", v) };
     }
-    crate::test_support::restore_home(previous);
 
     let resolved = result.expect(
         "find_hooks_binary must find the binary via PATH even when ~/.local/bin copy was removed by uninstall",
@@ -418,7 +402,7 @@ fn find_hooks_binary_falls_through_to_cargo_bin_when_local_bin_absent() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
-    let previous = crate::test_support::set_home(temp.path());
+    let _home = crate::test_support::HomeGuard::set(temp.path());
 
     let local_bin = temp.path().join(".local").join("bin");
     fs::create_dir_all(&local_bin).unwrap();
@@ -444,7 +428,6 @@ fn find_hooks_binary_falls_through_to_cargo_bin_when_local_bin_absent() {
     if let Some(v) = prev_path {
         unsafe { std::env::set_var("PATH", v) };
     }
-    crate::test_support::restore_home(previous);
 
     let resolved = result.expect("find_hooks_binary must fall through to ~/.cargo/bin");
     assert_eq!(
@@ -459,7 +442,7 @@ fn find_hooks_binary_returns_err_with_helpful_message_when_not_found() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
-    let previous = crate::test_support::set_home(temp.path());
+    let _home = crate::test_support::HomeGuard::set(temp.path());
 
     let prev_env = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
     let prev_path = std::env::var_os("PATH");
@@ -478,7 +461,6 @@ fn find_hooks_binary_returns_err_with_helpful_message_when_not_found() {
     if let Some(v) = prev_path {
         unsafe { std::env::set_var("PATH", v) };
     }
-    crate::test_support::restore_home(previous);
 
     let err = result.expect_err("find_hooks_binary must return Err when binary is absent");
     let msg = format!("{err}");

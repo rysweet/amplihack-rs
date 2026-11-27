@@ -509,6 +509,10 @@ fn unparseable_or_build_metadata_stamp_still_stages() {
 /// A refusal must leave every byte under HOME as it was.
 #[test]
 fn real_run_install_behind_self_heal_never_touches_a_newer_install() {
+    if crate::test_support::isolated_install_test() {
+        return;
+    }
+
     let home_dir = tempfile::tempdir().unwrap();
     let home = home_dir.path();
     // The source repo and stub tools live outside HOME so the HOME snapshot
