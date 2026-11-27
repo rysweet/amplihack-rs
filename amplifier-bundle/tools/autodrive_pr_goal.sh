@@ -230,7 +230,9 @@ do_ci_wait() {
           esac
         fi
         if [ "$state" = pending ]; then gh_goal_command sleep "$interval" || return 2; fi ;;
-      unverified) ;;
+      unverified)
+        goal_write_ci_result "$GH_READ_DIR/ci.json" "$head" "$base" "$base_sha" "$TD/result.json" || return 2
+        return 0 ;;
       *) echo 'the CI read returned an unknown state' >&2; return 2 ;;
     esac
   done
