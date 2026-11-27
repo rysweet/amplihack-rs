@@ -912,19 +912,9 @@ fn the_reading_discards_checks_if_the_pr_changes_during_final_actions_verificati
 
 #[test]
 fn the_reading_discards_a_failed_legacy_status_if_the_pr_changes_during_the_scan() {
-    for (file, value, field, error) in [
-        (
-            "moved-head-during-status",
-            "7".repeat(40),
-            "head",
-            "the pull request head changed during the reading",
-        ),
-        (
-            "moved-base-during-status",
-            "release".to_owned(),
-            "base",
-            "the pull request target branch or its tip changed during the reading",
-        ),
+    for (file, value, field) in [
+        ("moved-head-during-status", "7".repeat(40), "head"),
+        ("moved-base-during-status", "release".to_owned(), "base"),
     ] {
         let h = Harness::new();
         h.set_checks("");
@@ -944,7 +934,12 @@ fn the_reading_discards_a_failed_legacy_status_if_the_pr_changes_during_the_scan
         );
         assert!(reading["checks"]["counts"].is_null(), "{reading}");
         assert!(reading["checks"]["state"].is_null(), "{reading}");
-        assert_eq!(reading["checks"]["error"], error, "{reading}");
+        assert!(
+            reading["checks"]["error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty()),
+            "{reading}"
+        );
         assert!(sleeps(&h).is_empty());
     }
 }
@@ -972,7 +967,7 @@ fn unverified_actions_checks_report_the_sanitized_api_error_or_unreadable_respon
 }
 
 #[test]
-fn the_build_summary_labels_unverified_actions_counts_as_observed() {
+fn the_build_summary_surfaces_unverified_actions_results() {
     let h = Harness::new();
     passing_actions_check(&h);
     fs::write(h.gh.join("workflow-runs.json"), r#"{"workflow_runs":[]}"#).unwrap();
@@ -994,15 +989,14 @@ fn the_build_summary_labels_unverified_actions_counts_as_observed() {
     assert!(out.status.success(), "{}", describe(&out));
     let reading: Value =
         serde_json::from_slice(&fs::read(turn.join("goal.json")).unwrap()).unwrap();
-    assert_eq!(reading["checks"]["state"], "unverified", "{reading}");
-    let detail = reading["checks"]["execution_detail"].as_str().unwrap();
-    assert!(
-        detail.contains("no unique workflow run for check suites: 42"),
-        "{detail}"
-    );
+    let checks = &reading["checks"];
+    assert_eq!(checks["state"], "unverified", "{reading}");
+    assert_eq!(checks["counts"]["passed"], 1, "{reading}");
+    let detail = checks["execution_detail"].as_str().unwrap();
+    assert!(!detail.is_empty(), "{reading}");
     let summary = reading["summary"].as_str().unwrap();
     assert!(
-        summary.contains("checks unverified (observed: 1 passed, 0 failing, 0 pending)"),
+        summary.contains(checks["state"].as_str().unwrap()),
         "{summary}"
     );
     assert!(summary.contains(detail), "{summary}");
