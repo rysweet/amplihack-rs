@@ -3,7 +3,7 @@
 
 #![cfg(target_os = "linux")]
 
-use super::support::{Harness, PR, PR_BRANCH, describe};
+use super::support::{Harness, PR, PR_BRANCH, describe, git};
 use crate::support::{exec_stub::write_executable, fifo_release};
 use serde_json::{Value, json};
 use std::fs::{self, DirBuilder};
@@ -11,28 +11,29 @@ use std::os::unix::fs::DirBuilderExt;
 use std::process::Command;
 
 pub(super) fn goal(h: &Harness, args: &[&str]) -> Command {
+    goal_tool(h, "autodrive_pr_goal.sh", args)
+}
+
+fn goal_tool(h: &Harness, script: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new("bash");
-    cmd.arg(
-        h.bundle_root
-            .join("amplifier-bundle/tools/autodrive_pr_goal.sh"),
-    )
-    .args(args)
-    .arg(h.state.join("turns/001"))
-    .current_dir(&h.repo)
-    .env("PATH", format!("{}:/usr/bin:/bin", h.bin.display()))
-    .env("HOME", &h.home)
-    .env("TMPDIR", &h.base)
-    .env("GH_STATE", &h.gh)
-    .env("GH_ORIGIN", &h.origin)
-    .env("GH_PR_BRANCH", super::support::PR_BRANCH)
-    .env("AMPLIHACK_BIN", h.bin.join("amplihack"))
-    .env("AMPLIHACK_STATE_DIR", &h.state_root)
-    .env("AMPLIHACK_WORK_ROOT", &h.work)
-    .env("AUTODRIVE_GOAL_CONTRACT", "1")
-    .env("AUTODRIVE_STATE_DIR", &h.state)
-    .env("RECIPE_VAR_pr_number", PR)
-    .env_remove("RECIPE_VAR_checks_watch_interval")
-    .env_remove("AMPLIHACK_RUN_GUIDANCE_DIRS");
+    cmd.arg(h.bundle_root.join("amplifier-bundle/tools").join(script))
+        .args(args)
+        .arg(h.state.join("turns/001"))
+        .current_dir(&h.repo)
+        .env("PATH", format!("{}:/usr/bin:/bin", h.bin.display()))
+        .env("HOME", &h.home)
+        .env("TMPDIR", &h.base)
+        .env("GH_STATE", &h.gh)
+        .env("GH_ORIGIN", &h.origin)
+        .env("GH_PR_BRANCH", super::support::PR_BRANCH)
+        .env("AMPLIHACK_BIN", h.bin.join("amplihack"))
+        .env("AMPLIHACK_STATE_DIR", &h.state_root)
+        .env("AMPLIHACK_WORK_ROOT", &h.work)
+        .env("AUTODRIVE_GOAL_CONTRACT", "1")
+        .env("AUTODRIVE_STATE_DIR", &h.state)
+        .env("RECIPE_VAR_pr_number", PR)
+        .env_remove("RECIPE_VAR_checks_watch_interval")
+        .env_remove("AMPLIHACK_RUN_GUIDANCE_DIRS");
     cmd
 }
 
@@ -86,15 +87,48 @@ fn wait(h: &Harness, interval: &str) -> Value {
 #[test]
 fn unchanged_empty_checks_remain_pending_for_ten_simulated_minutes_until_guidance() {
     let h = Harness::new();
+    assert_ten_minute_pending_wait(&h, false, 18, 1);
+}
+
+#[test]
+fn required_wait_budget_includes_the_uncached_admin_404_each_scan() {
+    let h = Harness::new();
+    fs::write(h.gh.join("classic404"), "").unwrap();
+    fs::write(
+        h.gh.join("branch.json"),
+        r#"{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"build","app_id":23}]}}}"#,
+    )
+    .unwrap();
+    // Six scans each read the PR, two check endpoints, rules, classic
+    // protection and the branch fallback. The cold PR and six 404s cost quota.
+    assert_ten_minute_pending_wait(&h, true, 36, 7);
+    let responses = fs::read_to_string(h.gh.join("responses.log")).unwrap();
+    assert_eq!(
+        responses
+            .lines()
+            .filter(|line| *line == "404 repos/o/r/branches/main/protection/required_status_checks")
+            .count(),
+        6,
+        "{responses}"
+    );
+}
+
+fn assert_ten_minute_pending_wait(
+    h: &Harness,
+    required: bool,
+    requests: usize,
+    non_304_responses: usize,
+) {
     h.set_checks("");
-    let reading = read_and_decide(&h, false);
+    let reading = read_and_decide(h, required);
     assert_eq!(reading["checks"]["state"], "pending");
-    assert_eq!(reading["checks"]["counts"]["total"], 0);
+    assert_eq!(reading["checks"]["required_known"], true);
+    assert_eq!(reading["checks"]["counts"]["total"], u64::from(required));
     assert_eq!(reading["checks"]["counts"]["failing"], 0);
     fs::remove_file(h.gh.join("responses.log")).unwrap();
     fs::remove_file(h.gh.join("calls.log")).unwrap();
     fake_sleep(
-        &h,
+        h,
         r#"case "$(wc -l < "$GH_STATE/sleeps")" in
   6) read -r _ < "$GH_STATE/release.fifo"; exit 2 ;;
   [1-5]) ;;
@@ -102,31 +136,26 @@ fn unchanged_empty_checks_remain_pending_for_ten_simulated_minutes_until_guidanc
 esac"#,
     );
     let mut live = fifo_release::start(
-        goal(&h, &["act", "wait"]),
+        goal(h, &["act", "wait"]),
         &h.gh.join("release.fifo"),
         "the ten-minute CI wait",
     );
-    assert_eq!(sleeps(&h), [120; 6]);
-    let responses = fs::read_to_string(h.gh.join("responses.log")).unwrap();
-    assert_eq!(responses.lines().count(), 18, "{responses}");
-    // The reading already populated both check caches, so only the first
-    // PR head response is charged during the wait.
-    assert_eq!(
-        responses.lines().filter(|l| l.starts_with("200 ")).count(),
-        1
-    );
-    assert_eq!(
-        responses.lines().filter(|l| l.starts_with("304 ")).count(),
-        17
-    );
+    assert_eq!(sleeps(h), [120; 6]);
     let calls = h.calls();
-    assert_eq!(calls.len(), 18, "{calls:?}");
+    assert_eq!(calls.len(), requests, "{calls:?}");
+    let responses = fs::read_to_string(h.gh.join("responses.log")).unwrap();
+    assert_eq!(responses.lines().count(), calls.len(), "{responses}");
+    assert_eq!(
+        responses.lines().filter(|l| !l.starts_with("304 ")).count(),
+        non_304_responses,
+        "{responses}"
+    );
     assert_eq!(
         calls
             .iter()
             .filter(|c| c.contains("If-None-Match:"))
             .count(),
-        17
+        requests - non_304_responses
     );
     h.guide("Read the updated instructions.");
     let out = live.finish();
@@ -882,6 +911,45 @@ fn the_reading_discards_checks_if_the_pr_changes_during_final_actions_verificati
 }
 
 #[test]
+fn the_reading_discards_a_failed_legacy_status_if_the_pr_changes_during_the_scan() {
+    for (file, value, field, error) in [
+        (
+            "moved-head-during-status",
+            "7".repeat(40),
+            "head",
+            "the pull request head changed during the reading",
+        ),
+        (
+            "moved-base-during-status",
+            "release".to_owned(),
+            "base",
+            "the pull request target branch or its tip changed during the reading",
+        ),
+    ] {
+        let h = Harness::new();
+        h.set_checks("");
+        h.classic_protection(&json!({"strict":false,"contexts":["external"]}));
+        fs::write(
+            h.gh.join("statuses.json"),
+            r#"{"statuses":[{"context":"external","state":"failure"}]}"#,
+        )
+        .unwrap();
+        fs::write(h.gh.join(file), value).unwrap();
+
+        let reading = read_and_decide(&h, true);
+        assert!(reading["pr"][field].is_null(), "{reading}");
+        assert!(
+            reading["repository"]["strict_status_checks"].is_null(),
+            "{reading}"
+        );
+        assert!(reading["checks"]["counts"].is_null(), "{reading}");
+        assert!(reading["checks"]["state"].is_null(), "{reading}");
+        assert_eq!(reading["checks"]["error"], error, "{reading}");
+        assert!(sleeps(&h).is_empty());
+    }
+}
+
+#[test]
 fn unverified_actions_checks_report_the_sanitized_api_error_or_unreadable_response() {
     for (file, contents, expected) in [
         ("actions403", "gho_1234567890123456", "403"),
@@ -901,6 +969,43 @@ fn unverified_actions_checks_report_the_sanitized_api_error_or_unreadable_respon
         assert_eq!(result["checks_state"], "unverified", "{result}");
         assert_eq!(result["execution_detail"], detail, "{result}");
     }
+}
+
+#[test]
+fn the_build_summary_labels_unverified_actions_counts_as_observed() {
+    let h = Harness::new();
+    passing_actions_check(&h);
+    fs::write(h.gh.join("workflow-runs.json"), r#"{"workflow_runs":[]}"#).unwrap();
+    let origin = "https://github.com/o/r.git";
+    let local_origin = format!("url.{}.insteadOf", h.origin.display());
+    git(&h.repo, &["config", &local_origin, origin]);
+    git(&h.repo, &["remote", "set-url", "origin", origin]);
+    let turn = h.state.join("turns/001");
+    DirBuilder::new()
+        .mode(0o700)
+        .recursive(true)
+        .create(&turn)
+        .unwrap();
+
+    let out = goal_tool(&h, "autodrive_build_goal.sh", &["read"])
+        .env("RECIPE_VAR_repo_path", &h.repo)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    let reading: Value =
+        serde_json::from_slice(&fs::read(turn.join("goal.json")).unwrap()).unwrap();
+    assert_eq!(reading["checks"]["state"], "unverified", "{reading}");
+    let detail = reading["checks"]["execution_detail"].as_str().unwrap();
+    assert!(
+        detail.contains("no unique workflow run for check suites: 42"),
+        "{detail}"
+    );
+    let summary = reading["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("checks unverified (observed: 1 passed, 0 failing, 0 pending)"),
+        "{summary}"
+    );
+    assert!(summary.contains(detail), "{summary}");
 }
 
 #[test]

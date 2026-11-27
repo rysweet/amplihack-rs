@@ -319,7 +319,9 @@ jq -n --slurpfile run "$S/run.json" --slurpfile prs "$S/prs.json" --slurpfile pr
   --slurpfile issue "$S/issue.json" --slurpfile hi "$S/host_inputs.json" --slurpfile cp "$S/checks_passed.json" \
   --slurpfile text "$S/pr_text.json" --slurpfile ctx "$S/context.json" --arg own "$OWN_PR" --arg gt "$GT" --arg wt "$OUT_WT" \
   --arg pst "$PR_STATE" --arg pd "$PR_DRAFT" '
-  ($run[0]) as $r | ($issue[0]) as $i | ($hi[0]) as $h | ($checks[0].counts // null) as $c |
+  $run[0] as $r | $issue[0] as $i | $hi[0] as $h | $checks[0] as $ci | $ci.counts as $c |
+  (if $ci.error then "unverified" else $ci.state // "unverified" end) as $ci_state |
+  ($ci.error // $ci.execution_detail // $ci.required_error) as $ci_detail |
   {schema:1, schema_version:1,
    subject:(if $own != "" then "PR #" + $own elif $r.branch then "branch " + $r.branch else "the build run" end),
    worktree:$wt, untrusted:[".prs.candidates", ".pr", ".checks", ".reviews", ".issue.claims", ".pr_text.intended"],
@@ -331,8 +333,10 @@ jq -n --slurpfile run "$S/run.json" --slurpfile prs "$S/prs.json" --slurpfile pr
      + (if $r.commits_not_pushed != null then ", \($r.commits_not_pushed) commits not pushed" else "" end)
      + (if $r.uncommitted_changes != null then ", \($r.uncommitted_changes) uncommitted changes" else "" end)
      + (if $own != "" then "; PR #" + $own + " " + (if $pst == "" then "unreadable" else $pst end) + (if $pd == "true" then " draft" elif $pd == "false" then " ready" else "" end)
-          + (if $c == null then "" elif $c.total == 0 then ", checks pending (none reported)"
-            else ", checks \($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending" end)
+          + ", checks " + $ci_state
+          + (if $c == null then "" elif $c.total == 0 then " (none reported)"
+            else " (\(if $ci_state == "unverified" or $ci_detail then "observed: " else "" end)\($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending)" end)
+          + (if $ci_detail then " — " + $ci_detail else "" end)
         elif $prs[0].error then "; pull requests unreadable" else "; no pull request yet" end)
      + (if $i.number != null then "; issue #\($i.number) (\($i.source)), \($i.claims | length) claims" else "" end)
      + (if ($h.missing | type) == "array" and ($h.missing | length) > 0 then "; host inputs missing from the worktree: " + ($h.missing | join(", ")) else "" end)

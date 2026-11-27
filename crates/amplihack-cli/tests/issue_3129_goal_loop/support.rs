@@ -97,8 +97,8 @@ http() {
     if [ "$code" = 200 ] && [ "${conditional:-false}" = true ]; then
       etag="\"$(printf '%s\n%s' "$body" "${link:-}" | git hash-object --stdin)\""
       [ "$etag" != "$validator" ] || code=304
-      printf '%s %s\n' "$code" "$endpoint" >> "$G/responses.log"
     fi
+    printf '%s %s\n' "$code" "$endpoint" >> "$G/responses.log"
     printf 'HTTP/2.0 %s\r\n' "$code"
     [ -z "$etag" ] || printf 'ETag: %s\r\n' "$etag"
     if [ "$code" = 200 ] && [ -n "${link:-}" ]; then printf 'Link: %s\r\n' "$link"; fi
@@ -262,6 +262,11 @@ case "${1:-} ${2:-}" in
       repos/o/r/commits/*/status\?*)
         decline core status
         conditional=true
+        for file in moved-head moved-base; do
+          if [ -f "$G/$file-during-status" ]; then
+            mv "$G/$file-during-status" "$G/$file"
+          fi
+        done
         http 200 "$(cat "$G/statuses.json" 2>/dev/null || echo '{"statuses":[]}')" ;;
       repos/o/r/actions/runs\?head_sha=*)
         conditional=true
@@ -301,6 +306,7 @@ case "${1:-} ${2:-}" in
         elif [ -e "$G/protection.json" ]; then http 200 "$(cat "$G/protection.json")" "${args[@]}"
         else http 404 "Branch not protected"; fi ;;
       repos/o/r/branches/*)
+        conditional=true
         if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
         elif [ -e "$G/branch.json" ]; then http 200 "$(cat "$G/branch.json")"
         else http 404 "Not Found"; fi ;;

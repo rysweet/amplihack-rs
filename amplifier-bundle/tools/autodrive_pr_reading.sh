@@ -264,9 +264,8 @@ elif [ -z "$cache" ]; then put checks "" "the conditional CI cache directory is 
 else
   checks_error=""
   revalidate_pr="$GH_READ_RETRIED"
-  # A reset wait can straddle a push, retarget or rerun. A pass always
-  # requires a freshly verified policy. A verified Actions result also needs
-  # a current PR snapshot, whatever the check conclusion.
+  # A reset wait can straddle a push, retarget or rerun. Terminal conclusions
+  # require a current PR snapshot, and a pass also requires a fresh policy.
   while :; do
     GH_READ_RETRIED=false
     gh_head_checks "$SLUG" "$HEAD" "$cache" "$REQUIRED" true "$WHY" > "$S/ci.json"; rc=$?; passup "$rc"
@@ -274,16 +273,19 @@ else
       checks_error="the checks could not be read: ${GH_READ_ERROR:-unreadable response}"
       break
     fi
-    if jq -e '.state == "passed"' "$S/ci.json" >/dev/null; then
-      revalidate_pr=true
-      if [ "$GH_READ_RETRIED" = false ]; then
-        gh_verify_branch_policy "$SLUG" "$BASE" "$cache" "$REQUIRED" "$(jq -c '.strict_status_checks' <<< "$RJ")"
-        policy_rc=$?; passup "$policy_rc"
-        if [ "$policy_rc" -ne 0 ]; then
-          checks_error="the required-check policy changed or could not be verified during the reading"
+    case "$(jq -r '.state' "$S/ci.json")" in
+      passed)
+        revalidate_pr=true
+        if [ "$GH_READ_RETRIED" = false ]; then
+          gh_verify_branch_policy "$SLUG" "$BASE" "$cache" "$REQUIRED" "$(jq -c '.strict_status_checks' <<< "$RJ")"
+          policy_rc=$?; passup "$policy_rc"
+          if [ "$policy_rc" -ne 0 ]; then
+            checks_error="the required-check policy changed or could not be verified during the reading"
+          fi
         fi
-      fi
-    fi
+        ;;
+      failed) revalidate_pr=true ;;
+    esac
     scan_retried="$GH_READ_RETRIED"
     if [ "$scan_retried" = true ] || [ "$GH_EXECUTION_STATE" = verified ]; then
       revalidate_pr=true
