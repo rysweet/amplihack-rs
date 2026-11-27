@@ -932,12 +932,19 @@ older or interrupted runs, a worktree is **eligible** in either of these cases:
   cleanup uses the modification time alone.
 
 In report and apply mode, `amplihack cleanup` matches pull requests by exact
-head branch name. It identifies the GitHub repository from the local remotes
-of a verified worktree and shares one all-state REST listing across its
-checkouts. Each listing uses pages of 100, with a limit of 40 requests per
-repository and a 30-second timeout per request. If cleanup cannot identify the
-repository or finish and validate the listing, it keeps the dependent items
-and reports why.
+head branch name. It honors a verified checkout's `gh repo set-default`
+selection. Without a selection, its GitHub fetch remotes must identify the
+same repository. Checkouts of that repository share an invocation-local
+listing in descending update order. Once the listing reaches PRs older than
+the keep period, cleanup can stop scanning history and list open PRs
+separately. An older or interrupted run with a recently modified `run.json`
+can still need an exact-branch history lookup. An older closed or merged PR
+can make that worktree eligible while the no-PR rule still keeps it.
+
+Listings use pages of 100. Listings and history lookups share a limit of 40
+requests per repository and a 30-second timeout per request. If cleanup cannot
+identify the repository or validate the PR evidence it needs, it keeps the
+dependent items and reports why.
 
 These rules decide worktrees, and targets recorded in the legacy format. A
 run's legacy targets are removed only when every worktree the run still has is
@@ -1999,9 +2006,13 @@ Until then, `amplihack recipe run` stops with this error before any step runs.
 worktree was created outside the bundled helpers, or by a release before this
 feature. Record it with `amplihack_run_owned.sh record`, or remove it yourself.
 
-**Everything is skipped with `gh failed`.** Check that `gh auth status` works
-in the worktree's repository. Cleanup does not guess when it cannot read the
-PR state.
+**Skipped with `cannot list pull requests`.** Read the reported detail and
+check `gh auth status` for github.com. Cleanup keeps dependent items when
+the required PR evidence is unavailable or exceeds the request limit.
+
+**Skipped with `cannot identify repository`.** Check the worktree's GitHub
+fetch remotes with `git remote -v`. For a checkout with a fork and an
+upstream remote, use `gh repo set-default` to select its PR repository.
 
 **Skipped with `cleanup lock held`.** Another `amplihack cleanup --apply` or an
 end-of-run sweep is running. Wait for it to finish and run the command again.

@@ -14,14 +14,12 @@ use std::time::Duration;
 const GH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT: usize = 1024 * 1024;
 const PAGE_SIZE: usize = 100;
-// Including the first page, manual cleanup makes at most 40 requests per
-// repository. A continuation on the last page makes the whole listing unusable.
-const MAX_PAGES: usize = 40;
+// Shared by the listings and any exact-head lookups for this repository.
+const MAX_REQUESTS: usize = 40;
 
-pub(super) type Listing = HashMap<String, PrInfo>;
-
-/// Resolve the checkout's fetch remotes without contacting them. All GitHub
-/// fetch remotes must agree. Never include a raw remote URL in a diagnostic.
+/// Resolve the checkout's GitHub repository without contacting its remotes.
+/// Honor the selection saved by gh repo set-default. Otherwise the GitHub
+/// fetch remotes must agree. Diagnostics omit remote URLs and config values.
 pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<String> {
     let mut command = hardened_git();
     command.arg("-C").arg(checkout).args(["remote", "-v"]);
@@ -33,22 +31,94 @@ pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Strin
         "git remote output is too large"
     );
     let remotes = std::str::from_utf8(&output.stdout).context("git remotes are not UTF-8")?;
-    let mut repository = None;
+    let mut remotes_by_name = HashSet::new();
     for line in remotes.lines() {
-        let (_, url) = line.split_once('\t').context("invalid git remote output")?;
+        let (remote, url) = line.split_once('\t').context("invalid git remote output")?;
         let Some(url) = url.strip_suffix(" (fetch)") else {
             ensure!(url.ends_with(" (push)"), "invalid git remote output");
             continue;
         };
         if let Some(name) = public_github_repository(url) {
-            ensure!(
-                repository.as_ref().is_none_or(|known| *known == name),
-                "checkout has several GitHub repositories"
-            );
-            repository = Some(name);
+            remotes_by_name.insert((remote, name));
         }
     }
-    repository.context("checkout has no identifiable GitHub repository")
+    if let Some(name) = configured_repository(checkout, git_timeout, &remotes_by_name)? {
+        return Ok(name);
+    }
+    let mut names = remotes_by_name.into_iter().map(|(_, name)| name);
+    let name = names
+        .next()
+        .context("checkout has no identifiable GitHub repository")?;
+    ensure!(
+        names.all(|other| other == name),
+        "checkout has several GitHub repositories"
+    );
+    Ok(name)
+}
+
+fn configured_repository(
+    checkout: &Path,
+    git_timeout: Duration,
+    remotes: &HashSet<(&str, String)>,
+) -> Result<Option<String>> {
+    let mut command = hardened_git();
+    command.arg("-C").arg(checkout).args([
+        "config",
+        "--null",
+        "--get-regexp",
+        r"^remote\..*\.gh-resolved$",
+    ]);
+    let output = crate::util::run_output_with_timeout_limited(command, git_timeout, MAX_OUTPUT)
+        .context("cannot read GitHub repository selection")?;
+    if output.status.code() == Some(1) && output.stdout.is_empty() {
+        return Ok(None);
+    }
+    ensure!(
+        output.status.success(),
+        "cannot read GitHub repository selection"
+    );
+    ensure!(
+        output.stdout.len() < MAX_OUTPUT,
+        "GitHub repository selection is too large"
+    );
+    let records = std::str::from_utf8(&output.stdout)
+        .context("GitHub repository selection is not UTF-8")?
+        .strip_suffix('\0')
+        .context("invalid GitHub repository selection")?;
+    let mut selected = None;
+    for record in records.split('\0') {
+        let (remote, value) = record
+            .split_once('\n')
+            .and_then(|(key, value)| {
+                Some((
+                    key.strip_prefix("remote.")?.strip_suffix(".gh-resolved")?,
+                    value,
+                ))
+            })
+            .context("invalid GitHub repository selection")?;
+        let mut names = remotes.iter().filter(|(key, _)| *key == remote);
+        let (_, remote_repo) = names
+            .next()
+            .context("selected remote has no public GitHub fetch URL")?;
+        let name = if value == "base" {
+            ensure!(
+                names.next().is_none(),
+                "selected remote has several GitHub repositories"
+            );
+            remote_repo.clone()
+        } else {
+            // gh stores owner/repo when the selection has no remote of its own.
+            public_github_repository(&format!("https://github.com/{value}"))
+                .filter(|name| name.eq_ignore_ascii_case(value))
+                .context("invalid configured GitHub repository")?
+        };
+        ensure!(
+            selected.as_ref().is_none_or(|known| *known == name),
+            "checkout has conflicting GitHub repository selections"
+        );
+        selected = Some(name);
+    }
+    Ok(selected)
 }
 
 fn public_github_repository(url: &str) -> Option<String> {
@@ -85,62 +155,155 @@ fn public_github_repository(url: &str) -> Option<String> {
     github_repository_from_remote_url(url).map(|name| name.to_ascii_lowercase())
 }
 
-/// Build an index only after the last page has been validated. A duplicate
-/// number can indicate that the collection changed while it was being read.
-pub(super) fn list(repository: &str) -> Result<Listing> {
-    let endpoint = format!("repos/{repository}/pulls");
-    let mut seen = HashSet::new();
-    let mut branches = Listing::new();
-    for page in 1..=MAX_PAGES {
-        let body =
-            request_page(&endpoint, page).with_context(|| format!("PR listing page {page}"))?;
-        let (payload, has_next) = response_page(&body, &endpoint, page)
-            .with_context(|| format!("PR listing page {page}"))?;
-        let rows: Vec<RawPr> = serde_json::from_str(payload).context("cannot parse PR listing")?;
-        ensure!(rows.len() <= PAGE_SIZE, "PR listing exceeds the page size");
-        for row in rows {
-            let (branch, pr) = row.into_pr()?;
-            ensure!(seen.insert(pr.number), "PR listing repeated a pull request");
-            branches
-                .entry(branch)
-                .and_modify(|known| {
-                    if known.state != "OPEN"
-                        && (pr.state == "OPEN"
-                            || pr.closed_at.or(pr.merged_at) >= known.closed_at.or(known.merged_at))
-                    {
-                        *known = pr.clone();
-                    }
-                })
-                .or_insert(pr);
-        }
-        if !has_next {
-            return Ok(branches);
-        }
-    }
-    bail!("PR listing continues past the {MAX_PAGES}-page limit")
+pub(super) struct Listing {
+    branches: HashMap<String, PrInfo>,
+    pub(super) full_history: bool,
+    historical: HashMap<String, Result<Option<PrInfo>, String>>,
+    remaining: usize,
 }
 
-fn request_page(endpoint: &str, page: usize) -> Result<Vec<u8>> {
+impl Listing {
+    pub(super) fn load(repository: &str, now: DateTime<Utc>, keep: Duration) -> Result<Self> {
+        let mut listing = Self {
+            branches: HashMap::new(),
+            full_history: false,
+            historical: HashMap::new(),
+            remaining: MAX_REQUESTS,
+        };
+        let endpoint = format!("repos/{repository}/pulls");
+        let cutoff = chrono::TimeDelta::from_std(keep)
+            .ok()
+            .and_then(|keep| now.checked_sub_signed(keep));
+        listing.full_history = listing.scan(&endpoint, "all", cutoff)?;
+        if !listing.full_history {
+            // Even a PR whose last update predates the keep period can be open.
+            listing.scan(&endpoint, "open", None)?;
+        }
+        Ok(listing)
+    }
+
+    pub(super) fn find(
+        &mut self,
+        repository: &str,
+        branch: &str,
+        needs_history: bool,
+    ) -> Result<Option<&PrInfo>, &str> {
+        let known = self.branches.get(branch);
+        if known.is_some() || self.full_history || !needs_history {
+            return Ok(known);
+        }
+        self.historical
+            .entry(branch.into())
+            .or_insert_with(|| {
+                take_request(&mut self.remaining)
+                    .and_then(|()| historical_pr(repository, branch))
+                    .map_err(|e| format!("{e:#}"))
+            })
+            .as_ref()
+            .map(Option::as_ref)
+            .map_err(String::as_str)
+    }
+
+    /// The all-state scan can stop once the descending update order proves
+    /// that any unread closed PR is old enough. Return true on the final page.
+    fn scan(&mut self, endpoint: &str, state: &str, cutoff: Option<DateTime<Utc>>) -> Result<bool> {
+        let mut seen = HashSet::new();
+        let mut furthest_page = 1;
+        let mut last_updated = None;
+        let mut page = 1;
+        loop {
+            take_request(&mut self.remaining)?;
+            let body = request_page(endpoint, state, page)
+                .with_context(|| format!("{state} PR listing page {page}"))?;
+            let (payload, has_next, last_page) = response_page(&body, endpoint, page)
+                .with_context(|| format!("{state} PR listing page {page}"))?;
+            furthest_page = furthest_page.max(last_page.unwrap_or(page));
+            ensure!(
+                has_next || page >= furthest_page,
+                "{state} PR listing ended at page {page} before advertised page {furthest_page}"
+            );
+            let rows: Vec<RawPr> =
+                serde_json::from_str(payload).context("cannot parse PR listing")?;
+            ensure!(rows.len() <= PAGE_SIZE, "PR listing exceeds the page size");
+            for row in rows {
+                if state == "all" {
+                    let updated = row.updated_at.context("PR listing has no update time")?;
+                    ensure!(
+                        last_updated.is_none_or(|previous| updated <= previous)
+                            && row
+                                .closed_at
+                                .into_iter()
+                                .chain(row.merged_at)
+                                .all(|stamp| stamp <= updated),
+                        "PR listing has inconsistent update times"
+                    );
+                    last_updated = Some(updated);
+                }
+                let (branch, pr) = row.into_pr()?;
+                ensure!(
+                    state != "open" || pr.state == "OPEN",
+                    "open PR listing contains a closed PR"
+                );
+                ensure!(seen.insert(pr.number), "PR listing repeated a pull request");
+                self.branches
+                    .entry(branch)
+                    .and_modify(|known| {
+                        if known.state != "OPEN"
+                            && (pr.state == "OPEN"
+                                || pr.closed_at.or(pr.merged_at)
+                                    >= known.closed_at.or(known.merged_at))
+                        {
+                            *known = pr.clone();
+                        }
+                    })
+                    .or_insert(pr);
+            }
+            if !has_next {
+                return Ok(true);
+            }
+            if cutoff
+                .zip(last_updated)
+                .is_some_and(|(cutoff, updated)| updated <= cutoff)
+            {
+                return Ok(false);
+            }
+            page += 1;
+        }
+    }
+}
+
+fn take_request(remaining: &mut usize) -> Result<()> {
+    ensure!(
+        *remaining > 0,
+        "PR evidence exceeds the {MAX_REQUESTS}-request limit"
+    );
+    *remaining -= 1;
+    Ok(())
+}
+
+fn gh_api() -> Command {
     let mut command = Command::new("gh");
     amplihack_git::scrub(&mut command);
     command
-        .args([
-            "api",
-            "--hostname",
-            "github.com",
-            "--include",
-            "--method",
-            "GET",
-        ])
+        .args(["api", "--hostname", "github.com"])
+        .stdin(Stdio::null())
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1");
+    command
+}
+
+fn request_page(endpoint: &str, state: &str, page: usize) -> Result<Vec<u8>> {
+    let mut command = gh_api();
+    command
+        .args(["--include", "--method", "GET"])
         .arg(endpoint)
-        .args([
-            "-f",
-            "state=all",
-            "-f",
-            "sort=created",
-            "-f",
-            "direction=asc",
-        ])
+        .arg("-f")
+        .arg(format!("state={state}"))
+        .args(if state == "all" {
+            ["-f", "sort=updated", "-f", "direction=desc"]
+        } else {
+            ["-f", "sort=created", "-f", "direction=asc"]
+        })
         .arg("-f")
         .arg(format!("per_page={PAGE_SIZE}"))
         .arg("-f")
@@ -148,12 +311,13 @@ fn request_page(endpoint: &str, page: usize) -> Result<Vec<u8>> {
         .arg("--jq")
         .arg(concat!(
             "if type == \"array\" then ",
-            "map({number, state, closed_at, merged_at, head: {ref: .head.ref}}) ",
+            "map({number, state, closed_at, merged_at, updated_at, head: {ref: .head.ref}}) ",
             "else error(\"expected an array of pull requests\") end",
-        ))
-        .stdin(Stdio::null())
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1");
+        ));
+    gh_output(command)
+}
+
+fn gh_output(command: Command) -> Result<Vec<u8>> {
     let output = crate::util::run_output_with_timeout_limited(command, GH_TIMEOUT, MAX_OUTPUT)?;
     ensure!(
         output.status.success(),
@@ -165,7 +329,11 @@ fn request_page(endpoint: &str, page: usize) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn response_page<'a>(output: &'a [u8], endpoint: &str, page: usize) -> Result<(&'a str, bool)> {
+fn response_page<'a>(
+    output: &'a [u8],
+    endpoint: &str,
+    page: usize,
+) -> Result<(&'a str, bool, Option<usize>)> {
     let text = std::str::from_utf8(output).context("gh output is not UTF-8")?;
     let (headers, payload) = text
         .split_once("\n\n")
@@ -217,7 +385,7 @@ fn response_page<'a>(output: &'a [u8], endpoint: &str, page: usize) -> Result<(&
         last_page.is_none_or(|last| last >= page && (last > page) == has_next),
         "inconsistent PR pagination links"
     );
-    Ok((payload, has_next))
+    Ok((payload, has_next, last_page))
 }
 
 fn linked_page(url: &str, endpoint: &str) -> Result<usize> {
@@ -257,6 +425,7 @@ struct RawPr {
     state: String,
     closed_at: Option<DateTime<Utc>>,
     merged_at: Option<DateTime<Utc>>,
+    updated_at: Option<DateTime<Utc>>,
     head: PrHead,
 }
 
@@ -291,6 +460,76 @@ impl RawPr {
     }
 }
 
+/// Only an exact match is needed here. The shared scans have already checked
+/// the branch for open and recently closed PRs across the repository.
+fn historical_pr(repository: &str, branch: &str) -> Result<Option<PrInfo>> {
+    const QUERY: &str = "query($owner:String!,$repo:String!,$branch:String!) { \
+        repository(owner:$owner,name:$repo) { \
+            pullRequests(first:1,states:[CLOSED,MERGED],headRefName:$branch, \
+                orderBy:{field:UPDATED_AT,direction:DESC}) { \
+                nodes { number state headRefName closedAt mergedAt } \
+            } \
+        } \
+    }";
+    let (owner, repo) = repository
+        .split_once('/')
+        .context("invalid repository name")?;
+    let mut command = gh_api();
+    command
+        .args(["graphql", "-f"])
+        .arg(format!("query={QUERY}"))
+        .arg("-f")
+        .arg(format!("owner={owner}"))
+        .arg("-f")
+        .arg(format!("repo={repo}"))
+        .arg("-f")
+        .arg(format!("branch={branch}"));
+    let body = gh_output(command).context("cannot check branch PR history")?;
+    let response: serde_json::Value =
+        serde_json::from_slice(&body).context("cannot parse branch PR history")?;
+    ensure!(
+        response.get("errors").is_none(),
+        "cannot check branch PR history"
+    );
+    let rows = response
+        .pointer("/data/repository/pullRequests/nodes")
+        .and_then(serde_json::Value::as_array)
+        .context("branch PR history has no result")?;
+    let row = match rows.as_slice() {
+        [] => return Ok(None),
+        [row] => row,
+        _ => bail!("branch PR history returned several results"),
+    };
+    let pr: HistoricalPr =
+        serde_json::from_value(row.clone()).context("invalid branch PR history")?;
+    ensure!(
+        pr.head_ref_name == branch
+            && pr.number > 0
+            && match pr.state.as_str() {
+                "CLOSED" => pr.closed_at.is_some(),
+                "MERGED" => pr.merged_at.is_some(),
+                _ => false,
+            },
+        "invalid branch PR history"
+    );
+    Ok(Some(PrInfo {
+        number: pr.number,
+        state: pr.state,
+        closed_at: pr.closed_at,
+        merged_at: pr.merged_at,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoricalPr {
+    number: u64,
+    state: String,
+    head_ref_name: String,
+    closed_at: Option<DateTime<Utc>>,
+    merged_at: Option<DateTime<Utc>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,11 +539,14 @@ mod tests {
     #[test]
     fn response_separates_http_headers_from_json_and_reads_continuation() {
         let first = b"HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/12/pulls?state=all&page=2>; rel=\"next\", <https://api.github.com/repositories/12/pulls?state=all&page=40>; rel=\"last\"\r\n\r\n[]";
-        assert_eq!(response_page(first, ENDPOINT, 1).unwrap(), ("[]", true));
+        assert_eq!(
+            response_page(first, ENDPOINT, 1).unwrap(),
+            ("[]", true, Some(40))
+        );
         let last = b"HTTP/2.0 200 OK\nLink: <https://api.github.com/repositories/12/pulls?page=39>; rel=\"prev\"\n\n[]";
         assert_eq!(
-            response_page(last, ENDPOINT, MAX_PAGES).unwrap(),
-            ("[]", false)
+            response_page(last, ENDPOINT, MAX_REQUESTS).unwrap(),
+            ("[]", false, None)
         );
     }
 
