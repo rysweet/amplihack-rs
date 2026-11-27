@@ -134,7 +134,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | indigenous-leader-analyst | Enumerated | Yes |
 | investigation-workflow | Enumerated | Yes |
 | journalist-analyst | Enumerated | Yes |
-| knowledge-extractor | Enumerated | Yes |
 | lawyer-analyst | Enumerated | Yes |
 | learning-path-builder | Enumerated | Yes |
 | lsp-setup | Enumerated | No |

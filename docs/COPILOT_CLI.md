@@ -363,7 +363,7 @@ gh copilot suggest --context .github/agents/amplihack/core/builder.md \
 
 - **email-drafter**: Professional email generation
 - **meeting-synthesizer**: Meeting notes processing
-- **knowledge-extractor**: Learning capture
+- **session-learning**: Learning capture
 - **mermaid-diagram-generator**: Architecture diagrams
 
 **Usage**:
@@ -814,7 +814,7 @@ gh copilot suggest -a .github/agents/amplihack/core/builder.md \
 
 - **email-drafter**: Professional email generation
 - **meeting-synthesizer**: Meeting notes processing
-- **knowledge-extractor**: Learning capture
+- **session-learning**: Learning capture
 - **mermaid-diagram-generator**: Architecture diagrams
 - **learning-path-builder**: Technology onboarding
 - **work-delegator**: Task distribution

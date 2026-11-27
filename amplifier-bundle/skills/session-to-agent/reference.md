@@ -285,17 +285,10 @@ The session-to-agent skill produces agents that follow the goal-seeking agent
 pattern. The extracted goals map to `GoalDefinition`, execution phases map to
 `ExecutionPlan`, and tools map to `SkillDefinition` objects.
 
-### With knowledge-extractor Skill
-
-Before generating the agent, the skill can invoke the knowledge-extractor to
-capture discoveries and patterns from the session. These feed into the agent's
-initial memory when `--enable-memory` is used.
-
 ### With session-learning Skill
 
-Session learnings (from `~/.amplihack/.claude/data/learnings/`) can be
-injected into the generated agent's prompt as domain knowledge, ensuring
-cross-session insights are preserved.
+Use the session-learning skill to record discoveries and reusable patterns
+from the session.
 
 ### With self-improving-agent-builder Skill
 

@@ -11,8 +11,8 @@ to extend the lists or restore the full lists through a managed installation.
 
 ## Summary
 
-- **Unique bundled skill names:** 123
-- **Skill definition files:** 123
+- **Unique bundled skill names:** 122
+- **Skill definition files:** 122
 
 ## Bundled Skills
 
@@ -78,7 +78,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `investigation-workflow` | `investigation-workflow/SKILL.md` |
 | `journalist-analyst` | `journalist-analyst/SKILL.md` |
 | `journalistic-writing-style` | `journalistic-writing-style/SKILL.md` |
-| `knowledge-extractor` | `knowledge-extractor/SKILL.md` |
 | `lawyer-analyst` | `lawyer-analyst/SKILL.md` |
 | `learning-path-builder` | `learning-path-builder/SKILL.md` |
 | `lsp-setup` | `lsp-setup/SKILL.md` |
