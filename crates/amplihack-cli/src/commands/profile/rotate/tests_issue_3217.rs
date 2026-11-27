@@ -1,5 +1,7 @@
 //! Post-swap failure scenarios through the real watch cycle, with an injected
 //! clock, a stand-in usage source and a temporary profile store.
+//! The first report in #3217 gives a 100% reading after the failures. Whether
+//! the rotator already had qualifying usage evidence during them is unknown.
 
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::Probed;
@@ -234,6 +236,14 @@ fn rising_use_swaps_on_the_third_counted_failure_after_cached_cycles() {
                     assert_eq!(outcome, CycleOutcome::Swapped);
                     assert_eq!(calls, [name("reserve")]);
                     assert!(f.live_is("reserve"));
+                    let log = f.log();
+                    assert!(
+                        log.contains(
+                            "over 102s (last reading age 454s, threshold 85% projected \
+                             1027.6s after last reading, horizon 2427s)"
+                        ),
+                        "{log}"
+                    );
                 }
             }
         });
@@ -241,19 +251,48 @@ fn rising_use_swaps_on_the_third_counted_failure_after_cached_cycles() {
 }
 
 #[test]
-fn the_first_incident_swaps_on_the_third_failure_with_an_applicable_peak() {
+fn a_brief_rise_at_low_usage_preserves_the_hold_after_failed_probes() {
+    after_swap(|f, ctx, t| {
+        for (offset, session) in [(37, 5.0), (42, 6.0)] {
+            let (outcome, calls) = cycle(
+                ctx,
+                t + offset,
+                reading(session, 72.0, t + offset, t + 7200),
+                Some(("reserve", rd(0.0, 77.0, None))),
+                None,
+                Probed::failed(),
+            );
+            assert_eq!(outcome, CycleOutcome::Stayed);
+            assert!(calls.is_empty());
+        }
+        for (i, offset) in [102, 162, 222].into_iter().enumerate() {
+            let at = t + offset;
+            let (outcome, calls) = fail(
+                ctx,
+                at,
+                None,
+                Some(rd(0.0, 77.0, None)),
+                rd(0.0, 77.0, Some(at)),
+            );
+            assert_eq!(outcome, CycleOutcome::StayedUnread);
+            assert_eq!(ctx.failed_live, i as u32 + 1);
+            assert!(calls.is_empty());
+            assert!(f.live_is("target"));
+        }
+    });
+}
+
+#[test]
+fn a_stored_weekly_peak_allows_a_third_failure_swap_only_while_open() {
     for open in [true, false] {
         after_swap(|f, ctx, t| {
-            // The report does not give a pre-failure figure. Assume a
-            // stored peak at the weekly threshold. The later 100% reading
-            // is absent, as it had yet to arrive at the time of decision.
-            let reset = t + if open { 7200 } else { 1000 };
+            let reset = t + if open { 7200 } else { 90 };
             let mut ledger = f.e.rs.load_ledger().unwrap().unwrap();
             let mut peak = rd(5.0, f64::from(ctx.settings.week_at), None);
             peak.windows.week.as_mut().unwrap().resets_at = Some(reset);
             ledger.high_water.raise("target", &peak, t);
             f.e.rs.save_ledger(&ledger).unwrap();
-            for (i, offset) in [926, 1117, 1308].into_iter().enumerate() {
+            for (i, offset) in [60, 120, 180].into_iter().enumerate() {
                 let at = t + offset;
                 let (outcome, calls) = fail(
                     ctx,

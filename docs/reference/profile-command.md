@@ -7043,10 +7043,11 @@ consecutive cycles, including this one, whose live probe failed.
 Use counts as high if the last accepted post-swap reading still applies and
 meets `--session-at` or `--week-at`, or an open high-water reading meets its
 threshold and no newer window supersedes it. A rise between two accepted
-post-swap session observations also counts if it projects `--session-at`
-before the hold ends and before any known session reset. The projection
-starts at the last observation's original time, including when later cycles
-reuse that reading. The swap line gives the figures and thresholds used.
+post-swap session observations at least `--interval` seconds apart in the
+same session window also counts if it projects `--session-at` before the
+hold ends and before any known session reset. The projection starts at the
+last observation's original time, including when later cycles reuse that
+reading. The swap line gives the figures and thresholds used.
 
 `k` is kept in memory by `watch`. It is reset to `0` by a cycle whose live
 probe does not fail, by a completed swap, and by restarting the rotator. The

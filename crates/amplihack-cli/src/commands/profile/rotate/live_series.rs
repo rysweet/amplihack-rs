@@ -49,6 +49,17 @@ impl Point {
     pub(in crate::commands::profile::rotate) fn latest_reset(&self) -> i64 {
         self.at.saturating_add(SESSION_WINDOW_SECS)
     }
+
+    /// The time since `first`, if the observations are far enough apart to
+    /// estimate a rate.
+    pub(in crate::commands::profile::rotate) fn observation_span(
+        &self,
+        first: &Self,
+        min_span: i64,
+    ) -> Option<i64> {
+        let span = self.at.checked_sub(first.at)?;
+        (span > 0 && span >= min_span).then_some(span)
+    }
 }
 
 /// Issue #2889: the last reading the live step accepted, kept for the next
@@ -267,11 +278,8 @@ impl Series {
     /// series has seen, so the projection never adds more than that.
     pub fn rate(&self, min_span: i64) -> Option<f64> {
         let (first, last) = (self.points.front()?, self.points.back()?);
-        let dt = last.at.checked_sub(first.at)?;
-        if dt <= 0 || dt < min_span {
-            return None;
-        }
-        let r = (last.session - first.session) / dt as f64;
+        let span = last.observation_span(first, min_span)?;
+        let r = (last.session - first.session) / span as f64;
         r.is_finite().then_some(r)
     }
 

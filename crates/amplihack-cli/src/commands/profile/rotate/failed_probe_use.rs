@@ -63,7 +63,9 @@ impl fmt::Display for Evidence {
                 horizon,
             } => write!(
                 f,
-                "high use: session rose {first}% to {last}% over {span}s +                 (last reading age {age}s, threshold {threshold}% projected +                 {crossing_in:.1}s after last reading, horizon {horizon}s)"
+                "high use: session rose {first}% to {last}% over {span}s \
+                 (last reading age {age}s, threshold {threshold}% projected \
+                 {crossing_in:.1}s after last reading, horizon {horizon}s)"
             ),
         }
     }
@@ -122,21 +124,25 @@ pub(in crate::commands::profile::rotate) fn known_high(
         })
         .or_else(|| {
             let hold = i64::try_from(settings.hold).unwrap_or(i64::MAX);
+            let min_span = i64::try_from(settings.interval).unwrap_or(i64::MAX);
             projection(
                 series.after_swap(name, swapped_at),
                 settings.session_at,
+                min_span,
                 swapped_at.saturating_add(hold),
                 now,
             )
         })
 }
 
-/// The trend comes from actual session observations in one still-open window.
+/// The trend comes from actual session observations at least one configured
+/// interval apart in one still-open window.
 /// The projection begins at the last reading and ends at the earliest
 /// applicable deadline, even if a reading gave no reset time.
 fn projection(
     mut points: impl Iterator<Item = Point>,
     threshold: u8,
+    min_span: i64,
     hold_ends: i64,
     now: i64,
 ) -> Option<Evidence> {
@@ -157,9 +163,9 @@ fn projection(
         }
         first = point;
     }
-    let span = last.at.checked_sub(first.at)?;
+    let span = last.observation_span(&first, min_span)?;
     let rise = last.session - first.session;
-    if span <= 0 || !rise.is_finite() || rise <= 0.0 || last.session >= f64::from(threshold) {
+    if !rise.is_finite() || rise <= 0.0 || last.session >= f64::from(threshold) {
         return None;
     }
     let horizon = deadline.saturating_sub(last.at);
