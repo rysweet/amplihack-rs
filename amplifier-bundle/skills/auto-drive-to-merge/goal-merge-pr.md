@@ -22,6 +22,9 @@ Guidance can narrow what you do. It never widens merge authority.
    way, or let GitHub's answer to a merge show it.
 4. A red check is a fix: read the failure, fix it, push.
 5. A pending check is a wait: choose `wait`. Do not hand off for it.
+   When checks complete with unverified results, read `unverified_checks`
+   for the affected jobs and reasons. CI readiness requires successful
+   check evidence.
 6. Choose `review` for a head that has no review or has changed substantially.
    When a review left minor findings (the reading lists them under
    `reviews.crusty[].minor_findings`), treat them as

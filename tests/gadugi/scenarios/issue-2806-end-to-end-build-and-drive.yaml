@@ -31,12 +31,13 @@ description: >
   answer and is recorded. Every call is recorded. The pull request's checks
   are PENDING for the build, which is the issue #2343 case: the build
   ends with the pull request open and marked ready whatever the checks say,
-  and never merges. They are SUCCESS for the drive, so the merge step's
-  precondition holds and the drive ends at a verdict with a merge recorded on
-  the stub. Cleanup is left on and no phase is skipped: reflection and power
+  and never merges. The first drive turn sees pending checks and waits. The
+  first wait read returns HTTP 304 for the pending check, and the next
+  returns a pass. The drive then takes one more turn and ends with a merge
+  recorded on the stub. Cleanup is left on and no phase is skipped: reflection and power
   steering are not disabled.
 
-  Eight cases, each asserted below, on outcomes only; no internal run-folder
+  Nine cases, each asserted below, on outcomes only; no internal run-folder
   path or layout is asserted. Part 1: `part1_build_opens_pr_and_pushes_branch`
   (the stub recorded a `pr create` for the run's branch, and the bare origin
   holds that branch at the head of the run's worktree, read from
@@ -47,7 +48,9 @@ description: >
   `part2_drive_ends_at_verdict_and_merges` (the stub recorded a `pr merge` for
   the pull request and the drive printed its own terminal report, the object
   carrying `stop_reason`, which is its verdict however it ended; the sentence
-  beside it is the product's and is not read) and
+  beside it is the product's and is not read),
+  `part2_drive_waits_for_ci` (the wait reads the pending check conditionally
+  and stays in the turn until CI passes), and
   `part2_every_drive_agent_prompt_matched_a_discriminator` (every agent step
   the drive ran matched an entry of the stand-in's dispatch table, so a
   shipped prompt reworded out from under its discriminator fails the scenario
@@ -85,7 +88,7 @@ agents:
 metadata:
   tags: [cli, qa-team, end-to-end, build, drive, release-evidence]
   priority: high
-  issues: ["2806", "2802", "2785", "2343", "3129"]
+  issues: ["2806", "2802", "2785", "2343", "3129", "1918"]
 steps:
   - name: run-issue-2806-end-to-end-cases
     agent: cli-agent
@@ -121,6 +124,11 @@ assertions:
     params:
       target: stdout
       expected: "PASS: part2_drive_ends_at_verdict_and_merges"
+  - name: the-drive-waits-for-ci-through-an-unchanged-pending-read
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part2_drive_waits_for_ci"
   - name: every-drive-agent-prompt-matched-a-discriminator
     type: output_contains
     params:

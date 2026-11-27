@@ -13,7 +13,7 @@
 # What is stood in for, and nothing else:
 #   gh      answers the pull request, issue and account calls the shipped
 #           steps make: pr list, pr create, pr view, pr edit, pr ready,
-#           pr comment, pr checks, issue view and list, the read-only account
+#           pr comment, REST check reads, issue view and list, the read-only account
 #           calls, the repository's merge methods, its branch rules and
 #           protection, and the read of issue #1. It keeps the pull request's
 #           title, body and draft flag in $WORK/gh-state, so an edit or a
@@ -282,14 +282,15 @@ take_text() {
 }
 
 pr_json() {
-  local branch oid draft=false
+  local branch oid base_oid draft=false
   branch="$(cat "$state/branch" 2>/dev/null || true)"
   oid="$(git --git-dir="$root/origin.git" rev-parse "refs/heads/$branch" 2>/dev/null || true)"
+  base_oid="$(git --git-dir="$root/origin.git" rev-parse refs/heads/main)"
   [ ! -e "$state/draft" ] || draft=true
-  jq -nc --arg b "$branch" --arg o "$oid" --argjson d "$draft" \
+  jq -nc --arg b "$branch" --arg o "$oid" --arg base "$base_oid" --argjson d "$draft" \
     --rawfile t "$state/title" --rawfile body "$state/body" \
     '{number:42,url:"https://github.com/qa-owner/qa-repo/pull/42",state:"OPEN",title:$t,
-      body:$body,headRefName:$b,headRefOid:$o,baseRefName:"main",isCrossRepository:false,
+      body:$body,headRefName:$b,headRefOid:$o,baseRefName:"main",baseRefOid:$base,isCrossRepository:false,
       isDraft:$d,mergeable:"MERGEABLE",mergeStateStatus:"CLEAN",reviewDecision:"",
       statusCheckRollup:[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}],
       mergedAt:null,mergeCommit:null,createdAt:"2026-11-23T00:00:00Z",
@@ -299,6 +300,21 @@ pr_json() {
 }
 
 case "${1-} ${2-}" in
+  "api --include")
+    case "${!#}" in
+      repos/qa-owner/qa-repo/rules/branches/main*) body='[]' ;;
+      repos/qa-owner/qa-repo/branches/main/protection/required_status_checks)
+        printf 'HTTP/2 404\r\n\r\n'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
+      repos/qa-owner/qa-repo)
+        body='{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}' ;;
+      repos/qa-owner/qa-repo/pulls/42)
+        body="$(pr_json | jq -c '{head:{sha:.headRefOid},base:{ref:.baseRefName,sha:.baseRefOid}}')" ;;
+      repos/qa-owner/qa-repo/commits/*/check-runs\?*)
+        body='{"check_runs":[{"name":"ci","status":"completed","conclusion":"success"}]}' ;;
+      repos/qa-owner/qa-repo/commits/*/status\?*) body='{"statuses":[]}' ;;
+      *) body='' ;;
+    esac
+    if [ -n "$body" ]; then printf 'HTTP/2 200\r\n\r\n%s\n' "$body"; exit 0; fi ;;
   "auth status") echo "Logged in to github.com as qa-owner"; exit 0 ;;
   "repo view")
     emit '{"nameWithOwner":"qa-owner/qa-repo","name":"qa-repo","owner":{"login":"qa-owner"},"url":"https://github.com/qa-owner/qa-repo","isFork":false,"defaultBranchRef":{"name":"main"},"viewerPermission":"ADMIN"}' "$@"

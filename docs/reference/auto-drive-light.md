@@ -43,6 +43,9 @@ behaviour and are covered by a later change.
 amplihack recipe run auto-drive-light -c pr_number=3129
 ```
 
+Set `checks_watch_interval` to change the 120-second interval between CI reads
+during `wait`. [CI check interval](./autodrive-goal-loop.md#ci-check-interval)
+
 ## Related
 
 - [Auto-drive Goal Loop](./autodrive-goal-loop.md)
