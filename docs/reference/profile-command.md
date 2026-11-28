@@ -7276,7 +7276,7 @@ a stay or an ALERT. It checks only the target the decision chose, after
 | [Passive](#passive-readings) | Its `observed_at`. |
 | A direct or `claude` read started and finished in this cycle | Its evidence timestamp when supplied; otherwise when this cycle started measuring (`last_cycle.measured_at`). |
 | A target re-read by the gate | Its evidence timestamp when supplied; otherwise when the re-read finished. |
-| A live re-read | Its evidence timestamp when supplied; otherwise the cycle clock captured before the re-read. |
+| A live re-read | Its evidence timestamp when supplied; otherwise the cycle clock taken after the re-read. |
 | A result collected from a read started in an earlier cycle | None. |
 | `unknown, still running` or failed | None. |
 
@@ -7284,6 +7284,14 @@ A re-read preserves a supplied `observed_at`, including an older
 timestamp. Completion or collection alone cannot turn old evidence into a
 new observation. Only a re-read without an evidence timestamp receives the
 fallback time in the table. Target and live re-reads retain supplied timestamps.
+
+A live re-read finishes after the clock the cycle started with, so a live
+re-read is not discarded for being dated after that clock. It is discarded
+when it is dated after the clock taken once the read has finished, or more
+than one `--interval` before the cycle clock. When the live re-read fails or
+is discarded, the rotator writes `reread: <name> live re-read failed; live
+login kept`, decides no swap in that cycle on the cached or held figures, and
+reads the live login again in the next cycle.
 The replacement evidence must then
 pass the applicable target or live freshness checks. A failed, unknown,
 still-running or carried result has no usable reading time.

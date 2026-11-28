@@ -49,6 +49,8 @@ mod tests_issue_3217;
 mod tests_issue_3301_confirmation;
 #[path = "tests_issue_3301_reading.rs"]
 mod tests_issue_3301_reading;
+#[path = "tests_issue_3458.rs"]
+mod tests_issue_3458;
 #[path = "tests_ledger.rs"]
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]

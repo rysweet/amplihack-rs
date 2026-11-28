@@ -24,6 +24,13 @@ pub fn failed(name: &ProfileName) -> String {
     format!("reread: {name} failed; treated as unknown")
 }
 
+/// Issue #3458: the live login's re-read failed, so the rotator keeps it
+/// this cycle and decides no swap on a live side it could not read.
+/// `reread: <name> live re-read failed; live login kept`.
+pub fn kept_live(name: &ProfileName) -> String {
+    format!("reread: {name} live re-read failed; live login kept")
+}
+
 /// `reread: <name> limit reached; treated as unknown`.
 pub fn limit(name: &ProfileName) -> String {
     format!("reread: {name} limit reached; treated as unknown")
