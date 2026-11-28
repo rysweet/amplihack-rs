@@ -3474,6 +3474,27 @@ line would still pass the bound, nothing is appended. If it fails on a smaller
 file, the line is still appended, the trim is tried again on the next cycle,
 and one warning is printed: `warning: usage history not trimmed`.
 
+The brief's figures cannot all hold. Six hours at 128 lines an hour is 768
+lines, and at the measured 2.8 KiB a line that is about 2.15 MB, more than
+2,097,152 bytes. The line format was shortened (to about 2 KiB) to make the
+span fit; this is a decision for the maintainer to confirm.
+
+A rewrite writes each kept line again in the current format, so it drops what
+a reader already ignores: lines that are not valid JSON objects or are over
+64 KiB, profiles whose names fail the name rules, and unknown keys. It keeps
+every entry a reader would have returned, unchanged.
+
+Readers built before the `observed_at_batch` key read a batch line's points as
+having no observation time, which the stale check and the last-good reading
+depend on. During an upgrade or a rollback, install the new build on every
+host before the history is rewritten, or expect those readers to treat the
+points as unobserved until the line is older than their window (six hours at
+most). Readers with this change read both forms the same, which the replay of
+the recorded histories in `tests_usage_history_bound.rs` checks.
+
+SIGXFSZ is ignored for the rest of the process once a history write is first
+tried, and a child process the command starts inherits that setting.
+
 A write that cannot finish never changes the command. Writers ignore SIGXFSZ,
 and before an append or a rewrite they compare the length the file would reach
 with the process's file-size limit (`ulimit -f`). If it would pass the limit,

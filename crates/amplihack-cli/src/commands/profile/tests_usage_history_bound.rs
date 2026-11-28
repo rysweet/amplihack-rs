@@ -277,3 +277,101 @@ fn a_failed_write_of_another_kind_is_an_error_and_leaves_the_history() {
     ));
     assert!(r.history().is_dir());
 }
+
+const REPLAYED: [(&str, &str); 2] = [
+    (
+        "issue_1970_5nov.jsonl",
+        include_str!("testdata/issue_1970_5nov.jsonl"),
+    ),
+    (
+        "issue_3258_26nov.jsonl",
+        include_str!("testdata/issue_3258_26nov.jsonl"),
+    ),
+];
+
+/// Every reader (the capacity summary's rate window, last-good, the hook's
+/// heal and `rotate status`) takes its input from `read_all` or
+/// `read_recent`, and nothing else of the file. So readers give the same
+/// results on a history when those two give the same entries, at every
+/// instant a reader may ask. The recorded histories are replayed here in
+/// their stored form and in the current form, and compared.
+#[test]
+fn recorded_histories_read_the_same_in_the_current_line_format() {
+    for (name, body) in REPLAYED {
+        let last = body
+            .lines()
+            .filter_map(|l| parse_line(l, 1_795_000_000))
+            .map(|e| e.at)
+            .max()
+            .unwrap();
+        let rewritten_body: String = body
+            .lines()
+            .filter_map(|l| parse_line(l, last + 1))
+            .map(|e| to_line(&e) + "\n")
+            .collect();
+        assert!(rewritten_body.len() <= body.len(), "{name}: not longer");
+        let (old, new) = (Root::new(), Root::new());
+        old.seed(body.as_bytes());
+        new.seed(rewritten_body.as_bytes());
+        let instants = [last + 1, last + 600, last + 3 * 3600, last + 6 * 3600];
+        for now in instants {
+            assert_eq!(read_all(&old.root, now), read_all(&new.root, now), "{name}");
+            for window in [RATE_WINDOW, 5 * 3600, 3600] {
+                assert_eq!(
+                    read_recent(&old.root, now, window),
+                    read_recent(&new.root, now, window),
+                    "{name} at {now}, window {window}"
+                );
+            }
+        }
+    }
+}
+
+/// A rewrite writes each kept line again in the current format. What that
+/// loses is a line `parse_line` refuses, a profile whose name fails the name
+/// rules, and unknown keys; the entries it keeps read back unchanged.
+#[test]
+fn a_rewrite_drops_only_what_the_reader_already_ignores() {
+    let r = Root::new();
+    let old_at = T - 86_400;
+    let good = long_form(&cycle(old_at));
+    let mut v: serde_json::Value = serde_json::from_str(&good).unwrap();
+    v["profiles"]["bad name!"] = v["profiles"]["login-00"].clone();
+    v["extra_key"] = serde_json::json!(1);
+    let with_junk = serde_json::to_string(&v).unwrap();
+    let mut body = String::from("not json\n");
+    body.push_str(&with_junk);
+    body.push('\n');
+    let stale = to_line(&cycle(T - 20 * 86_400));
+    body = format!("{stale}\n{body}");
+    r.seed(body.as_bytes());
+    append_with(&r.root, &cycle(T), T, None).unwrap();
+    let text = std::fs::read_to_string(r.history()).unwrap();
+    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(!text.contains("bad name"));
+    assert!(!text.contains("extra_key"));
+    assert!(!text.contains("not json"));
+    let (entries, warning) = read_all(&r.root, T + 1);
+    assert!(warning.is_none());
+    assert_eq!(entries, vec![cycle(old_at), cycle(T)]);
+}
+
+/// A reader built before the batch flag reads a point with no time as having
+/// none. The flag is `true` only when every point's time is the line's time,
+/// so a line that cannot be told from a long one carries the times itself.
+#[test]
+fn a_line_with_a_point_time_that_differs_carries_every_time() {
+    let mut e = cycle(T);
+    e.profiles.get_mut("login-03").unwrap().observed_at = Some(T - 60);
+    let v: serde_json::Value = serde_json::from_str(&to_line(&e)).unwrap();
+    assert!(v.get("observed_at_batch").is_none());
+    assert!(
+        v["profiles"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|p| p.get("observed_at").is_some())
+    );
+    let batch: serde_json::Value = serde_json::from_str(&to_line(&cycle(T))).unwrap();
+    assert_eq!(batch["observed_at_batch"], true);
+}
