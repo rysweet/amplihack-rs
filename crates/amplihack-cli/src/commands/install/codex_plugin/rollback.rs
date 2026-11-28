@@ -65,7 +65,9 @@ pub(super) fn restore(pending: &Value, root: &Path, binary: &Path, home: &Path) 
     let current = serde_json::to_value(snapshot(&config)?)?;
     ensure!(
         config::config_matches(pending, &current),
-        "foreign Codex config changed; recovery record retained"
+        "foreign Codex config changed; recovery record retained; journal {}; {}",
+        root.join("pending.json").display(),
+        config_diff::describe(pending, &current)
     );
     restore_bytes(&config, &pending["config"], &current)?;
     verify_original(pending, root, home, &journal)?;

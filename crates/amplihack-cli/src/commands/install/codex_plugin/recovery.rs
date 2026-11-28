@@ -107,11 +107,20 @@ pub(super) fn preflight(pending: &Value, root: &Path, home: &Path) -> Result<()>
         } else {
             &pending["snapshots"][key]
         };
-        ensure!(
-            (key == "config" && config::config_matches(pending, &current))
-                || &current == original
-                || current == pending["expected"][key],
-            "foreign Codex {key} changed; reconcile manually; recovery record retained"
+        if (key == "config" && config::config_matches(pending, &current))
+            || &current == original
+            || current == pending["expected"][key]
+        {
+            continue;
+        }
+        let detail = if key == "config" {
+            format!("; {}", config_diff::describe(pending, &current))
+        } else {
+            String::new()
+        };
+        bail!(
+            "foreign Codex {key} changed; reconcile manually; recovery record retained; journal {}{detail}",
+            root.join("pending.json").display()
         );
     }
     let committed = regular_json(&root.join("ownership.json"))?
