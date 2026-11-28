@@ -131,6 +131,8 @@ mod tests_usage_direct;
 mod tests_usage_direct_scan;
 #[cfg(test)]
 mod tests_usage_history;
+#[cfg(all(test, unix))]
+mod tests_usage_history_bound;
 #[cfg(test)]
 mod tests_usage_parse;
 #[cfg(all(test, unix))]

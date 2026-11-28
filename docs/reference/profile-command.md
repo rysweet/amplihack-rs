@@ -3459,14 +3459,29 @@ the same time. Each line is written in one append; when the file's last line
 was cut short, for example by a full disk, a newline is written first so the
 new line stays whole. Under the lock, entries
 older than eight days are dropped: when the first line is more than an hour
-older than that or cannot be read, or the file is over 4 MiB, the file is
-rewritten atomically without entries older than eight days or lines that
-cannot be read, dropping the oldest entries until it is under 3 MiB. The
-hour's slack means a full history is rewritten at most once an hour rather
-than on every cycle. If the rewrite fails while the file is over 4 MiB,
-nothing is appended. If it fails on a smaller file, the line is still
-appended, the trim is tried again on the next cycle, and one warning is
-printed: `warning: usage history not trimmed`.
+older than that or cannot be read, or the new line would take the file past
+2,000,000 bytes, the file is rewritten atomically without entries older than
+eight days or lines that cannot be read, dropping the oldest entries until it
+is under 1,800,000 bytes. The bound is under 2 MiB (2,097,152 bytes) and holds
+the longest span a reader uses, the six hours of the capacity summary's rate
+window, at 128 lines an hour. To fit, a line whose points were all observed at
+the line's own time leaves those times out and says so with
+`"observed_at_batch": true`, and a rewrite writes every kept line in that
+form. Readers give such a point the line's time, and read an older, longer
+line as before. The hour's slack means a full history is rewritten at most
+once an hour rather than on every cycle. If the rewrite fails while the new
+line would still pass the bound, nothing is appended. If it fails on a smaller
+file, the line is still appended, the trim is tried again on the next cycle,
+and one warning is printed: `warning: usage history not trimmed`.
+
+A write that cannot finish never changes the command. Writers ignore SIGXFSZ,
+and before an append or a rewrite they compare the length the file would reach
+with the process's file-size limit (`ulimit -f`). If it would pass the limit,
+nothing is written and the fixed warning `usage history not updated (too
+large)` is printed. Any other failed write, such as a full disk, is the same
+warning with its own reason, and a line cut short by a failed append is cut
+off again. `profile usage` prints the same reading and exits with the same
+status as it would without history, and a rotate cycle goes on.
 
 Readers take the last 4 MiB of the file, and skip any line longer than
 64 KiB, any line that is not valid JSON, any profile name that fails the

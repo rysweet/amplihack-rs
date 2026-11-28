@@ -1743,3 +1743,102 @@ fn summary_json_gives_a_token_less_profile_the_same_row() {
         assert_never_started(&f, p);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #3459: a history write that cannot finish never changes the command
+// ---------------------------------------------------------------------------
+
+impl Fixture {
+    fn history_file(&self) -> PathBuf {
+        self.state().join("usage-history.jsonl")
+    }
+
+    /// Runs `profile usage --json` under a file-size limit of `blocks`
+    /// blocks, set by the shell that starts it.
+    fn json_under_limit(&self, blocks: u32) -> Output {
+        let mut c = Command::new("sh");
+        c.arg("-c")
+            .arg(format!("ulimit -f {blocks}; exec \"$0\" \"$@\""))
+            .arg(amplihack_bin())
+            .args(["profile", "usage", "--json"])
+            .current_dir(&self.work)
+            .env_clear();
+        let probe = self.cmd(&[]);
+        for (k, v) in probe.get_envs() {
+            if let Some(v) = v {
+                c.env(k, v);
+            }
+        }
+        c.output().unwrap()
+    }
+
+    /// A history of about 200 KiB: the line one run writes, repeated. Returns
+    /// what the file holds.
+    fn padded_history(&self) -> Vec<u8> {
+        self.ok(&["profile", "usage", "--json"]);
+        let line = fs::read_to_string(self.history_file()).unwrap();
+        let line = line.lines().last().unwrap().to_string();
+        let mut body = String::new();
+        while body.len() < 200 * 1024 {
+            body.push_str(&line);
+            body.push('\n');
+        }
+        private_file(&self.history_file(), &body);
+        body.into_bytes()
+    }
+}
+
+fn stderr_lines(out: &Output) -> usize {
+    text(&out.stderr).lines().count()
+}
+
+#[test]
+fn a_file_size_limit_below_the_history_leaves_the_reading_and_the_history() {
+    let f = Fixture::new(true);
+    let seeded = f.padded_history();
+    let reference = f.ok(&["profile", "usage", "--json"]);
+    private_file(
+        &f.history_file(),
+        &String::from_utf8(seeded.clone()).unwrap(),
+    );
+
+    let limited = f.json_under_limit(100);
+    assert_eq!(limited.status.code(), Some(0), "{}", text(&limited.stderr));
+    assert_eq!(limited.stdout, reference.stdout, "the same reading");
+    assert_eq!(
+        stderr_lines(&limited),
+        stderr_lines(&reference) + 1,
+        "one added warning: {}",
+        text(&limited.stderr)
+    );
+    assert_eq!(
+        fs::read(f.history_file()).unwrap(),
+        seeded,
+        "history unchanged"
+    );
+}
+
+#[test]
+fn a_history_write_that_fails_another_way_leaves_the_reading_and_the_history() {
+    let f = Fixture::new(true);
+    let seeded = f.padded_history();
+    let reference = f.ok(&["profile", "usage", "--json"]);
+    private_file(
+        &f.history_file(),
+        &String::from_utf8(seeded.clone()).unwrap(),
+    );
+    // The writers' lock cannot be opened, whatever the file-size limit.
+    let lock = f.state().join("usage-history.lock");
+    let _ = fs::remove_file(&lock);
+    fs::create_dir(&lock).unwrap();
+
+    let failed = f.run(&["profile", "usage", "--json"]);
+    assert_eq!(failed.status.code(), Some(0), "{}", text(&failed.stderr));
+    assert_eq!(failed.stdout, reference.stdout, "the same reading");
+    assert_eq!(stderr_lines(&failed), stderr_lines(&reference) + 1);
+    assert_eq!(
+        fs::read(f.history_file()).unwrap(),
+        seeded,
+        "history unchanged"
+    );
+}
