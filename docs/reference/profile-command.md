@@ -3363,7 +3363,7 @@ one line per measured cycle to `<root>/.auto-switch.d/usage-history.jsonl`
 (mode `0600`). Each line is one JSON object:
 
 ```json
-{"at":"2026-10-30T16:15:00Z","by":"usage","profiles":{"example":{"s":20,"w":30,"w_reset":"2026-10-31T09:00:00Z","observed_at":"2026-10-30T16:14:42Z"}}}
+{"at":"2026-10-30T16:15:00Z","by":"usage","profiles":{"example":{"s":20,"w":30,"w_reset":"2026-10-31T09:00:00Z","observed_ago":18}}}
 ```
 
 | Key | Meaning |
@@ -3376,6 +3376,7 @@ one line per measured cycle to `<root>/.auto-switch.d/usage-history.jsonl`
 | `w` | All-models week percentage, a whole number `0`–`100`. `weekly_exhausted` is written as `100`. |
 | `w_reset` | When the week resets, UTC, or `null` when not known. |
 | `observed_at` | When the figures were observed, UTC. For a fresh probe with no separate timestamp, this is the batch time. Older points may omit this field. |
+| `observed_ago` | Seconds from the observation to the line's `at`, written in place of `observed_at` for a point observed at or before the line's time. |
 | `unknown` | Names of the logins the writer tried and could not read, or whose reading was a [stale reading](#stale-readings), sorted. Absent when there are none. Never counted in a figure; a name that also has a reading is ignored on read. |
 
 ##### Reading times in the history
@@ -3459,14 +3460,47 @@ the same time. Each line is written in one append; when the file's last line
 was cut short, for example by a full disk, a newline is written first so the
 new line stays whole. Under the lock, entries
 older than eight days are dropped: when the first line is more than an hour
-older than that or cannot be read, or the file is over 4 MiB, the file is
-rewritten atomically without entries older than eight days or lines that
-cannot be read, dropping the oldest entries until it is under 3 MiB. The
-hour's slack means a full history is rewritten at most once an hour rather
-than on every cycle. If the rewrite fails while the file is over 4 MiB,
-nothing is appended. If it fails on a smaller file, the line is still
-appended, the trim is tried again on the next cycle, and one warning is
-printed: `warning: usage history not trimmed`.
+older than that or cannot be read, or the new line would take the file past
+2,000,000 bytes, the file is rewritten atomically without entries older than
+eight days or lines that cannot be read, dropping the oldest entries until it
+is under 1,800,000 bytes. The bound is under 2 MiB (2,097,152 bytes) and holds
+the longest span a reader uses, the six hours of the capacity summary's rate
+window, at 128 lines an hour (768 lines). To fit, a line leaves out the full
+time of each point. When every point was observed at the line's own time, the
+points carry no time and the line says so with `"observed_at_batch": true`.
+Otherwise each point observed at or before the line's time gives its age in
+seconds as `observed_ago`. A line of 29 logins is then about 2.2 KiB whatever
+the mix of times, against 2.8 KiB with a full time on every point, so six
+hours fit under the low mark. A rewrite writes every kept line in this form.
+Readers give a point its time from `observed_at`, `observed_ago` or the batch
+flag, and read an older, longer line as before. The hour's slack means a full
+history is rewritten at most once an hour rather than on every cycle. If the rewrite fails while the new
+line would still pass the bound, nothing is appended. If it fails on a smaller
+file, the line is still appended, the trim is tried again on the next cycle,
+and one warning is printed: `warning: usage history not trimmed`.
+
+A rewrite writes each kept line again in the current format, so it drops what
+a reader already ignores: lines that are not valid JSON objects or are over
+64 KiB, profiles whose names fail the name rules, and unknown keys. It keeps
+every entry a reader would have returned, unchanged.
+
+Readers built before the `observed_at_batch` and `observed_ago` keys read
+those points as having no observation time, which the stale check and the
+last-good reading depend on. During an upgrade or a rollback, install the new
+build on every host before the history is rewritten, or expect those readers
+to treat the points as unobserved until the line is older than their window
+(six hours at most). Readers with this change read every form the same, which
+the replay of the recorded histories in `tests_usage_history_bound.rs` checks.
+
+A write that cannot finish never changes the command. Writers ignore SIGXFSZ
+only while the write runs (the earlier setting is restored afterwards, so
+child processes do not inherit it), and before an append or a rewrite they
+compare the length the file would reach with the process's file-size limit (`ulimit -f`). If it would pass the limit,
+nothing is written and the fixed warning `usage history not updated (too
+large)` is printed. Any other failed write, such as a full disk, is the same
+warning with its own reason, and a line cut short by a failed append is cut
+off again. `profile usage` prints the same reading and exits with the same
+status as it would without history, and a rotate cycle goes on.
 
 Readers take the last 4 MiB of the file, and skip any line longer than
 64 KiB, any line that is not valid JSON, any profile name that fails the

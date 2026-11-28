@@ -10,8 +10,11 @@
 //! skip whatever they cannot trust; a history that exists but is refused
 //! gives one fixed warning. Writers check the profile root, refuse while a
 //! credential variable is set, lock `usage-history.lock`, append one line in
-//! one write, trim entries older than eight days, and never create
-//! `.auto-switch.d`. No failure here ever fails a command.
+//! one write, trim entries older than eight days, keep the file under
+//! [`FILE_MAX`] bytes, and never create `.auto-switch.d`. No failure here ever
+//! fails a command: a writer ignores SIGXFSZ, and compares the length a write
+//! would reach with the file-size limit before it writes, so a limit gives an
+//! error and a fixed warning, never a signal or a partial line.
 //!
 //! Issue #1970: before a line is written, each passive reading is checked
 //! with [`stale`] against its login's newest reading in the history; a stale
@@ -34,9 +37,22 @@ pub(super) const STATE_DIR: &str = ".auto-switch.d";
 /// Readers take at most this many bytes from the end of the file.
 #[cfg_attr(not(unix), allow(dead_code))]
 const TAIL: u64 = 4 * 1024 * 1024;
-/// A rewrite keeps the file under this size.
+/// The file's bound in bytes, under 2 MiB (2,097,152). A write that would
+/// take the file past it starts a rewrite first.
+///
+/// The longest span any reader uses is the capacity summary's six hours
+/// (`RATE_WINDOW`); the last-good reader needs five and `rotate status`
+/// reads the same six. At the measured 128 lines an hour that is 768 lines.
+/// A line written now is at most about 2.3 KiB whatever the mix of
+/// observation times (see [`to_line`]), so the span takes under 1.8 MB,
+/// inside [`FILE_LOW`]. Where lines are longer, the bound governs and the
+/// oldest lines go first.
 #[cfg_attr(not(unix), allow(dead_code))]
-const REWRITE_MAX: usize = 3 * 1024 * 1024;
+pub(super) const FILE_MAX: usize = 2_000_000;
+/// A rewrite leaves the file under this size, so a file at the bound is not
+/// rewritten on every cycle.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(super) const FILE_LOW: usize = 1_800_000;
 /// Longer lines are skipped.
 const LINE_MAX: usize = 64 * 1024;
 /// Entries older than this are dropped by a rewrite.
@@ -523,6 +539,11 @@ struct LineOut<'a> {
     profiles: BTreeMap<&'a str, PointOut>,
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     unknown: &'a [String],
+    /// Written as `true` when every point's observation time is the line's
+    /// own time, which the points then leave out. A reader gives a point
+    /// with no time the line's time only when this is `true`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    observed_at_batch: bool,
 }
 
 #[derive(Serialize)]
@@ -535,11 +556,22 @@ struct PointOut {
     w_reset: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     observed_at: Option<String>,
+    /// Seconds from the point's observation to the line's time, for a point
+    /// observed at or before the line's time on a line that is not a batch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observed_ago: Option<u64>,
 }
 
 /// One history line, without the newline. The session reset is not kept.
+/// When every point was observed at the line's time, the per-point times are
+/// left out and the line says so. Otherwise a point observed at or before the
+/// line's time gives its age in seconds rather than a full time, so a line
+/// holding passive readings is nearly as short; either way the line is about
+/// a third shorter than one with a full time on every point.
 pub(super) fn to_line(e: &Entry) -> String {
+    let batch = !e.profiles.is_empty() && e.profiles.values().all(|p| p.observed_at == Some(e.at));
     let out = LineOut {
+        observed_at_batch: batch,
         at: utc_time(e.at),
         by: e.by.map(Writer::key),
         profiles: e
@@ -553,7 +585,11 @@ pub(super) fn to_line(e: &Entry) -> String {
                         session_limit: (p.no_session_limit && p.s.is_none()).then_some(false),
                         w: p.w,
                         w_reset: p.w_reset.map(utc_time),
-                        observed_at: p.observed_at.map(utc_time),
+                        observed_at: p.observed_at.filter(|o| !batch && *o > e.at).map(utc_time),
+                        observed_ago: p
+                            .observed_at
+                            .filter(|o| !batch && *o <= e.at)
+                            .map(|o| e.at.abs_diff(o)),
                     },
                 )
             })
@@ -577,7 +613,7 @@ fn pct_in(v: &serde_json::Value) -> Option<u8> {
 }
 
 /// One profile of a line; `None` drops that profile only.
-fn point_in(v: &serde_json::Value, now: i64) -> Option<Point> {
+fn point_in(v: &serde_json::Value, now: i64, at: i64, batch_at: Option<i64>) -> Option<Point> {
     let o = v.as_object()?;
     let s = match o.get("s") {
         None | Some(serde_json::Value::Null) => None,
@@ -598,7 +634,15 @@ fn point_in(v: &serde_json::Value, now: i64) -> Option<Point> {
         w: pct_in(o.get("w")?)?,
         w_reset,
         s_reset: None,
-        observed_at: o.get("observed_at").and_then(|v| time_of(v, now)),
+        observed_at: o
+            .get("observed_at")
+            .and_then(|v| time_of(v, now))
+            .or_else(|| {
+                let ago = i64::try_from(o.get("observed_ago")?.as_u64()?).ok()?;
+                let t = at.checked_sub(ago)?;
+                (t.saturating_sub(now).abs() <= MAX_SKEW).then_some(t)
+            })
+            .or(batch_at),
         no_session_limit,
         // A line never says how a reading was taken.
         passive: false,
@@ -616,12 +660,14 @@ pub(super) fn parse_line(line: &str, now: i64) -> Option<Entry> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let o = v.as_object()?;
     let at = time_of(o.get("at")?, now)?;
+    let batch_at =
+        (o.get("observed_at_batch") == Some(&serde_json::Value::Bool(true))).then_some(at);
     let profiles: BTreeMap<String, Point> = o
         .get("profiles")?
         .as_object()?
         .iter()
         .filter(|(n, _)| ProfileName::parse(n).is_ok())
-        .filter_map(|(n, p)| point_in(p, now).map(|p| (n.clone(), p)))
+        .filter_map(|(n, p)| point_in(p, now, at, batch_at).map(|p| (n.clone(), p)))
         .collect();
     let by = o
         .get("by")
@@ -840,15 +886,86 @@ fn lock(dir: &Path) -> Result<std::fs::File, HistoryError> {
     }
 }
 
-/// Whether the history needs a rewrite: over 4 MiB, or a first line that
-/// cannot be read or is more than an hour older than eight days.
+/// SIGXFSZ is ignored while any history write is running, so a write past
+/// the file-size limit returns an error (EFBIG) instead of ending the
+/// process. The count and the earlier disposition are shared, so writes on
+/// several threads restore the setting once, when the last one ends.
 #[cfg(unix)]
-fn needs_rewrite(file: &std::fs::File, len: u64, now: i64) -> Result<bool, HistoryError> {
+static SIGXFSZ_HOLD: std::sync::Mutex<(usize, libc::sighandler_t)> =
+    std::sync::Mutex::new((0, libc::SIG_DFL));
+
+/// Restores SIGXFSZ's earlier disposition when dropped, so the setting does
+/// not outlive the write, and a child process started later does not inherit
+/// it.
+#[cfg(unix)]
+struct IgnoreFileSizeSignal;
+
+#[cfg(unix)]
+impl IgnoreFileSizeSignal {
+    fn new() -> Self {
+        let mut g = SIGXFSZ_HOLD.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0 == 0 {
+            // SAFETY: `signal` with SIG_IGN installs no handler code; it only
+            // changes how this process treats a signal it would otherwise
+            // die of.
+            g.1 = unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) };
+        }
+        g.0 += 1;
+        Self
+    }
+}
+
+#[cfg(unix)]
+impl Drop for IgnoreFileSizeSignal {
+    fn drop(&mut self) {
+        let mut g = SIGXFSZ_HOLD.lock().unwrap_or_else(|e| e.into_inner());
+        g.0 -= 1;
+        if g.0 == 0 && g.1 != libc::SIG_ERR {
+            // SAFETY: restores the disposition `signal` returned earlier.
+            unsafe {
+                libc::signal(libc::SIGXFSZ, g.1);
+            }
+        }
+    }
+}
+
+/// The process's soft file-size limit in bytes; `None` when unlimited or
+/// when it cannot be read.
+#[cfg(unix)]
+fn file_size_limit() -> Option<u64> {
+    let mut r = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `r` is a valid, writable `rlimit` for the call's duration.
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut r) };
+    // The limit's type is not `u64` on every target.
+    #[allow(clippy::unnecessary_cast)]
+    let bytes = r.rlim_cur as u64;
+    (rc == 0 && r.rlim_cur != libc::RLIM_INFINITY).then_some(bytes)
+}
+
+/// Whether a file of `projected` bytes is within the file-size limit.
+#[cfg(unix)]
+fn within_limit(projected: usize) -> bool {
+    file_size_limit().is_none_or(|limit| projected as u64 <= limit)
+}
+
+/// Whether the history needs a rewrite: a write of `add` bytes would take it
+/// past [`FILE_MAX`], or its first line cannot be read or is more than an
+/// hour older than eight days.
+#[cfg(unix)]
+fn needs_rewrite(
+    file: &std::fs::File,
+    len: u64,
+    add: usize,
+    now: i64,
+) -> Result<bool, HistoryError> {
     use std::io::{Read, Seek, SeekFrom};
     if len == 0 {
         return Ok(false);
     }
-    if len > TAIL {
+    if len as usize + add > FILE_MAX {
         return Ok(true);
     }
     let mut f = file;
@@ -869,18 +986,21 @@ fn needs_rewrite(file: &std::fs::File, len: u64, now: i64) -> Result<bool, Histo
 }
 
 /// The rewritten history: the readable entries of the tail no older than
-/// eight days, as they were written, then `line`, dropping the oldest until
-/// the whole is under 3 MiB.
+/// eight days, each written again in the current line format (an older, longer
+/// line then takes no more room than a new one), then `line`, dropping the
+/// oldest until the whole is under [`FILE_LOW`].
 #[cfg(unix)]
 fn rewritten(tail: &[u8], line: &str, now: i64) -> Vec<u8> {
     let oldest = now.saturating_sub(RETENTION);
-    let mut kept: Vec<&str> = lines(tail)
-        .filter(|l| parse_line(l, now).is_some_and(|e| e.at >= oldest))
+    let mut kept: Vec<String> = lines(tail)
+        .filter_map(|l| parse_line(l, now))
+        .filter(|e| e.at >= oldest)
+        .map(|e| to_line(&e))
         .collect();
-    kept.push(line);
+    kept.push(line.to_string());
     let mut total: usize = kept.iter().map(|l| l.len() + 1).sum();
     let mut skip = 0;
-    while total >= REWRITE_MAX && skip + 1 < kept.len() {
+    while total >= FILE_LOW && skip + 1 < kept.len() {
         total -= kept[skip].len() + 1;
         skip += 1;
     }
@@ -933,6 +1053,7 @@ pub(super) fn append_with(
     };
     use std::io::Write;
 
+    let _sigxfsz = IgnoreFileSizeSignal::new();
     if cred.is_some() {
         return Err(HistoryError::CredentialVar);
     }
@@ -962,22 +1083,38 @@ pub(super) fn append_with(
     };
     let line = to_line(entry);
     let mut trim_failed = false;
-    if needs_rewrite(&file, len, now)? {
+    if needs_rewrite(&file, len, line.len() + 1, now)? {
         let tail = read_tail(&file, len).map_err(|_| HistoryError::WriteFailed)?;
-        match write_private_atomic(&dir, FILE, &rewritten(&tail, &line, now)) {
-            Ok(()) => return Ok(()),
-            // Too large to grow any further: nothing is appended.
-            Err(_) if len > TAIL => return Err(HistoryError::TooLarge),
-            // Small enough to append to; the trim is tried again next time.
-            Err(_) => trim_failed = true,
+        let body = rewritten(&tail, &line, now);
+        // A rewrite that would pass the file-size limit writes nothing; the
+        // original stays whole. A rewrite is atomic for the same reason.
+        let done = within_limit(body.len()) && write_private_atomic(&dir, FILE, &body).is_ok();
+        if done {
+            return Ok(());
         }
+        // Too large to grow any further: nothing is appended.
+        if len as usize + line.len() + 1 > FILE_MAX {
+            return Err(HistoryError::TooLarge);
+        }
+        // Small enough to append to; the trim is tried again next time.
+        trim_failed = true;
     }
     // A last line cut short (by a full disk, say) is ended first, so this
     // line is not joined onto it and lost with it.
     let lead = if ends_cut(&file, len)? { "\n" } else { "" };
+    let bytes = format!("{lead}{line}\n");
+    // Nothing is written that would pass the file-size limit, so no partial
+    // line is left behind by it.
+    if !within_limit(len as usize + bytes.len()) {
+        return Err(HistoryError::TooLarge);
+    }
     let mut f = &file;
-    f.write_all(format!("{lead}{line}\n").as_bytes())
-        .map_err(|_| HistoryError::WriteFailed)?;
+    if f.write_all(bytes.as_bytes()).is_err() {
+        // A full disk or any other failure may leave part of the line: cut
+        // the file back to its length before this write, if that is possible.
+        let _ = file.set_len(len);
+        return Err(HistoryError::WriteFailed);
+    }
     if trim_failed {
         return Err(HistoryError::TrimFailed);
     }

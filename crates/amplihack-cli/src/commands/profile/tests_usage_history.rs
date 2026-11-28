@@ -19,7 +19,7 @@
 //!   one hard link, mode 0600. Any other history is refused by both.
 //! - Writers lock `usage-history.lock` (50 ms retries for 1 s), append one
 //!   line in one write, trim entries older than 8 days, keep the file under
-//!   3 MiB after a rewrite, refuse symlinks, hard links, group or other
+//!   2,000,000 bytes (see `tests_usage_history_bound.rs`), refuse symlinks, hard links, group or other
 //!   bits and FIFOs, and never create `.auto-switch.d`.
 
 use super::name::ProfileName;
