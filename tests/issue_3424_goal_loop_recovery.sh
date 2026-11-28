@@ -16,9 +16,11 @@ failed_turn_log_count() {
 }
 
 log_names_failed_turns() {
-  local log="$1" expected turn detail line index=1
-  shift
-  [ "$(failed_turn_log_count "$log")" -eq "$#" ] || return 1
+  local log="$1" expected_lines="$2" expected turn detail line index=1 expected_count
+  shift 2
+  expected_count="$#"
+  [ "$(wc -l < "$log")" -eq "$expected_lines" ] || return 1
+  [ "$(failed_turn_log_count "$log")" -eq "$expected_count" ] || return 1
   for expected in "$@"; do
     turn="${expected%%|*}"
     detail="${expected#*|}"
@@ -97,7 +99,7 @@ ok one_owner_wait test "$(cat "$STUB_STATE/owner_waits" 2>/dev/null || echo 0)" 
 ok fresh_turn_after_guidance test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
 ok failure_detail_recorded jq -e '.failure.class == "environmental" and .failure.detail == "untrusted bundle"' "$LOOP_CASE/state/turns/001/result.json" >/dev/null
 ok wait_result_is_guidance jq -e '.outcome == "guidance-arrived"' "$LOOP_CASE/state/turns/002/result.json" >/dev/null
-ok each_failed_turn_is_logged log_names_failed_turns "$LOOP_CASE/run.log" \
+ok each_failed_turn_is_logged log_names_failed_turns "$LOOP_CASE/run.log" 3 \
   '1|untrusted bundle' '2|untrusted bundle'
 
 # Usage-limit failures emitted before the decide step take the same pairwise
@@ -118,7 +120,7 @@ ok usage_limit_pre_agent_wait test "$LIMIT_RC" -eq 0
 ok usage_limit_one_handoff test "$(cat "$STUB_STATE/publishes" 2>/dev/null || echo 0)" -eq 1
 ok usage_limit_one_owner_wait test "$(cat "$STUB_STATE/owner_waits" 2>/dev/null || echo 0)" -eq 1
 ok usage_limit_fresh_turn_after_guidance test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
-ok usage_limit_failed_turns_logged log_names_failed_turns "$LIMIT_CASE/run.log" \
+ok usage_limit_failed_turns_logged log_names_failed_turns "$LIMIT_CASE/run.log" 3 \
   '1|ERROR: Your workspace is out of credits. Add credits to continue.' \
   '2|ERROR: Your workspace is out of credits. Add credits to continue.'
 
@@ -148,7 +150,9 @@ run_marker_case() {
   ok "${label}_exit" test "$rc" -eq 0
   ok "${label}_waits" test "$(cat "$STUB_STATE/owner_waits" 2>/dev/null || echo 0)" -eq "$expected_wait"
   ok "${label}_rounds" test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
-  ok "${label}_failed_turns_logged" log_names_failed_turns "$CASE/run.log" \
+  local expected_lines=3
+  [ "$expected_wait" -eq 1 ] && expected_lines=4
+  ok "${label}_failed_turns_logged" log_names_failed_turns "$CASE/run.log" "$expected_lines" \
     "1|$first" "2|$second_detail" "3|$third_detail"
 }
 
