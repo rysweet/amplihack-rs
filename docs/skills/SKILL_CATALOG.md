@@ -11,8 +11,8 @@ to extend the lists or restore the full lists through a managed installation.
 
 ## Summary
 
-- **Unique bundled skill names:** 118
-- **Skill definition files:** 118
+- **Unique bundled skill names:** 117
+- **Skill definition files:** 117
 
 ## Bundled Skills
 
@@ -37,7 +37,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `code-atlas` | `code-atlas/SKILL.md` |
 | `code-philosophy` | `code-philosophy/SKILL.md` |
 | `code-smell-detector` | `code-smell-detector/SKILL.md` |
-| `code-visualizer` | `code-visualizer/SKILL.md` |
 | `computer-scientist-analyst` | `computer-scientist-analyst/SKILL.md` |
 | `consensus-voting` | `consensus-voting/SKILL.md` |
 | `context-management` | `context-management/SKILL.md` |

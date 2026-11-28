@@ -334,15 +334,15 @@ fn enable_disable_and_single_command_restoration_update_every_installed_tool() {
     let original = install.readable_assets();
     let index = install.path(".amplihack/.claude/install/skills-and-agents-index.tsv");
     let original_index = fs::read(&index).unwrap();
-    for name in ["skill:code-visualizer", "agent:core/guide"] {
+    for name in ["skill:design-patterns-expert", "agent:core/guide"] {
         for _ in 0..2 {
             install.run(&["directory", "enable", name]);
         }
     }
     for relative in [
-        ".claude/skills/code-visualizer/SKILL.md",
-        ".copilot/skills/code-visualizer/SKILL.md",
-        ".amplihack/codex/market/plugin/skills/code-visualizer/SKILL.md",
+        ".claude/skills/design-patterns-expert/SKILL.md",
+        ".copilot/skills/design-patterns-expert/SKILL.md",
+        ".amplihack/codex/market/plugin/skills/design-patterns-expert/SKILL.md",
         ".claude/skills/amplihack/agents/core/guide.md",
         ".copilot/agents/amplihack/guide.md",
         ".amplihack/codex/market/plugin/skills/amplihack-persona-core-guide/SKILL.md",
@@ -350,7 +350,7 @@ fn enable_disable_and_single_command_restoration_update_every_installed_tool() {
         assert!(install.path(relative).is_file(), "{relative}");
     }
     install.install();
-    for name in ["skill:code-visualizer", "agent:core/guide"] {
+    for name in ["skill:design-patterns-expert", "agent:core/guide"] {
         for _ in 0..2 {
             install.run(&["directory", "disable", name]);
         }
@@ -391,17 +391,17 @@ fn list_change_succeeds_and_publishes_other_tools_when_codex_is_unavailable() {
     };
     let codex = codex_package(install.readable_assets());
     fs::remove_file(install.tools.join("codex")).unwrap();
-    install.run(&["directory", "enable", "skill:code-visualizer"]);
+    install.run(&["directory", "enable", "skill:design-patterns-expert"]);
     let config: toml::Value =
         toml::from_str(&fs::read_to_string(install.path(".amplihack/config.toml")).unwrap())
             .unwrap();
     assert_eq!(
         config["lists"]["enabled"].as_array().unwrap(),
-        &[toml::Value::from("skill:code-visualizer")]
+        &[toml::Value::from("skill:design-patterns-expert")]
     );
     for relative in [
-        ".claude/skills/code-visualizer/SKILL.md",
-        ".copilot/skills/code-visualizer/SKILL.md",
+        ".claude/skills/design-patterns-expert/SKILL.md",
+        ".copilot/skills/design-patterns-expert/SKILL.md",
     ] {
         assert!(install.path(relative).is_file(), "{relative}");
     }
@@ -417,7 +417,9 @@ fn update_from_full_install_preserves_edits_and_unowned_skills() {
     let full_framework = snapshot(&install.path(".amplihack/.claude/agents"));
     for tool in [".claude", ".copilot"] {
         fs::write(
-            install.path(tool).join("skills/code-visualizer/SKILL.md"),
+            install
+                .path(tool)
+                .join("skills/design-patterns-expert/SKILL.md"),
             "user edit\n",
         )
         .unwrap();
@@ -431,10 +433,14 @@ fn update_from_full_install_preserves_edits_and_unowned_skills() {
     assert_same_assets(&install.readable_assets(), &before_update);
     install.install();
     assert_eq!(
-        fs::read(install.path(".claude/skills/code-visualizer/SKILL.md")).unwrap(),
+        fs::read(install.path(".claude/skills/design-patterns-expert/SKILL.md")).unwrap(),
         b"user edit\n"
     );
-    assert!(!install.path(".copilot/skills/code-visualizer").exists());
+    assert!(
+        !install
+            .path(".copilot/skills/design-patterns-expert")
+            .exists()
+    );
     for tool in [".claude", ".copilot"] {
         assert_eq!(
             fs::read(install.path(tool).join("skills/independent/SKILL.md")).unwrap(),
@@ -473,7 +479,7 @@ fn base_version_copilot_upgrade_without_ownership_refreshes_and_narrows() {
         ("lsp-setup/SKILL.md", "old selected skill"),
         ("context-management/SKILL.md", "old unselected skill"),
         ("development/SKILL.md", "old category skill"),
-        ("code-visualizer/SKILL.md", "edited bundle skill"),
+        ("design-patterns-expert/SKILL.md", "edited bundle skill"),
         ("independent/SKILL.md", "personal skill"),
         ("context-management/notes.txt", "personal non-markdown"),
     ] {
@@ -505,7 +511,7 @@ fn base_version_copilot_upgrade_without_ownership_refreshes_and_narrows() {
         .unwrap()
     );
     assert!(!skills.join("context-management/SKILL.md").exists());
-    assert!(!skills.join("code-visualizer").exists());
+    assert!(!skills.join("design-patterns-expert").exists());
     assert!(!skills.join("development").exists());
     assert_eq!(
         fs::read(skills.join("independent/SKILL.md")).unwrap(),
@@ -611,10 +617,10 @@ fn retired_names_in_the_enabled_list_change_nothing() {
     .unwrap();
     install.install();
     install.defaults();
-    install.run(&["directory", "enable", "skill:code-visualizer"]);
+    install.run(&["directory", "enable", "skill:design-patterns-expert"]);
     assert!(
         install
-            .path(".claude/skills/code-visualizer/SKILL.md")
+            .path(".claude/skills/design-patterns-expert/SKILL.md")
             .is_file()
     );
     let output = install

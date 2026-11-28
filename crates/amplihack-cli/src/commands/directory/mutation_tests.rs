@@ -292,8 +292,8 @@ fn stale_installations_reject_list_changes_without_mutation() {
     let staged = fixture(home.path());
     write(
         &staged,
-        "skills/code-visualizer/SKILL.md",
-        "---\nname: code-visualizer\ndescription: old definition\n---\nold body\n",
+        "skills/design-patterns-expert/SKILL.md",
+        "---\nname: design-patterns-expert\ndescription: old definition\n---\nold body\n",
     );
     index::write_index(&staged).unwrap();
     crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
@@ -301,11 +301,11 @@ fn stale_installations_reject_list_changes_without_mutation() {
         crate::commands::install::version_stamp::write_installed_version(version).unwrap();
         let before = snapshot(home.path());
         run_for_test(DirectoryCommands::Find {
-            words: vec!["code-visualizer".into()],
+            words: vec!["design-patterns-expert".into()],
         })
         .unwrap();
         for enable in [true, false] {
-            let error = change("skill:code-visualizer", enable).unwrap_err();
+            let error = change("skill:design-patterns-expert", enable).unwrap_err();
             assert!(error.to_string().contains("amplihack install"));
             assert_eq!(snapshot(home.path()), before);
         }

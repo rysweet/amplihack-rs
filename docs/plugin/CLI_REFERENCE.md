@@ -50,7 +50,7 @@ Output:
 ```
 Installing amplihack plugin to ~/.amplihack/.claude/
 ✓ Created plugin directory structure
-✓ Installed agents (38 agents)
+✓ Installed agents (37 agents)
 ✓ Installed commands (18 commands)
 ✓ Installed skills (12 skills)
 ✓ Installed workflows (5 workflows)
@@ -264,7 +264,7 @@ Verifying amplihack plugin installation...
 
 ✓ Plugin directory exists: ~/.amplihack/.claude/
 ✓ Plugin manifest valid: .claude-plugin/plugin.json
-✓ Agents directory: 38 agents found
+✓ Agents directory: 37 agents found
 ✓ Commands directory: 18 commands found
 ✓ Skills directory: 12 skills found
 ✓ Workflows directory: 5 workflows found
@@ -920,7 +920,6 @@ Documentation:
 
 Code Analysis:
   code-smell-detector      - Anti-pattern detection
-  code-visualizer          - Code flow diagram generation
 
 Development:
   module-spec-generator    - Brick philosophy module specs

@@ -148,7 +148,7 @@ echo "All layer directories present."
 **Fixture:** A repository with:
 
 - No `docker-compose.yml` or Kubernetes manifests (Layer 1 source missing)
-- No Python files (`code-visualizer`/`python-ast` adapter NOT selected — must not be required)
+- No Python files (build without Python in `static-approximation` mode)
 - Valid TypeScript routes (Layer 3 should succeed)
 
 **Command:** `/code-atlas`
