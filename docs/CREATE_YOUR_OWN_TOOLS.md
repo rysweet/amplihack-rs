@@ -367,7 +367,7 @@ One of the most powerful aspects of amplihack is that **tools can be combined**.
 /amplihack:ultrathink
 1. Use the API Documentation Generator on @src/api/
 2. Use the code-reviewer agent to review the generated docs
-3. Use the knowledge-builder to create a searchable knowledge base from the docs
+3. Create a searchable knowledge base from the docs
 ```
 
 Over time, you'll build up a suite of specialized tools, and you'll find you can chain them together – the output of one becoming the input to another – to accomplish complex workflows.

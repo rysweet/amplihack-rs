@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fail if live bundled skills reference legacy Python helper scripts that are
-# not shipped in amplihack-rs.
+# Fail if live bundled skills or Claude command files reference legacy Python
+# helper scripts that are not shipped in amplihack-rs.
 
 set -euo pipefail
 
@@ -35,21 +35,46 @@ patterns=(
 )
 
 regex=$(IFS='|'; echo "${patterns[*]}")
+command_regex="$regex|\.claude/[A-Za-z0-9_./-]+\.py"
 
-violations="$(rg -n "$regex" amplifier-bundle/skills || true)"
+skill_violations=""
+if skill_violations="$(git grep -n -E "$regex" -- amplifier-bundle/skills)"; then
+    :
+else
+    status=$?
+    if (( status != 1 )); then
+        exit "$status"
+    fi
+fi
 
-if [[ -n "$violations" ]]; then
+command_violations=""
+if command_violations="$(git grep -n -E "$command_regex" -- docs/claude/commands)"; then
+    :
+else
+    status=$?
+    if (( status != 1 )); then
+        exit "$status"
+    fi
+fi
+
+if [[ -n "$skill_violations" || -n "$command_violations" ]]; then
     cat >&2 <<EOF
-FAIL: live bundled skills reference missing legacy Python helper scripts.
+FAIL: live bundled skills or Claude command files reference missing legacy Python helper scripts.
 
-Skills may include Python language examples, but they must not instruct users to
-run helper scripts that amplihack-rs does not ship. Use native helpers, shell/JS
-helpers that exist in the bundle, Rust CLI commands, or explicit manual steps.
+Python language examples are allowed. Instructions that run helpers must use
+native helpers, shell/JS helpers that exist in the bundle, Rust CLI commands, or
+explicit manual steps.
 
-Violations:
-$violations
 EOF
+    if [[ -n "$skill_violations" ]]; then
+        printf '%s\n' 'Violations in amplifier-bundle/skills:' >&2
+        printf '%s\n' "$skill_violations" >&2
+    fi
+    if [[ -n "$command_violations" ]]; then
+        printf '%s\n' 'Violations in docs/claude/commands:' >&2
+        printf '%s\n' "$command_violations" >&2
+    fi
     exit 1
 fi
 
-echo "PASS: live bundled skills do not reference missing legacy Python helpers."
+echo "PASS: live bundled skills and Claude command files are clear of missing legacy Python helper paths."

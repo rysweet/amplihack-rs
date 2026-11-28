@@ -1,6 +1,6 @@
 ---
 name: researching-topics
-description: "Performs quick research using web search and synthesis when user asks about unfamiliar topics, new technologies, or needs current information. Activates on questions like 'how does X work', 'what is Y', or when encountering unknown concepts. For deep comprehensive research, suggests knowledge-builder command."
+description: "Performs quick research using web search and synthesis when user asks about unfamiliar topics, new technologies, or needs current information. Activates on questions like 'how does X work', 'what is Y', or when encountering unknown concepts."
 allowed-tools: ["WebSearch", "WebFetch", "Read", "Write"]
 ---
 
@@ -147,28 +147,6 @@ Always provide:
 
 ## Escalation Paths
 
-### Suggest Knowledge-Builder When
-
-- Research requires 10+ minutes of exploration
-- Topic is foundational to user's project
-- Multiple related subtopics need deep understanding
-- Building comprehensive reference documentation
-- Learning complex domain with many interconnections
-
-**Escalation Message**:
-
-```
-I've provided a quick overview, but this topic has significant depth.
-For comprehensive understanding with Socratic method exploration,
-consider using: /knowledge-builder
-
-The knowledge-builder will:
-- Ask ~270 targeted questions
-- Build 5 interconnected knowledge files
-- Create comprehensive reference documentation
-- Explore edge cases and implications
-```
-
 ### Suggest Ultrathink When
 
 - Research reveals competing approaches with complex tradeoffs
@@ -186,7 +164,6 @@ The knowledge-builder will:
 
 ### Escalates To
 
-- **/knowledge-builder**: Deep comprehensive research
 - **/dev**: Complex decision making with research
 - **architect agent**: Apply research to design decisions
 
@@ -227,8 +204,6 @@ For your use case (semantic search in documentation):
 1. Consider Weaviate (open source, good docs)
 2. Start with small dataset (<10k documents)
 3. Use OpenAI embeddings or sentence-transformers
-
-Need deeper dive? Try: /knowledge-builder
 ```
 
 ### Example 2: Debugging Unknown Error
@@ -401,7 +376,6 @@ Good research provides:
 
 ## Related Capabilities
 
-- **Slash Command**: `/knowledge-builder` for comprehensive deep research
 - **Skill**: "Explaining Concepts" for teaching/learning focus
 - **Agent**: `architect` for applying research to design
 - **Slash Command**: `/dev` for research-based decision making

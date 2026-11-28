@@ -31,7 +31,7 @@ maturity: production
 
 ## Purpose
 
-This skill analyzes claude-trace JSONL files to provide insights into Claude Code session health, token usage patterns, error frequencies, and agent effectiveness. It complements the `/transcripts` command by focusing on API-level trace data rather than conversation transcripts.
+This skill analyzes claude-trace JSONL files to provide insights into Claude Code session health, token usage patterns, error frequencies, and agent effectiveness.
 
 ## When to Use This Skill
 
@@ -399,26 +399,8 @@ Issues found: {len(errors)}
 | Need                               | Use This                                    | Why                           |
 | ---------------------------------- | ------------------------------------------- | ----------------------------- |
 | "Why was my session slow?"         | **session-replay**                          | API latency and token metrics |
-| "What did I discuss last session?" | **/transcripts**                            | Conversation content          |
 | "Extract learnings from sessions"  | **CodexTranscriptsBuilder**                 | Knowledge extraction          |
 | "Reduce my token usage"            | **session-replay** + **context_management** | Metrics + optimization        |
-| "Resume interrupted work"          | **/transcripts**                            | Context restoration           |
-
-### vs. /transcripts Command
-
-**/transcripts** (conversation management):
-
-- Focuses on conversation content
-- Restores session context
-- Used for context preservation
-- **Trigger**: "restore session", "continue work", "what was I doing"
-
-**session-replay skill** (API-level analysis):
-
-- Focuses on API metrics
-- Analyzes performance and errors
-- Used for debugging and optimization
-- **Trigger**: "session health", "token usage", "why slow", "debug session"
 
 ### vs. CodexTranscriptsBuilder
 
@@ -451,9 +433,8 @@ Issues found: {len(errors)}
 
 ```
 1. session-replay: Identify error patterns (errors action)
-2. /transcripts: Review conversation context around errors
-3. session-replay: Check tool usage around failures (tools action)
-4. Document findings in DISCOVERIES.md
+2. session-replay: Check tool usage around failures (tools action)
+3. Document findings in DISCOVERIES.md
 ```
 
 **Workflow 3: Performance Baseline**
@@ -499,7 +480,6 @@ This skill CANNOT:
 
 - **Modify trace files**: Read-only analysis, no editing or deletion
 - **Generate traces**: Use `claude-trace` npm package to create trace files
-- **Restore sessions**: Use `/transcripts` command for session restoration
 - **Real-time monitoring**: Analyzes completed sessions, not live tracking
 - **Cross-project analysis**: Analyzes traces in current project only
 - **Parse non-JSONL formats**: Only claude-trace JSONL format supported
@@ -511,7 +491,6 @@ This skill CANNOT:
 2. **Look for patterns**: Use `errors` to find recurring issues
 3. **Optimize hot spots**: Use `tools` to find inefficiencies
 4. **Track trends**: Use `compare` across sessions
-5. **Combine with transcripts**: Use `/transcripts` for context
 
 ## Common Patterns
 
@@ -551,7 +530,6 @@ User: I keep getting errors, find the pattern
 ## Resources
 
 - **Trace directory**: `.claude-trace/`
-- **Transcripts command**: `/transcripts`
 - **Context management skill**: `context-management`
 - **Philosophy**: `~/.amplihack/.claude/context/PHILOSOPHY.md`
 

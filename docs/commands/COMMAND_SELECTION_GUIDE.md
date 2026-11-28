@@ -108,8 +108,6 @@ What do you need to do?
 
 - `/customize` - Manage user preferences
 - `/skill-builder` - Create new Claude Code skills
-- `/knowledge-builder` - Build knowledge bases
-- `/transcripts` - Manage conversation transcripts
 - `/lock` / `/unlock` - Continuous work mode
 - `/install` / `/uninstall` - System setup
 

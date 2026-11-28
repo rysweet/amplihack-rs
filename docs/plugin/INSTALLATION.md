@@ -29,7 +29,7 @@ amplihack plugin install
 Installing amplihack plugin to ~/.amplihack/.claude/
 ✓ Created plugin directory structure
 ✓ Installed agents (38 agents)
-✓ Installed commands (18 commands)
+✓ Installed commands (14 commands)
 ✓ Installed skills (12 skills)
 ✓ Installed workflows (5 workflows)
 ✓ Configured hooks with ${CLAUDE_PLUGIN_ROOT}
@@ -80,7 +80,7 @@ Verifying amplihack plugin installation...
 ✓ Plugin directory exists: ~/.amplihack/.claude/
 ✓ Plugin manifest valid: .claude-plugin/plugin.json
 ✓ Agents directory: 38 agents found
-✓ Commands directory: 18 commands found
+✓ Commands directory: 14 commands found
 ✓ Skills directory: 12 skills found
 ✓ Workflows directory: 5 workflows found
 ✓ Hooks configured: 3 hooks with ${CLAUDE_PLUGIN_ROOT}
@@ -102,7 +102,7 @@ After installation, your `~/.amplihack/.claude/` directory contains:
 │       ├── core/                 # Core agents
 │       ├── specialized/          # Domain-specific agents
 │       └── workflow/             # Workflow coordinators
-├── commands/                     # 18 slash commands
+├── commands/                     # 14 slash commands
 │   ├── ultrathink.py
 │   ├── analyze.py
 │   └── ...

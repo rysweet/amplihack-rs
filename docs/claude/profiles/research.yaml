@@ -6,7 +6,6 @@ components:
   commands:
     include:
       - "amplihack:ultrathink"
-      - "amplihack:knowledge-builder"
 
   context:
     include:

@@ -176,7 +176,7 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **What it does**:
 
-- Checks for lock flag (`~/.amplihack/.claude/runtime/locks/.lock_active`)
+- Checks for lock flag (`<project>/.claude/runtime/locks/.lock_active`)
 - Blocks stop if lock is active (continuous work mode)
 - Triggers reflection analysis if enabled
 - Creates reflection pending marker

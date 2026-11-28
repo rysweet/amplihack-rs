@@ -778,19 +778,15 @@ mod tests {
             "customize",
             "fix",
             "improve",
-            "ingest-code",
             "install",
-            "knowledge-builder",
             "lock",
             "modular-build",
             "reflect",
             "remote",
             "skill-builder",
-            "transcripts",
             "ultrathink",
             "uninstall",
             "unlock",
-            "xpia",
         ] {
             fs::write(
                 cmd_dir.join(format!("{command}.md")),
@@ -839,10 +835,10 @@ mod tests {
             &repo,
         )
         .unwrap();
-        assert_eq!(claude.copied, 18);
+        assert_eq!(claude.copied, 14);
 
         let copilot_commands = copilot_home.join("installed-plugins/amplihack@local/commands");
-        assert_eq!(fs::read_dir(&copilot_commands).unwrap().count(), 18);
+        assert_eq!(fs::read_dir(&copilot_commands).unwrap().count(), 14);
         for entry in fs::read_dir(&claude.target).unwrap() {
             let entry = entry.unwrap();
             let source = fs::read_to_string(

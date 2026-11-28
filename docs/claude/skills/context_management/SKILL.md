@@ -5,7 +5,7 @@ description: |
   Proactive context window management via token monitoring, intelligent extraction, and selective rehydration.
   Features context health checks, priority-based retention, and recovery guidance.
   Use when approaching token limits or needing to preserve essential context.
-  Complements /transcripts, /reflect, session checkpoints, and PreCompact hooks.
+  Complements /reflect, session checkpoints, and PreCompact hooks.
 ---
 
 # Context Management Skill
@@ -62,7 +62,6 @@ Snapshots are written to `${AMPLIHACK_CONTEXT_DIR:-$HOME/.amplihack/context-mana
 Use runtime commands and repository checks alongside the helper:
 
 ```bash
-/transcripts recent
 /reflect summarize current session context
 git --no-pager status --short
 ```

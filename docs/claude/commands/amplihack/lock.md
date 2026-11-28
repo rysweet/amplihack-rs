@@ -14,7 +14,9 @@ triggers:
 
 **Purpose**: Enable continuous work mode to prevent Claude from stopping until explicitly unlocked.
 
-**Usage**: `amplihack lock [--message TEXT]`
+**Usage**: `/amplihack:lock [TEXT]`
+
+Pass any text typed after the slash command to `amplihack lock` as `--message`.
 
 When locked, Claude will:
 

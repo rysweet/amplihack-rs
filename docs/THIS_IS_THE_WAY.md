@@ -117,7 +117,6 @@ Amplihack provides specialized agents for different tasks. Understanding when to
 
 **Specialized Agents:**
 
-- **knowledge-builder**: Build comprehensive knowledge bases
 - **worktree-manager**: Manage git worktrees and branches
 - **ci-diagnostic-workflow**: Debug CI/CD failures
 - **security**: Security review and vulnerability analysis
@@ -301,7 +300,7 @@ Not the entire src/ directory.
 **2. Leverage Agent Memory**
 
 ```
-First, have the knowledge-builder agent create a knowledge base of @src/api/.
+First, create a knowledge base from @src/api/.
 Then use that knowledge base for subsequent questions.
 ```
 

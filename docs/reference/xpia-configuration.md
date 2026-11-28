@@ -7,7 +7,6 @@ owner: amplihack-security
 doc_type: reference
 related:
   - ../howto/settings-hook-configuration.md
-  - ../claude/commands/amplihack/xpia.md
   - ./environment-variables.md
 ---
 
@@ -336,6 +335,5 @@ wrote, then set `XPIA_ENABLED` in your shell instead.
 ## Related
 
 - [Settings hook configuration](../howto/settings-hook-configuration.md): how the `pre-tool-use` hook is registered
-- [`/amplihack:xpia` command](../claude/commands/amplihack/xpia.md): status and logs
 - [Hook specifications](./hook-specifications.md): the tmux guard and why it runs first, and the tail-follow guard
 - [Environment variables](./environment-variables.md): every variable amplihack reads

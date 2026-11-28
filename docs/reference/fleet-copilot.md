@@ -126,7 +126,7 @@ to either summarize completed work or explain why it needs help.
 | `.claude/runtime/locks/.lock_active`                             | Lock state (exists = locked)             |
 | `.claude/runtime/locks/.lock_goal`                               | Goal + definition of done                |
 | `.claude/runtime/copilot-decisions/decisions.jsonl`              | Copilot decision log                     |
-| `.claude/tools/amplihack/lock_tool.py`                           | CLI: lock/unlock/check                   |
+| `amplihack lock`, `amplihack unlock`, `amplihack lock-status`      | CLI: lock/unlock/check                   |
 | `amplifier-bundle/tools/amplihack/hooks/stop.py`                 | Stop hook (delegates to copilot handler) |
 | `amplifier-bundle/tools/amplihack/hooks/copilot_stop_handler.py` | Copilot reasoning + decision logging     |
 | `amplifier-bundle/modules/hook-lock-mode/`                       | Provider:request hook for goal injection |
