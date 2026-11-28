@@ -108,8 +108,9 @@ use crate::run_guidance::pr_key::{
 // and the launcher's warnings. Paths reach it from `check_dir`, the work
 // root validator and `run.json`, which build their own text, so it is
 // applied once, to the whole line, just before printing.
-use crate::run_guidance::log_state::{read_log_state, render_drop_line};
+use crate::run_guidance::log_state::{read_log_state, render_drop_line, render_unhooked_line};
 use crate::run_guidance::sanitize::{escaped, needs_escape, sanitize_line};
+use crate::run_guidance::step::step_alive;
 use crate::run_guidance::{
     AUTO_DRIVE_DIR, GUIDANCE_DIR, GuideError, HEADER_ROOM, MAX_GUIDANCE_ENTRY_BYTES, Source,
     append_entry_at, caller_identity, check_text,
@@ -265,8 +266,17 @@ fn guide(
     // each folder written. One fan-out launch logs one drop in every folder
     // it read, so a line is printed once.
     let mut shown: Vec<String> = Vec::new();
+    // Issue #3435: running steps that have no hook to take the entry while
+    // they run, named once each.
+    let mut unhooked: Vec<String> = Vec::new();
     for (folder, _) in &folders {
         let state = read_log_state(folder);
+        for step in &state.unhooked {
+            if !unhooked.contains(&step.step_id) && step_alive(step) {
+                println!("{}", render_unhooked_line(step));
+                unhooked.push(step.step_id.clone());
+            }
+        }
         if let Some(reason) = &state.log_error {
             // An unreadable log says nothing about drops; say that rather
             // than print nothing, which would read as "none".

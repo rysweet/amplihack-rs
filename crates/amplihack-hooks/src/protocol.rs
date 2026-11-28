@@ -133,16 +133,39 @@ pub fn run_hook<H: Hook>(hook: H) {
             return Ok(());
         }
 
-        if text_action == Some(Action::Approve) {
-            write_stdout(hook_text::APPROVE.as_bytes())?;
-            return Ok(());
-        }
-
-        let output = hook.process(input)?;
-        let output = if text_action == Some(Action::StripContext) {
-            hook_text::strip_model_text(output)
+        let output = if text_action == Some(Action::Approve) {
+            None
         } else {
-            output
+            let output = hook.process(input)?;
+            Some(if text_action == Some(Action::StripContext) {
+                hook_text::strip_model_text(output)
+            } else {
+                output
+            })
+        };
+        // Issue #3435: operator guidance appended while this agent step runs.
+        // Asked for only after the hook's own work succeeded, since what is
+        // printed is recorded as given to the step. It is not hook text, so
+        // the hook-text setting does not remove it.
+        let guidance = if security {
+            None
+        } else {
+            crate::run_guidance::new_guidance(event)
+        };
+        let output = match (output, guidance) {
+            (None, None) => {
+                write_stdout(hook_text::APPROVE.as_bytes())?;
+                return Ok(());
+            }
+            (None, Some(block)) => crate::run_guidance::merge_context(
+                event,
+                serde_json::from_str(hook_text::APPROVE)?,
+                &block,
+            ),
+            (Some(output), Some(block)) => {
+                crate::run_guidance::merge_context(event, output, &block)
+            }
+            (Some(output), None) => output,
         };
         let output = if codex {
             codex_output(event, output)

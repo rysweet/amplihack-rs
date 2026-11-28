@@ -62,6 +62,7 @@ pub fn run_guidance(command: GuidanceCommands) -> Result<()> {
             since,
             command,
         } => wait(&folder, &since, &command),
+        GuidanceCommands::Deliver => deliver().map(|()| 0),
     };
     match result {
         Ok(0) => Ok(()),
@@ -70,6 +71,52 @@ pub fn run_guidance(command: GuidanceCommands) -> Result<()> {
             eprintln!("{}", sanitize_line(&format!("recipe guidance: {error}")));
             Err(exit_error(error.exit_code()))
         }
+    }
+}
+
+/// Issue #3435: `recipe guidance deliver`, run by the PostToolUse and
+/// UserPromptSubmit hooks of an agent step inside a recipe run. Prints the
+/// block of entries the step has not been given yet, or nothing, and records
+/// them for the step. Outside a recipe run it prints nothing. When the
+/// delivery fails it records a `hook_delivery_failed` drop where it can, so
+/// `recipe guide` tells the sender, and exits 1; the hook goes on either way.
+fn deliver() -> Result<(), GuideError> {
+    use crate::run_guidance::step::{STEP_ID_ENV, deliver};
+    let Some(step_id) = std::env::var(STEP_ID_ENV).ok().filter(|v| !v.is_empty()) else {
+        return Ok(());
+    };
+    let Some(value) = std::env::var_os(GUIDANCE_DIRS_ENV).filter(|v| !v.is_empty()) else {
+        return Ok(());
+    };
+    let dirs = crate::run_guidance::env::dirs_from_env_value(&value);
+    let run_id = std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_default();
+    match deliver(&step_id, &run_id, &dirs) {
+        Ok(Some(block)) => {
+            let mut out = std::io::stdout().lock();
+            writeln!(out, "{block}")
+                .and_then(|()| out.flush())
+                .map_err(|e| GuideError::Io(format!("cannot write the guidance: {e}")))
+        }
+        Ok(None) => Ok(()),
+        Err(error) => {
+            let label = crate::run_guidance::StepLabel {
+                step_run_id: run_id,
+                tool: hook_tool(),
+                launch_form: "hook of a running step".to_string(),
+                agent: None,
+            };
+            crate::run_guidance::GuidanceForLaunch::from_dirs(dirs)
+                .record_drop(&label, crate::run_guidance::DropReason::HookDeliveryFailed);
+            Err(error)
+        }
+    }
+}
+
+/// The tool a hook runs under, from the closed set the launcher writes.
+fn hook_tool() -> String {
+    match std::env::var("AMPLIHACK_AGENT_BINARY").as_deref() {
+        Ok(tool @ ("claude" | "codex" | "copilot")) => tool.to_string(),
+        _ => "other".to_string(),
     }
 }
 

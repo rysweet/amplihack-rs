@@ -41,7 +41,24 @@ struct Flags {
 
 /// Starts a thread that writes `payload` to `stdin` and then closes it.
 pub fn spawn_stdin_writer(stdin: ChildStdin, payload: Vec<u8>) -> StdinWriter {
-    spawn_writer(stdin, payload, None, Vec::new())
+    spawn_writer(stdin, payload, None, Vec::new(), None)
+}
+
+/// Something to run once every byte due has been written and flushed, and
+/// before the child's stdin is closed (see [`spawn_stdin_writer_then`]).
+pub type OnDelivered = Box<dyn FnOnce() + Send>;
+
+/// [`spawn_stdin_writer`], running `on_delivered` after the payload is
+/// written and flushed and before stdin is closed. A child that reads its
+/// input to end of file therefore cannot act on the payload before
+/// `on_delivered` has returned (issue #3435: the launch records that a step
+/// was given guidance before the step's own hooks can look for it).
+pub fn spawn_stdin_writer_then(
+    stdin: ChildStdin,
+    payload: Vec<u8>,
+    on_delivered: OnDelivered,
+) -> StdinWriter {
+    spawn_writer(stdin, payload, None, Vec::new(), Some(on_delivered))
 }
 
 /// Starts a thread that writes `payload` to `stdin`, then copies `follow`
@@ -57,7 +74,7 @@ pub fn spawn_stdin_forwarder(
     payload: Vec<u8>,
     follow: Box<dyn io::Read + Send>,
 ) -> StdinWriter {
-    spawn_writer(stdin, payload, Some(follow), Vec::new())
+    spawn_writer(stdin, payload, Some(follow), Vec::new(), None)
 }
 
 /// Starts a thread that writes `head`, copies `follow` until it reaches end
@@ -83,7 +100,20 @@ pub fn spawn_stdin_forwarder_with_trailer(
     follow: Box<dyn io::Read + Send>,
     tail: Vec<u8>,
 ) -> StdinWriter {
-    spawn_writer(stdin, head, Some(follow), tail)
+    spawn_writer(stdin, head, Some(follow), tail, None)
+}
+
+/// [`spawn_stdin_forwarder_with_trailer`], running `on_delivered` once the
+/// tail has been written and flushed, before stdin is closed. It does not
+/// run when the tail was not written ([`StdinWriter::delivered`] false).
+pub fn spawn_stdin_forwarder_with_trailer_then(
+    stdin: ChildStdin,
+    head: Vec<u8>,
+    follow: Box<dyn io::Read + Send>,
+    tail: Vec<u8>,
+    on_delivered: OnDelivered,
+) -> StdinWriter {
+    spawn_writer(stdin, head, Some(follow), tail, Some(on_delivered))
 }
 
 fn spawn_writer(
@@ -91,6 +121,7 @@ fn spawn_writer(
     payload: Vec<u8>,
     follow: Option<Box<dyn io::Read + Send>>,
     tail: Vec<u8>,
+    on_delivered: Option<OnDelivered>,
 ) -> StdinWriter {
     let flags = Arc::new(Flags::default());
     let seen = Arc::clone(&flags);
@@ -104,6 +135,12 @@ fn spawn_writer(
             &tail,
             &seen,
         );
+        if result.is_ok()
+            && seen.delivered.load(Ordering::Acquire)
+            && let Some(on_delivered) = on_delivered
+        {
+            on_delivered();
+        }
         // Dropping `stdin` closes the pipe, which gives the child EOF. Both
         // flags, when set, were stored before this point.
         drop(stdin);
@@ -394,6 +431,76 @@ mod tests {
         writer.finish().expect("write succeeds");
         let out = child.wait_with_output().unwrap();
         assert_eq!(String::from_utf8(out.stdout).unwrap(), "HEAD|FOLLOW|TAIL");
+    }
+
+    /// A child that reads its input to end of file and then says whether
+    /// `marker` exists.
+    fn marker_child(marker: &std::path::Path) -> std::process::Child {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg("cat > /dev/null; if [ -e \"$1\" ]; then echo seen; else echo absent; fi")
+            .arg("sh")
+            .arg(marker)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start sh")
+    }
+
+    // Issue #3435: what runs on delivery has finished before the child can
+    // read end of file, so a step never acts on its input before the launch
+    // has recorded it.
+    #[test]
+    fn issue_3435_on_delivered_runs_before_the_child_reads_end_of_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("recorded");
+        let mut child = marker_child(&marker);
+        let stdin = child.stdin.take().unwrap();
+        let record = marker.clone();
+        let writer = spawn_stdin_forwarder_with_trailer_then(
+            stdin,
+            b"prompt".to_vec(),
+            Box::new(io::empty()),
+            b"TAIL".to_vec(),
+            Box::new(move || std::fs::write(&record, b"").unwrap()),
+        );
+        let out = child.wait_with_output().unwrap();
+        writer.finish().unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "seen");
+
+        let marker = dir.path().join("written");
+        let mut child = marker_child(&marker);
+        let stdin = child.stdin.take().unwrap();
+        let record = marker.clone();
+        let writer = spawn_stdin_writer_then(
+            stdin,
+            b"payload".to_vec(),
+            Box::new(move || std::fs::write(&record, b"").unwrap()),
+        );
+        let out = child.wait_with_output().unwrap();
+        writer.finish().unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "seen");
+    }
+
+    #[test]
+    fn issue_3435_on_delivered_does_not_run_when_the_tail_was_not_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("recorded");
+        let mut child = marker_child(&marker);
+        let stdin = child.stdin.take().unwrap();
+        let record = marker.clone();
+        let writer = spawn_stdin_forwarder_with_trailer_then(
+            stdin,
+            Vec::new(),
+            Box::new(io::Cursor::new(b"\n  \n".to_vec())),
+            b"TAIL".to_vec(),
+            Box::new(move || std::fs::write(&record, b"").unwrap()),
+        );
+        let out = child.wait_with_output().unwrap();
+        writer.finish().unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "absent");
+        assert!(!marker.exists());
     }
 
     // PR #3190 review: an empty pipe on stdin used to give the child the

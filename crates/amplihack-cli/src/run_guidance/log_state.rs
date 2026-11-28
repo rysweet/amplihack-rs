@@ -13,6 +13,17 @@
 //!   launcher's launch-form labels), plus the run id and a sanitised agent
 //!   name.
 //!
+//! Issue #3435 adds two more:
+//!
+//! - `guidance_injected` may carry `step_id`, the agent step that was given
+//!   the entries (at launch, or later by one of its hooks). The entries one
+//!   step has been given are the union of `entry_names` over the records
+//!   with its `step_id` ([`LogState::delivered_by_step`]);
+//! - `guidance_step_unhooked`, written when an agent step starts in a launch
+//!   form that has no hook to take guidance while it runs. It names the step
+//!   and the launcher's process, so that `recipe guide` can tell the sender
+//!   while that step is still running ([`Unhooked`]).
+//!
 //! The reader never fails: a missing log is an empty state, a line that does
 //! not parse or names an event it does not know is skipped, and a log that
 //! cannot be opened safely is one warning line plus [`LogState::log_error`],
@@ -21,7 +32,7 @@
 
 use super::sanitize::sanitize_line;
 use super::{GUIDANCE_LOG, warn};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// The most bytes of `guidance.log` read. A log past it is read up to it,
@@ -45,6 +56,9 @@ pub(crate) enum DropReason {
     /// runner's Copilot form), and that file could not be read or its
     /// private copy written.
     PromptFileNotCopied,
+    /// A hook of a running step could not deliver new entries to it
+    /// (issue #3435).
+    HookDeliveryFailed,
 }
 
 impl DropReason {
@@ -55,6 +69,7 @@ impl DropReason {
             Self::LaunchFormUnsupported => "launch_form_unsupported",
             Self::TrailerNotWritten => "trailer_not_written",
             Self::PromptFileNotCopied => "prompt_file_not_copied",
+            Self::HookDeliveryFailed => "hook_delivery_failed",
         }
     }
 
@@ -72,6 +87,9 @@ impl DropReason {
             }
             Self::PromptFileNotCopied => {
                 "the step's prompt file could not be read or copied, so the guidance could not follow its prompt"
+            }
+            Self::HookDeliveryFailed => {
+                "a hook of the running step could not give it the new guidance"
             }
         }
     }
@@ -100,6 +118,23 @@ pub(crate) struct Drop {
     pub detail: String,
 }
 
+/// One `guidance_step_unhooked` record, read back: an agent step that
+/// started in a launch form with no hook to take guidance while it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unhooked {
+    pub ts: String,
+    pub step_id: String,
+    pub step_run_id: String,
+    pub tool: String,
+    pub launch_form: String,
+    pub agent: Option<String>,
+    /// The launcher's process id, which lives as long as the step.
+    pub pid: u32,
+    /// The launcher's start time, in clock ticks since boot, where the
+    /// system gives it; with `pid` it tells a live step from a reused pid.
+    pub start: Option<u64>,
+}
+
 /// What one folder's log says.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LogState {
@@ -108,6 +143,11 @@ pub(crate) struct LogState {
     /// `guidance_dropped` records written after the last
     /// `guidance_injected` record, oldest first.
     pub drops_since_injection: Vec<Drop>,
+    /// For each step id, the names of this folder's entries that step has
+    /// been given (issue #3435).
+    pub delivered_by_step: HashMap<String, HashSet<String>>,
+    /// Every `guidance_step_unhooked` record, oldest first.
+    pub unhooked: Vec<Unhooked>,
     /// Why the log could not be read, when it exists but was refused or
     /// failed. `read` and `drops_since_injection` are then empty because
     /// nothing is known, not because nothing happened, and readers must say
@@ -204,12 +244,46 @@ pub(crate) fn read_log_state(guidance_dir: &Path) -> LogState {
                     .get("entry_names")
                     .and_then(serde_json::Value::as_array)
                 {
-                    state.read.extend(
-                        names
-                            .iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .map(str::to_string),
-                    );
+                    let names: Vec<String> = names
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .collect();
+                    if let Some(step) = value
+                        .get("step_id")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|s| !s.is_empty())
+                    {
+                        state
+                            .delivered_by_step
+                            .entry(step.to_string())
+                            .or_default()
+                            .extend(names.iter().cloned());
+                    }
+                    state.read.extend(names);
+                }
+            }
+            Some("guidance_step_unhooked") => {
+                let pid = value
+                    .get("pid")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|p| u32::try_from(p).ok());
+                let step_id = text(&value, "step_id");
+                if let Some(pid) = pid.filter(|_| !step_id.is_empty()) {
+                    state.unhooked.push(Unhooked {
+                        ts: text(&value, "ts"),
+                        step_id,
+                        step_run_id: text(&value, "step_run_id"),
+                        tool: text(&value, "tool"),
+                        launch_form: text(&value, "launch_form"),
+                        agent: value
+                            .get("agent")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|a| !a.is_empty())
+                            .map(sanitize_line),
+                        pid,
+                        start: value.get("start").and_then(serde_json::Value::as_u64),
+                    });
                 }
             }
             Some("guidance_dropped") => state.drops_since_injection.push(Drop {
@@ -242,5 +316,20 @@ pub(crate) fn render_drop_line(drop: &Drop) -> String {
     sanitize_line(&format!(
         "dropped by {} ({}){agent} in run {}: {}: {}",
         drop.tool, drop.launch_form, drop.step_run_id, drop.reason, drop.detail
+    ))
+}
+
+/// The one line that tells a sender a running step will not see the entry
+/// until a later step starts:
+/// `not reachable while running: step ID, TOOL (LAUNCH_FORM)[ agent A] in run RUN: DETAIL`.
+pub(crate) fn render_unhooked_line(step: &Unhooked) -> String {
+    let agent = step
+        .agent
+        .as_deref()
+        .map(|a| format!(" agent {a}"))
+        .unwrap_or_default();
+    sanitize_line(&format!(
+        "not reachable while running: step {}, {} ({}){agent} in run {}: this launch form has no hook that gives a running step new guidance; the entry stays for later steps",
+        step.step_id, step.tool, step.launch_form, step.step_run_id
     ))
 }

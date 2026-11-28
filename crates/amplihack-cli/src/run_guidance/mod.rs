@@ -14,7 +14,9 @@
 //! Delivery: `recipe run` lists the folders in `AMPLIHACK_RUN_GUIDANCE_DIRS`
 //! ([`env`]); the launcher reads them when an agent step starts
 //! ([`GuidanceForLaunch`]), so an entry reaches the next agent step that
-//! starts after it was written.
+//! starts after it was written. An agent step that is already running gets
+//! an entry at its next tool call or prompt, through its hooks, once
+//! ([`step`], issue #3435).
 //!
 //! Waking (issue #3129): a process that waits for guidance
 //! (`recipe guidance wait`) arms a FIFO in `guidance-wake/` beside the
@@ -57,6 +59,9 @@ pub(crate) mod log_state;
 pub(crate) mod pr_key;
 mod render;
 pub(crate) mod sanitize;
+pub(crate) mod step;
+#[cfg(test)]
+mod step_tests;
 #[cfg(test)]
 mod tests;
 pub(crate) mod wait;
@@ -560,7 +565,17 @@ pub(crate) fn append_entry_at(
 /// Appends one JSON line to `log` (created 0600; never through a symlink;
 /// the opened file must pass the trust rule).
 pub(crate) fn log_event(log: &Path, record: &serde_json::Value) -> Result<(), GuideError> {
-    let mut file = fs::OpenOptions::new()
+    let mut file = open_log(log)?;
+    let mut line = record.to_string();
+    line.push('\n');
+    file.write_all(line.as_bytes())
+        .map_err(|e| GuideError::Io(format!("cannot write {}: {e}", log.display())))
+}
+
+/// Opens `log` for appending (created 0600; never through a symlink) and
+/// checks the opened file against the trust rule.
+pub(crate) fn open_log(log: &Path) -> Result<fs::File, GuideError> {
+    let file = fs::OpenOptions::new()
         .append(true)
         .create(true)
         // O_NONBLOCK: a FIFO planted at this path must not hang the caller;
@@ -578,10 +593,7 @@ pub(crate) fn log_event(log: &Path, record: &serde_json::Value) -> Result<(), Gu
             log.display()
         )));
     }
-    let mut line = record.to_string();
-    line.push('\n');
-    file.write_all(line.as_bytes())
-        .map_err(|e| GuideError::Io(format!("cannot write {}: {e}", log.display())))
+    Ok(file)
 }
 
 /// Prints `line` on stderr after [`sanitize_line`]: a path in it can carry
@@ -787,7 +799,9 @@ pub(crate) fn codex_trailer_applies(args: &[String]) -> bool {
 }
 
 /// The guidance one agent launch adds: read once, when the step starts.
-#[derive(Debug, Default)]
+/// A step's hooks build one from the entries it has not been given yet
+/// ([`step::deliver`]).
+#[derive(Debug, Default, Clone)]
 pub(crate) struct GuidanceForLaunch {
     /// Every (folder, entry name) the block holds, copies included, so each
     /// folder's log can name its own entries ([`Self::record_injection`]).
@@ -809,7 +823,11 @@ impl GuidanceForLaunch {
 
     /// Reads `dirs` (already checked or trusted by the caller).
     pub(crate) fn from_dirs(dirs: Vec<PathBuf>) -> Self {
-        let entries = read_entries(&dirs);
+        Self::from_entries(read_entries(&dirs))
+    }
+
+    /// The block and records for `entries`, as [`read_entries`] returns them.
+    pub(crate) fn from_entries(entries: Vec<Entry>) -> Self {
         if entries.is_empty() {
             return Self::default();
         }
@@ -881,32 +899,59 @@ impl GuidanceForLaunch {
         )
     }
 
-    /// Logs `guidance_injected` in the `guidance.log` of each folder that
-    /// supplied an entry: the totals (`entries`, `bytes`) and the names of
-    /// that folder's own entries (`entry_names`, issue #3162), which is what
-    /// marks an entry as read. Call only after the agent has the block.
-    pub(crate) fn record_injection(&self, step_run_id: &str) {
+    /// The `guidance_injected` record for folder `dir`: the totals
+    /// (`entries`, `bytes`), the names of that folder's own entries
+    /// (`entry_names`, issue #3162), which is what marks an entry as read,
+    /// and the step given them (`step_id`, issue #3435) when known. `None`
+    /// when `dir` supplied no entry.
+    pub(crate) fn injection_record(
+        &self,
+        dir: &Path,
+        ts: &str,
+        step_run_id: &str,
+        step_id: Option<&str>,
+    ) -> Option<serde_json::Value> {
+        let names: Vec<&str> = self
+            .injected
+            .iter()
+            .filter(|(d, _)| d == dir)
+            .map(|(_, n)| n.as_str())
+            .collect();
+        if names.is_empty() {
+            return None;
+        }
+        let mut record = serde_json::json!({
+            "event": "guidance_injected",
+            "ts": ts,
+            "step_run_id": valid_step_run_id(step_run_id),
+            "entries": self.entries,
+            "bytes": self.bytes,
+            "entry_names": names,
+        });
+        if let Some(step) = step_id.filter(|s| step::valid_step_id(s)) {
+            record["step_id"] = step.into();
+        }
+        Some(record)
+    }
+
+    /// Logs `guidance_injected` ([`Self::injection_record`]) in the
+    /// `guidance.log` of each folder that supplied an entry, under the same
+    /// lock the step's hooks take. Call only after the agent has the block.
+    pub(crate) fn record_injection(&self, step_run_id: &str, step_id: Option<&str>) {
         if self.entries == 0 {
             return;
         }
         let ts = now_text();
-        let step = valid_step_run_id(step_run_id);
         for dir in self.sources() {
-            let names: Vec<&str> = self
-                .injected
-                .iter()
-                .filter(|(d, _)| d == dir)
-                .map(|(_, n)| n.as_str())
-                .collect();
-            let record = serde_json::json!({
-                "event": "guidance_injected",
-                "ts": ts,
-                "step_run_id": step,
-                "entries": self.entries,
-                "bytes": self.bytes,
-                "entry_names": names,
-            });
-            log_in(dir, &record, "added but not logged");
+            let Some(record) = self.injection_record(dir, &ts, step_run_id, step_id) else {
+                continue;
+            };
+            let logged = step::LockedLog::open(dir).and_then(|mut log| log.append(&record));
+            if let Err(e) = logged {
+                warn(&format!(
+                    "amplihack: warning: operator guidance was added but not logged: {e}"
+                ));
+            }
         }
     }
 

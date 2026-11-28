@@ -125,7 +125,7 @@ fn check_trust_format(name: &ProfileName, version: Option<&str>, args: &[String]
 /// `features={hooks=false}` (also `-c<k=v>`, `--config <k=v>` and
 /// `--config=<k=v>`), or `--disable hooks` (also `--disable=hooks`), before
 /// any `--`. The inline table is read as TOML, as Codex reads a `-c` value.
-fn caller_disables_hooks(args: &[String]) -> bool {
+pub(super) fn caller_disables_hooks(args: &[String]) -> bool {
     let turns_off = |pair: &str| {
         let Some((key, value)) = pair.split_once('=') else {
             return false;

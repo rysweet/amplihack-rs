@@ -289,13 +289,19 @@ fn codex_child_that_closes_stdin_early_records_no_injection() {
         .collect();
     // Issue #3162: no guidance_injected record, and the drop is recorded for
     // the sender with its reason code.
+    // Issue #3435: this Codex home has no amplihack hooks, so the step is
+    // recorded at launch as one that cannot take guidance while it runs.
     assert_eq!(
         events,
-        ["guidance_appended", "guidance_dropped"],
+        [
+            "guidance_appended",
+            "guidance_step_unhooked",
+            "guidance_dropped"
+        ],
         "no guidance_injected record"
     );
-    assert_eq!(log[1]["reason"], "trailer_not_written", "{log:?}");
-    assert_eq!(log[1]["tool"], "codex", "{log:?}");
+    assert_eq!(log[2]["reason"], "trailer_not_written", "{log:?}");
+    assert_eq!(log[2]["tool"], "codex", "{log:?}");
 }
 
 // ---------------------------------------------------------------------------

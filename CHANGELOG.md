@@ -5,6 +5,30 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
+## [Unreleased] Guidance reaches an agent step that is already running
+
+### Changed
+
+- Guidance appended with `amplihack recipe guide` while an agent step runs
+  now reaches that step at its next tool call or prompt, for Claude Code
+  (interactive and `-p`) and Codex `exec` steps that have amplihack's hooks.
+  The step's PostToolUse and UserPromptSubmit hooks add the new entries to
+  their context, once per step. A later step still receives every entry at
+  launch. An interactive Claude launch, or another form no prompt can take,
+  is no longer recorded as a `launch_form_unsupported` drop when it has the
+  hooks.
+- `recipe guide` now names each running step that has no such hook (Copilot,
+  or a launch without amplihack's hooks), with a line that starts
+  `not reachable while running:`. The entry stays for later steps.
+- Command arguments and exit codes are unchanged. A hidden internal
+  subcommand, `amplihack recipe guidance deliver`, is added for the hooks.
+  Agent launches inside a recipe run export `AMPLIHACK_GUIDANCE_STEP_ID`.
+  `guidance.log` gains an optional `step_id` field on `guidance_injected`,
+  a new `guidance_step_unhooked` event and a new `hook_delivery_failed` drop
+  reason. A launch now writes its `guidance_injected` record for a block on
+  the agent's stdin as soon as the block is written, not after the agent
+  exits.
+
 ## [Unreleased] Skills and agents listed by default
 
 ### Changed

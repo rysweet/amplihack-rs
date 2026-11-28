@@ -22,6 +22,19 @@
 //! | Copilot | no `-p`/`-i`, nothing on stdin             | `NoPromptOnStdin` drop        |
 //! | Copilot | `-i`, or no private file Copilot can open  | `LaunchFormUnsupported` drop  |
 //!
+//! Issue #3435: a `LaunchFormUnsupported` route is settled once the launch
+//! knows whether the step has a hook that gives a running step new guidance
+//! ([`step_has_hook`]). With a hook, nothing is dropped: the step's first
+//! UserPromptSubmit or PostToolUse hook delivers the entries
+//! ([`GuidanceRoute::Hook`]). Without one, the drop is recorded as before.
+//!
+//! | Tool    | Has a hook that gives a running step new guidance              |
+//! |---------|----------------------------------------------------------------|
+//! | Claude  | when the launch passes amplihack's hooks settings file         |
+//! | Codex   | when the Codex home holds amplihack's PostToolUse and          |
+//! |         | UserPromptSubmit handlers and hooks are not switched off       |
+//! | Copilot | never                                                          |
+//!
 //! The recipe runner starts every Copilot step with `-p` and a pointer
 //! sentence naming its own prompt file. The launcher copies that file to a
 //! private one with the block after the prompt, and points Copilot at the
@@ -76,8 +89,40 @@ pub(crate) enum GuidanceRoute {
     /// after text has been copied from it; reported only after the child
     /// exits, and only if every byte was written.
     StdinTrailer,
+    /// There is guidance, no prompt can take it, and the step's hooks give
+    /// it at its first prompt or tool call (issue #3435).
+    Hook,
     /// There is guidance, and this launch cannot take it.
     Undeliverable(DropReason),
+}
+
+/// Whether a step of `tool` has a hook that gives it guidance appended
+/// while it runs (issue #3435): Claude when amplihack's hooks settings file
+/// is passed to it, Codex when its Codex home has amplihack's handlers, and
+/// no other tool. A launch whose settings file was skipped counts as having
+/// none, even if other settings may still run the hooks, because delivery
+/// cannot be counted on.
+pub(crate) fn step_has_hook(
+    tool: &str,
+    claude_settings_passed: bool,
+    codex_hooks_ready: bool,
+) -> bool {
+    match agent_binary_for_tool(tool) {
+        Some(AgentBinary::Claude) => claude_settings_passed,
+        Some(AgentBinary::Codex) => codex_hooks_ready,
+        _ => false,
+    }
+}
+
+/// `route`, with a launch form that no prompt can take given to the step's
+/// hooks when it has them.
+pub(crate) fn settle_route(route: GuidanceRoute, hooked: bool) -> GuidanceRoute {
+    match route {
+        GuidanceRoute::Undeliverable(DropReason::LaunchFormUnsupported) if hooked => {
+            GuidanceRoute::Hook
+        }
+        other => other,
+    }
 }
 
 pub(crate) fn agent_binary_for_tool(tool: &str) -> Option<AgentBinary> {
