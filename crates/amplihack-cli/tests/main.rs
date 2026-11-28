@@ -84,6 +84,8 @@ mod issue_3162_copilot_stdin_launcher;
 // #3435: guidance reaches an agent step that is already running.
 #[path = "issue_3435_running_step_guidance.rs"]
 mod issue_3435_running_step_guidance;
+#[path = "issue_3457_extra_launch_hooks.rs"]
+mod issue_3457_extra_launch_hooks;
 // #3129 PR 2: the build goal loop and the old tools it keeps alive.
 #[path = "issue_3129_build_loop/mod.rs"]
 mod issue_3129_build_loop;

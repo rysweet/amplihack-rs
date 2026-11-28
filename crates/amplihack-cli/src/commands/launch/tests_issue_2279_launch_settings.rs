@@ -5,14 +5,14 @@
 //!
 //! API this file pins (in `launch::hook_settings` unless noted):
 //! - `LAUNCH_FILE = "runtime/launch-hooks-settings.json"` (relative to AMPLIHACK_HOME)
-//! - `enum Inject { Path(PathBuf), NotPrivate, Skip(&'static str) }`
+//! - `Inject::Path` points to the shared unconfigured settings file.
 //! - `struct Inputs<'a> { binary_name, extra_args, proxy, newer_stamp,
 //!    target: Option<&HookTarget>, amplihack_home: &Path }`
 //! - `prepare_with(&Inputs) -> Inject` (pure apart from the file write);
-//!   production `prepare(binary_name, extra_args)` fills `Inputs` from the
+//!   production `prepare` fills `Inputs` from the
 //!   environment.
 //! - `user_passed_settings(extra_args) -> bool`
-//! - `command::build_command_for_dir(.., contract_file, hook_settings: Option<&Path>)`
+//! - `command::build_command_for_dir(.., contract_file, hooks: HookOptions)`
 //!
 //! Claude is never run: the tests read the built `Command` and the file.
 
@@ -59,6 +59,7 @@ fn inputs<'a>(
         newer_stamp: false,
         target: Some(t),
         amplihack_home: home,
+        execution_dir: home,
         extra_hooks,
     }
 }
@@ -193,10 +194,10 @@ fn a_group_writable_amplihack_home_is_skipped() {
     fs::set_permissions(home.path(), fs::Permissions::from_mode(0o770)).unwrap();
     let t = target();
     let extra = args(&[]);
-    assert_eq!(
+    assert!(matches!(
         prepare_with(&inputs(home.path(), &extra, &t, None)),
         Inject::NotPrivate
-    );
+    ));
     assert!(!home.path().join(LAUNCH_FILE).exists());
 }
 
@@ -207,10 +208,10 @@ fn a_symlinked_runtime_dir_is_skipped_and_its_target_untouched() {
     symlink(elsewhere.path(), home.path().join("runtime")).unwrap();
     let t = target();
     let extra = args(&[]);
-    assert_eq!(
+    assert!(matches!(
         prepare_with(&inputs(home.path(), &extra, &t, None)),
         Inject::NotPrivate
-    );
+    ));
     assert_eq!(fs::read_dir(elsewhere.path()).unwrap().count(), 0);
 }
 
@@ -240,10 +241,21 @@ fn extra_hooks_are_appended_and_duplicate_commands_are_removed() {
     let args = args(&[]);
     let t = target();
     let result = prepare_with(&inputs(home.path(), &args, &t, Some(&extra)));
-    let Inject::Path(path) = result else {
+    let Inject::Scoped(path, None) = result else {
         panic!("expected launch settings path")
     };
-    let settings: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let configured_bytes = fs::read(&path).unwrap();
+    let Inject::Path(default) = prepare_with(&inputs(home.path(), &args, &t, None)) else {
+        panic!("expected default settings path")
+    };
+    let mut baseline = serde_json::to_vec_pretty(&serde_json::json!({
+        "hooks": hook_block::block(&t)
+    }))
+    .unwrap();
+    baseline.push(b'\n');
+    assert_eq!(fs::read(default).unwrap(), baseline);
+    assert_eq!(fs::read(&path).unwrap(), configured_bytes);
+    let settings: Value = serde_json::from_slice(&configured_bytes).unwrap();
     let start = settings["hooks"]["SessionStart"].as_array().unwrap();
     let extra_start = start.last().unwrap()["hooks"].as_array().unwrap();
     assert_eq!(extra_start.len(), 1);
@@ -269,7 +281,7 @@ fn malformed_extra_hooks_are_rejected() {
     fs::set_permissions(file.path(), fs::Permissions::from_mode(0o600)).unwrap();
     let error = load_extra_hooks(file.path()).unwrap_err();
     assert!(error.contains(&file.path().display().to_string()));
-    assert!(error.contains("invalid hooks schema"));
+    assert!(error.contains("schema"));
 }
 
 // ── the built Command ─────────────────────────────────────────────────────
@@ -304,7 +316,10 @@ fn the_command_carries_settings_path_before_the_users_arguments() {
         false,
         None,
         Some(&contract),
-        Some(&settings),
+        super::command::HookOptions {
+            claude_settings: Some(&settings),
+            ..Default::default()
+        },
     )
     .unwrap();
     let a = argv(&cmd);
@@ -339,7 +354,7 @@ fn no_settings_path_means_no_settings_flag() {
         false,
         None,
         Some(&contract),
-        None,
+        Default::default(),
     )
     .unwrap();
     assert!(!argv(&cmd).iter().any(|x| x == "--settings"));

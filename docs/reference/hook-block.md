@@ -314,16 +314,39 @@ Claude Code runs a handler once when the same handler is defined in more than
 one settings file (<https://code.claude.com/docs/en/hooks>), so the session
 runs each amplihack hook once.
 
+### Extra command hooks for agent steps
+
+Set `AMPLIHACK_EXTRA_HOOKS_FILE` to the path of a Claude Code settings file
+before launching amplihack. Recipe and sub-recipe agent steps inherit the
+setting. Each launch reads the file's `hooks` object and reports any other
+top-level keys it ignored. The file must be readable, owned by the effective
+user, and free of group or other write permissions. A missing file, a
+symbolic link, or invalid settings stop the launch.
+
+Claude launches append the extra command hooks after amplihack's hooks for
+each event and keep the first occurrence of each exact command. A private
+settings file is created for that launch and removed when it ends. With the
+setting unset, launches continue to use the shared settings file.
+If the caller also passes `--settings`, the private file retains the caller's
+settings and adds the hooks. A file passed to `--settings` must meet the
+same ownership and write-permission requirements when the two are combined.
+
+Codex `exec` steps use per-launch configuration for events and command
+options supported by the selected Codex version. When any extra hooks cannot
+be configured, the run log identifies the step and the affected events once.
+The recipe guidance check continues to use amplihack's own hooks.
+
 ### When the file is not used
 
-Checked in this order. In each case the launch continues without
-`--settings`.
+Checked in this order. With extra command hooks configured, a Claude launch
+reports an error if it cannot create the merged settings file. Otherwise it
+continues without `--settings`.
 
 | Condition                                                                    | Behaviour                                        |
 | ---------------------------------------------------------------------------- | ------------------------------------------------ |
 | The agent binary is not `claude`                                             | Nothing written                                  |
 | The LiteLLM proxy or safe mode is in use (it passes `--setting-sources ""`)  | Nothing written                                  |
-| You passed `--settings <x>` or `--settings=<x>` before any literal `--`      | One notice line; the home-file repair still runs |
+| You passed `--settings <x>` or `--settings=<x>` and supplied no extra hooks | One notice line; the home-file repair still runs |
 | The running binary is older than the install stamp                           | Nothing written                                  |
 | No `amplihack-hooks` binary is found, or its path contains unsafe characters | Nothing written                                  |
 | The resolved runtime home is not owned by you, or is writable by group or others     | Nothing written                                  |
@@ -446,6 +469,7 @@ wins. There is no lock or retry.
 | `AMPLIHACK_HOME`                | Runtime home for `runtime/launch-hooks-settings.json` when set, non-empty and not a Git checkout; otherwise `$HOME/.amplihack`. The resolved path must be absolute                                                          |
 | `AMPLIHACK_SKIP_AUTO_INSTALL`   | Suppresses the launch repair                                                                                                                          |
 | `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Profile root for refresh, seeding, the rotator heal and doctor                                                                                        |
+| `AMPLIHACK_EXTRA_HOOKS_FILE`    | Optional Claude Code settings file containing extra command hooks for agent launches. Unset by default.                                                |
 
 ## Module interface
 

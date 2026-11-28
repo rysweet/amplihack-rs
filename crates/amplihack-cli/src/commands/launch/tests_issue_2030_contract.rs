@@ -12,7 +12,7 @@
 //! - `require_append_prompt_file_capability(binary: &Path, version: Option<&str>) -> Result<()>`
 //! - `ensure_contract_file(home: &Path) -> Result<PathBuf>`
 //! - `ensure_contract_file_as(home: &Path, euid: u32) -> Result<PathBuf>`
-//! - `command::build_command_for_dir(.., claude_config_dir, contract_file: Option<&Path>) -> Result<Command>`
+//! - `command::build_command_for_dir(.., claude_config_dir, contract_file: Option<&Path>, hooks: HookOptions) -> Result<Command>`
 
 use super::command::build_command_for_dir;
 use super::system_prompt_append::{
@@ -440,7 +440,7 @@ fn claude_launch_emits_file_flag_with_contract_path() {
                 false,
                 None,
                 Some(&contract),
-                None,
+                Default::default(),
             )
             .unwrap(),
         )
@@ -477,7 +477,7 @@ fn contract_path_missing_is_an_error_when_injecting() {
             false,
             None,
             None,
-            None,
+            Default::default(),
         )
         .expect_err("injecting without a contract path is a bug, not a silent skip")
     });
@@ -503,7 +503,7 @@ fn user_supplied_append_file_suppresses_injection() {
                 false,
                 None,
                 Some(&contract),
-                None,
+                Default::default(),
             )
             .unwrap(),
         )
@@ -538,7 +538,7 @@ fn copilot_and_codex_get_no_contract_and_need_no_path() {
                     false,
                     None,
                     None,
-                    None,
+                    Default::default(),
                 )
                 .unwrap_or_else(|e| panic!("{name}: {e:#}")),
             )

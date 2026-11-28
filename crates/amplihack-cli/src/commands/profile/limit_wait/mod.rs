@@ -144,6 +144,7 @@ use fingerprint::{Fingerprint, Source, Watch};
 use marks::Marks;
 use plan::{Bound, NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_login_change};
 pub(crate) use recipe_log::RECIPE_LOG_ENV;
+pub(crate) use recipe_log::append as append_recipe_log;
 pub(crate) use settings::WaitSettings;
 use std::path::PathBuf;
 use std::time::Duration;

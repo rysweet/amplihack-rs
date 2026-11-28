@@ -50,6 +50,7 @@ enum Item<'a> {
     /// `name`, its value (if the option takes one) and whether the value was
     /// attached to a short option (`-sread-only`).
     Opt {
+        end: usize,
         name: &'a str,
         value: Option<&'a str>,
         attached: bool,
@@ -70,6 +71,7 @@ fn items(args: &[String]) -> Vec<Item<'_>> {
             out.push(Item::Positional(i, arg));
         } else if let Some((name, value)) = arg.split_once('=').filter(|_| arg.starts_with("--")) {
             out.push(Item::Opt {
+                end: i + 1,
                 name,
                 value: Some(value),
                 attached: false,
@@ -83,6 +85,7 @@ fn items(args: &[String]) -> Vec<Item<'_>> {
             };
             i += usize::from(value.is_some());
             out.push(Item::Opt {
+                end: i + 1,
                 name: arg,
                 value,
                 attached: false,
@@ -92,6 +95,7 @@ fn items(args: &[String]) -> Vec<Item<'_>> {
             let value =
                 codex_options::takes_value(name).then(|| rest.strip_prefix('=').unwrap_or(rest));
             out.push(Item::Opt {
+                end: i + 1,
                 name,
                 value,
                 attached: value.is_some(),
@@ -99,6 +103,7 @@ fn items(args: &[String]) -> Vec<Item<'_>> {
         } else {
             // A multi-byte character after `-`: pass it through for Codex to reject.
             out.push(Item::Opt {
+                end: i + 1,
                 name: arg,
                 value: None,
                 attached: false,
@@ -107,6 +112,25 @@ fn items(args: &[String]) -> Vec<Item<'_>> {
         i += 1;
     }
     out
+}
+
+/// Explicit config values and their insertion points, in command-line order.
+pub(super) fn config_overrides(args: &[String]) -> impl Iterator<Item = (usize, &str)> {
+    items(args).into_iter().filter_map(|item| match item {
+        Item::Opt {
+            end,
+            name: "-c" | "--config",
+            value: Some(value),
+            ..
+        } => Some((end, value)),
+        _ => None,
+    })
+}
+
+pub(super) fn has_option(args: &[String], name: &str, value: Option<&str>) -> bool {
+    items(args).into_iter().any(|item| {
+        matches!(item, Item::Opt { name: option, value: argument, .. } if option == name && argument == value)
+    })
 }
 
 /// Index of the `exec`/`e` subcommand when it is the first positional argument.
@@ -131,6 +155,7 @@ fn caller_chose_sandbox(items: &[Item<'_>]) -> bool {
             name,
             value,
             attached,
+            ..
         } => {
             SANDBOX_FLAGS.contains(&name)
                 || (name == "--sandbox" && value.is_some())
@@ -157,7 +182,7 @@ pub(super) fn has_hook_trust_bypass(args: &[String]) -> bool {
 
 /// What the agent-step injection adds to one argv tail. The argv and the
 /// stderr notice are both derived from this, so they cannot disagree.
-struct Plan {
+pub(super) struct Plan {
     /// Index of the `exec`/`e` subcommand; flags are spliced in after it.
     index: usize,
     /// `--sandbox danger-full-access` is added.
@@ -167,7 +192,7 @@ struct Plan {
 }
 
 /// Decides what to inject, or `None` when the argv has no `exec` subcommand.
-fn plan(args: &[String]) -> Option<Plan> {
+pub(super) fn plan(args: &[String]) -> Option<Plan> {
     let index = exec_subcommand_index(args)?;
     let parsed = items(args);
     Some(Plan {
@@ -177,28 +202,52 @@ fn plan(args: &[String]) -> Option<Plan> {
     })
 }
 
+impl Plan {
+    /// Older releases don't accept the flag. Leave caller arguments alone.
+    pub(super) fn omit_hook_trust(&mut self) {
+        self.hook_trust = false;
+    }
+
+    pub(super) fn arguments(&self, args: &[String]) -> Vec<String> {
+        let mut injected: Vec<&str> = Vec::new();
+        if self.sandbox {
+            injected.extend(SANDBOX);
+        }
+        if self.hook_trust {
+            injected.push(HOOK_TRUST);
+        }
+        let mut out = args.to_vec();
+        out.splice(
+            self.index + 1..self.index + 1,
+            injected.into_iter().map(String::from),
+        );
+        out
+    }
+
+    pub(super) fn notice(&self) -> Option<String> {
+        if !self.sandbox {
+            return None;
+        }
+        let sandbox = SANDBOX.join(" ");
+        let mut flags = vec![sandbox.as_str()];
+        if self.hook_trust {
+            flags.push(HOOK_TRUST);
+        }
+        Some(format!(
+            "amplihack: codex exec: added {} (#1985)",
+            flags.join(", ")
+        ))
+    }
+}
+
 /// Returns the Codex argv tail with the agent-step flags spliced in directly
 /// after `exec`/`e` (before `resume`, which rejects `--sandbox` in codex-cli
 /// 0.166.0). Argv without an `exec` subcommand is returned unchanged. Adds
 /// `--sandbox danger-full-access` only when the caller chose no sandbox, and
 /// never adds the approvals bypass or `--yolo`.
+#[cfg(test)]
 pub(super) fn codex_agent_step_args(args: &[String]) -> Vec<String> {
-    let Some(plan) = plan(args) else {
-        return args.to_vec();
-    };
-    let mut injected: Vec<&str> = Vec::new();
-    if plan.sandbox {
-        injected.extend(SANDBOX);
-    }
-    if plan.hook_trust {
-        injected.push(HOOK_TRUST);
-    }
-    let mut out = args.to_vec();
-    out.splice(
-        plan.index + 1..plan.index + 1,
-        injected.into_iter().map(String::from),
-    );
-    out
+    plan(args).map_or_else(|| args.to_vec(), |plan| plan.arguments(args))
 }
 
 /// Issue #2010: the stderr line naming what [`codex_agent_step_args`] adds,
@@ -207,15 +256,7 @@ pub(super) fn codex_agent_step_args(args: &[String]) -> Vec<String> {
 ///
 /// Returns `None` when the caller chose a sandbox; the hook-trust-only notice
 /// remains tracked separately by #2048. Only fixed constants reach stderr.
+#[cfg(test)]
 pub(super) fn codex_agent_step_notice(args: &[String]) -> Option<String> {
-    let plan = plan(args).filter(|plan| plan.sandbox)?;
-    let sandbox = SANDBOX.join(" ");
-    let mut flags = vec![sandbox.as_str()];
-    if plan.hook_trust {
-        flags.push(HOOK_TRUST);
-    }
-    Some(format!(
-        "amplihack: codex exec: added {} (#1985)",
-        flags.join(", ")
-    ))
+    plan(args)?.notice()
 }

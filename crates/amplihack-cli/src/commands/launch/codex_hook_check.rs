@@ -77,6 +77,18 @@ fn hooks_switched_off(config: &str) -> bool {
         == Some(false)
 }
 
+pub(super) fn home_disables_hooks() -> bool {
+    codex_home()
+        .and_then(|home| read_small(&home.join("config.toml")))
+        .is_some_and(|config| hooks_switched_off(&config))
+}
+
+pub(super) fn home_hooks() -> Option<serde_json::Value> {
+    let content = read_small(&codex_home()?.join("hooks.json"))?;
+    let mut settings: serde_json::Value = serde_json::from_str(&content).ok()?;
+    settings.as_object_mut()?.remove("hooks")
+}
+
 fn has_handler(value: &serde_json::Value, event: &str, subcommands: &[&str]) -> bool {
     let Some(groups) = value
         .get("hooks")

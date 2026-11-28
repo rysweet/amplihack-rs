@@ -42,7 +42,7 @@ pub(super) fn path_from(raw: Option<OsString>) -> Option<PathBuf> {
 
 /// Appends `line` to the recipe log named in the environment, if any. Every
 /// failure is silent.
-pub(super) fn append(line: &str) {
+pub(crate) fn append(line: &str) {
     if let Some(path) = path_from(std::env::var_os(RECIPE_LOG_ENV)) {
         let _ = append_to(&path, line);
     }
