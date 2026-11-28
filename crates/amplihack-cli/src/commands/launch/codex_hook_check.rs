@@ -8,8 +8,14 @@
 //! hooks off. A local-model launch uses a Codex home of amplihack's own
 //! with only the PreToolUse handler, so it has none.
 //!
-//! The answer is only what the launch records: a hook that does fire still
-//! delivers.
+//! This is a judgement read from files, not proof that a hook runs: a
+//! command that names `amplihack-hooks` or a `bin/hook` wrapper may still
+//! fail to start, and a Codex build may not fire the event. A wrong "yes"
+//! does not silence the sender. The launch records the step as
+//! `guidance_step_hooked`, and until one of its hooks reaches `amplihack`
+//! and records `guidance_step_hook_seen`, `recipe guide` names the running
+//! step as not yet confirmed (`crate::run_guidance::step`). A wrong "no"
+//! records `guidance_step_unhooked`; a hook that does fire still delivers.
 
 use std::path::{Path, PathBuf};
 

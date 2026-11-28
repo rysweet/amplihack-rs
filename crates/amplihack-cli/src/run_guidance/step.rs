@@ -17,13 +17,23 @@
 //! The lock blocks until it is free; there is no timeout, poll or retry.
 //!
 //! A launch form with no such hook writes `guidance_step_unhooked` at
-//! launch ([`record_unhooked`]). `recipe guide` reads it after an append and
-//! names each such step that is still running ([`step_alive`]), so the
+//! launch ([`record_step_start`]). `recipe guide` reads it after an append
+//! and names each such step that is still running ([`step_alive`]), so the
 //! sender knows at once that the step will not see the entry.
+//!
+//! The launch's judgement that a step has a hook is not proof that the hook
+//! fires: the hooks binary may be missing, hooks may be off in a layer the
+//! launch does not read, or the harness may not fire that event. So a
+//! hooked launch writes `guidance_step_hooked`, and the first hook run that
+//! reaches `amplihack recipe guidance deliver` writes
+//! `guidance_step_hook_seen` ([`record_hook_seen`]). `recipe guide` names
+//! each hooked step that is still running and has no such record as not yet
+//! confirmed, so a hook that never fires is reported from evidence, not
+//! assumed to work. There is no timer.
 
 use super::env::{DirCheck, listed_dirs};
 use super::fs_safety::{DirState, dir_state};
-use super::log_state::{Unhooked, read_log_state};
+use super::log_state::{StepStart, read_log_state};
 use super::{
     Entry, GUIDANCE_DIRS_ENV, GUIDANCE_LOG, GuidanceForLaunch, GuideError, StepLabel, open_log,
     read_entries, valid_step_run_id, warn,
@@ -178,18 +188,41 @@ pub(crate) fn deliver(
     Ok(guidance.block().map(str::to_string))
 }
 
-/// Records, in the log of every listed folder whose parent exists, that
-/// step `step_id` runs in a launch form with no hook that can give it new
-/// guidance. The record names this process and its start time, which is
-/// how [`step_alive`] tells that the step is still running. A failed write
-/// is a warning.
-pub(crate) fn record_unhooked(step_id: &str, label: &StepLabel) {
+/// The `guidance.log` paths beside every listed guidance folder whose
+/// parent exists and passes the trust rule, the folder itself not being
+/// untrusted. The folder need not exist yet.
+fn listed_logs() -> Vec<PathBuf> {
     let Some(value) = std::env::var_os(GUIDANCE_DIRS_ENV).filter(|v| !v.is_empty()) else {
-        return;
+        return Vec::new();
     };
+    let mut logs = Vec::new();
+    for (dir, check) in listed_dirs(&value) {
+        if matches!(check, DirCheck::Untrusted(_)) {
+            continue;
+        }
+        let Some(parent) = dir.parent() else { continue };
+        if matches!(dir_state(parent), Ok(DirState::Trusted)) {
+            logs.push(dir);
+        }
+    }
+    logs
+}
+
+/// Records, in the log beside every listed folder ([`listed_logs`]), that
+/// step `step_id` has started: `guidance_step_hooked` when the launch judged
+/// that it has a hook that gives a running step new guidance,
+/// `guidance_step_unhooked` when not. The record names this process and its
+/// start time, which is how [`step_alive`] tells that the step is still
+/// running. A failed write is a warning.
+pub(crate) fn record_step_start(step_id: &str, label: &StepLabel, hooked: bool) {
     let pid = std::process::id();
+    let event = if hooked {
+        "guidance_step_hooked"
+    } else {
+        "guidance_step_unhooked"
+    };
     let mut record = serde_json::json!({
-        "event": "guidance_step_unhooked",
+        "event": event,
         "ts": super::now_text(),
         "step_id": step_id,
         "step_run_id": valid_step_run_id(&label.step_run_id),
@@ -203,20 +236,56 @@ pub(crate) fn record_unhooked(step_id: &str, label: &StepLabel) {
     if let Some(start) = process_start(pid) {
         record["start"] = start.into();
     }
-    for (dir, check) in listed_dirs(&value) {
-        if matches!(check, DirCheck::Untrusted(_)) {
-            continue;
-        }
+    for dir in listed_logs() {
         let Some(parent) = dir.parent() else { continue };
-        if !matches!(dir_state(parent), Ok(DirState::Trusted)) {
-            continue;
-        }
         if let Err(e) = super::log_event(&parent.join(GUIDANCE_LOG), &record) {
-            warn(&format!(
-                "amplihack: warning: this step cannot take guidance while it runs, and that was not logged: {e}"
-            ));
+            let what = if hooked {
+                "this step's start was not logged, so a hook that never fires cannot be reported"
+            } else {
+                "this step cannot take guidance while it runs, and that was not logged"
+            };
+            warn(&format!("amplihack: warning: {what}: {e}"));
         }
     }
+}
+
+/// Records, once per step, that a hook of step `step_id` has run and
+/// reached `amplihack`: a `guidance_step_hook_seen` record in the log
+/// beside every listed folder ([`listed_logs`]) that does not hold one for
+/// it yet, written under the log's lock. It confirms the launch's judgement
+/// that the step has a hook.
+///
+/// # Errors
+///
+/// [`GuideError::Usage`] for an invalid step id; an error when a log cannot
+/// be locked, read or written.
+pub(crate) fn record_hook_seen(step_id: &str, step_run_id: &str) -> Result<(), GuideError> {
+    if !valid_step_id(step_id) {
+        return Err(GuideError::Usage(format!(
+            "{STEP_ID_ENV} is not a valid step id"
+        )));
+    }
+    let mut dirs = listed_logs();
+    dirs.sort();
+    for dir in dirs {
+        let mut lock = LockedLog::open(&dir)?;
+        let state = read_log_state(&dir);
+        if let Some(reason) = state.log_error {
+            return Err(GuideError::Unsafe(format!(
+                "cannot record that this step's hook ran: {reason}"
+            )));
+        }
+        if state.hook_seen.contains(step_id) {
+            continue;
+        }
+        lock.append(&serde_json::json!({
+            "event": "guidance_step_hook_seen",
+            "ts": super::now_text(),
+            "step_id": step_id,
+            "step_run_id": valid_step_run_id(step_run_id),
+        }))?;
+    }
+    Ok(())
 }
 
 /// The start time of process `pid`, in clock ticks since boot, from
@@ -265,7 +334,7 @@ fn pid_exists(pid: u32) -> bool {
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// Whether the step an unhooked record names is still running.
-pub(crate) fn step_alive(step: &Unhooked) -> bool {
+/// Whether the step a step start record names is still running.
+pub(crate) fn step_alive(step: &StepStart) -> bool {
     judge_alive(step.start, process_start(step.pid), pid_exists(step.pid))
 }

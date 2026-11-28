@@ -108,7 +108,9 @@ use crate::run_guidance::pr_key::{
 // and the launcher's warnings. Paths reach it from `check_dir`, the work
 // root validator and `run.json`, which build their own text, so it is
 // applied once, to the whole line, just before printing.
-use crate::run_guidance::log_state::{read_log_state, render_drop_line, render_unhooked_line};
+use crate::run_guidance::log_state::{
+    read_log_state, render_drop_line, render_unconfirmed_line, render_unhooked_line,
+};
 use crate::run_guidance::sanitize::{escaped, needs_escape, sanitize_line};
 use crate::run_guidance::step::step_alive;
 use crate::run_guidance::{
@@ -267,16 +269,33 @@ fn guide(
     // it read, so a line is printed once.
     let mut shown: Vec<String> = Vec::new();
     // Issue #3435: running steps that have no hook to take the entry while
-    // they run, named once each.
-    let mut unhooked: Vec<String> = Vec::new();
-    for (folder, _) in &folders {
-        let state = read_log_state(folder);
+    // they run, and running steps judged hooked whose hooks have not run
+    // since they started, named once each. A hook seen in any folder's log
+    // confirms the step.
+    let states: Vec<_> = folders.iter().map(|(f, _)| read_log_state(f)).collect();
+    let seen: std::collections::HashSet<&str> = states
+        .iter()
+        .flat_map(|s| s.hook_seen.iter().map(String::as_str))
+        .collect();
+    let mut named: Vec<String> = Vec::new();
+    for state in &states {
         for step in &state.unhooked {
-            if !unhooked.contains(&step.step_id) && step_alive(step) {
+            if !named.contains(&step.step_id) && step_alive(step) {
                 println!("{}", render_unhooked_line(step));
-                unhooked.push(step.step_id.clone());
+                named.push(step.step_id.clone());
             }
         }
+        for step in &state.hooked {
+            if !named.contains(&step.step_id)
+                && !seen.contains(step.step_id.as_str())
+                && step_alive(step)
+            {
+                println!("{}", render_unconfirmed_line(step));
+                named.push(step.step_id.clone());
+            }
+        }
+    }
+    for ((folder, _), state) in folders.iter().zip(states) {
         if let Some(reason) = &state.log_error {
             // An unreadable log says nothing about drops; say that rather
             // than print nothing, which would read as "none".

@@ -22,7 +22,14 @@
 //! - `guidance_step_unhooked`, written when an agent step starts in a launch
 //!   form that has no hook to take guidance while it runs. It names the step
 //!   and the launcher's process, so that `recipe guide` can tell the sender
-//!   while that step is still running ([`Unhooked`]).
+//!   while that step is still running ([`StepStart`]);
+//! - `guidance_step_hooked`, written when an agent step starts in a launch
+//!   form judged to have such a hook, with the same fields
+//!   ([`LogState::hooked`]);
+//! - `guidance_step_hook_seen`, written by the step's first hook run that
+//!   reached `amplihack recipe guidance deliver`. Until it is there the
+//!   launch's judgement is unconfirmed, and `recipe guide` says so for a
+//!   step that is still running ([`LogState::hook_seen`]).
 //!
 //! The reader never fails: a missing log is an empty state, a line that does
 //! not parse or names an event it does not know is skipped, and a log that
@@ -118,10 +125,10 @@ pub(crate) struct Drop {
     pub detail: String,
 }
 
-/// One `guidance_step_unhooked` record, read back: an agent step that
-/// started in a launch form with no hook to take guidance while it runs.
+/// One `guidance_step_unhooked` or `guidance_step_hooked` record, read
+/// back: an agent step that started, and the launcher that runs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Unhooked {
+pub(crate) struct StepStart {
     pub ts: String,
     pub step_id: String,
     pub step_run_id: String,
@@ -147,7 +154,11 @@ pub(crate) struct LogState {
     /// been given (issue #3435).
     pub delivered_by_step: HashMap<String, HashSet<String>>,
     /// Every `guidance_step_unhooked` record, oldest first.
-    pub unhooked: Vec<Unhooked>,
+    pub unhooked: Vec<StepStart>,
+    /// Every `guidance_step_hooked` record, oldest first.
+    pub hooked: Vec<StepStart>,
+    /// The step ids named by a `guidance_step_hook_seen` record.
+    pub hook_seen: HashSet<String>,
     /// Why the log could not be read, when it exists but was refused or
     /// failed. `read` and `drops_since_injection` are then empty because
     /// nothing is known, not because nothing happened, and readers must say
@@ -161,6 +172,32 @@ fn text(value: &serde_json::Value, key: &str) -> String {
         .and_then(serde_json::Value::as_str)
         .map(sanitize_line)
         .unwrap_or_default()
+}
+
+/// A step start record, or `None` when it names no step id or pid.
+fn step_start(value: &serde_json::Value) -> Option<StepStart> {
+    let pid = value
+        .get("pid")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|p| u32::try_from(p).ok())?;
+    let step_id = text(value, "step_id");
+    if step_id.is_empty() {
+        return None;
+    }
+    Some(StepStart {
+        ts: text(value, "ts"),
+        step_id,
+        step_run_id: text(value, "step_run_id"),
+        tool: text(value, "tool"),
+        launch_form: text(value, "launch_form"),
+        agent: value
+            .get("agent")
+            .and_then(serde_json::Value::as_str)
+            .filter(|a| !a.is_empty())
+            .map(sanitize_line),
+        pid,
+        start: value.get("start").and_then(serde_json::Value::as_u64),
+    })
 }
 
 /// The last [`MAX_LOG_BYTES`] of `log`, starting at a whole line, through one
@@ -263,27 +300,19 @@ pub(crate) fn read_log_state(guidance_dir: &Path) -> LogState {
                     state.read.extend(names);
                 }
             }
-            Some("guidance_step_unhooked") => {
-                let pid = value
-                    .get("pid")
-                    .and_then(serde_json::Value::as_u64)
-                    .and_then(|p| u32::try_from(p).ok());
+            Some(event @ ("guidance_step_unhooked" | "guidance_step_hooked")) => {
+                if let Some(step) = step_start(&value) {
+                    if event == "guidance_step_hooked" {
+                        state.hooked.push(step);
+                    } else {
+                        state.unhooked.push(step);
+                    }
+                }
+            }
+            Some("guidance_step_hook_seen") => {
                 let step_id = text(&value, "step_id");
-                if let Some(pid) = pid.filter(|_| !step_id.is_empty()) {
-                    state.unhooked.push(Unhooked {
-                        ts: text(&value, "ts"),
-                        step_id,
-                        step_run_id: text(&value, "step_run_id"),
-                        tool: text(&value, "tool"),
-                        launch_form: text(&value, "launch_form"),
-                        agent: value
-                            .get("agent")
-                            .and_then(serde_json::Value::as_str)
-                            .filter(|a| !a.is_empty())
-                            .map(sanitize_line),
-                        pid,
-                        start: value.get("start").and_then(serde_json::Value::as_u64),
-                    });
+                if !step_id.is_empty() {
+                    state.hook_seen.insert(step_id);
                 }
             }
             Some("guidance_dropped") => state.drops_since_injection.push(Drop {
@@ -322,7 +351,7 @@ pub(crate) fn render_drop_line(drop: &Drop) -> String {
 /// The one line that tells a sender a running step will not see the entry
 /// until a later step starts:
 /// `not reachable while running: step ID, TOOL (LAUNCH_FORM)[ agent A] in run RUN: DETAIL`.
-pub(crate) fn render_unhooked_line(step: &Unhooked) -> String {
+pub(crate) fn render_unhooked_line(step: &StepStart) -> String {
     let agent = step
         .agent
         .as_deref()
@@ -330,6 +359,22 @@ pub(crate) fn render_unhooked_line(step: &Unhooked) -> String {
         .unwrap_or_default();
     sanitize_line(&format!(
         "not reachable while running: step {}, {} ({}){agent} in run {}: this launch form has no hook that gives a running step new guidance; the entry stays for later steps",
+        step.step_id, step.tool, step.launch_form, step.step_run_id
+    ))
+}
+
+/// The one line that tells a sender that a running step was judged at
+/// launch to have a hook, and that no hook of it has run since:
+/// `not yet confirmed: step ID, TOOL (LAUNCH_FORM)[ agent A] in run RUN: DETAIL`.
+/// Until a hook runs, nothing shows that the step will see the entry.
+pub(crate) fn render_unconfirmed_line(step: &StepStart) -> String {
+    let agent = step
+        .agent
+        .as_deref()
+        .map(|a| format!(" agent {a}"))
+        .unwrap_or_default();
+    sanitize_line(&format!(
+        "not yet confirmed: step {}, {} ({}){agent} in run {}: no hook of this step has run since it started, so nothing yet shows that it will be given the entry; the entry stays for later steps",
         step.step_id, step.tool, step.launch_form, step.step_run_id
     ))
 }

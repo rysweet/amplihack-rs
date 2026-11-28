@@ -77,9 +77,15 @@ pub fn run_guidance(command: GuidanceCommands) -> Result<()> {
 /// Issue #3435: `recipe guidance deliver`, run by the PostToolUse and
 /// UserPromptSubmit hooks of an agent step inside a recipe run. Prints the
 /// block of entries the step has not been given yet, or nothing, and records
-/// them for the step. Outside a recipe run it prints nothing. When the
-/// delivery fails it records a `hook_delivery_failed` drop where it can, so
-/// `recipe guide` tells the sender, and exits 1; the hook goes on either way.
+/// them for the step. Outside a recipe run it prints nothing. Its first run
+/// for a step records that the step's hook runs ([`record_hook_seen`]).
+/// When it fails it records a `hook_delivery_failed` drop where it can, so
+/// `recipe guide` tells the sender, and exits 1, whatever the error; the
+/// hooks binary records the drop itself on any other failure (it could not
+/// start this command, or it ended another way). The hook goes on either
+/// way.
+///
+/// [`record_hook_seen`]: crate::run_guidance::step::record_hook_seen
 fn deliver() -> Result<(), GuideError> {
     use crate::run_guidance::step::{STEP_ID_ENV, deliver};
     let Some(step_id) = std::env::var(STEP_ID_ENV).ok().filter(|v| !v.is_empty()) else {
@@ -90,7 +96,9 @@ fn deliver() -> Result<(), GuideError> {
     };
     let dirs = crate::run_guidance::env::dirs_from_env_value(&value);
     let run_id = std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_default();
-    match deliver(&step_id, &run_id, &dirs) {
+    let delivered = crate::run_guidance::step::record_hook_seen(&step_id, &run_id)
+        .and_then(|()| deliver(&step_id, &run_id, &dirs));
+    match delivered {
         Ok(Some(block)) => {
             let mut out = std::io::stdout().lock();
             writeln!(out, "{block}")
@@ -107,7 +115,12 @@ fn deliver() -> Result<(), GuideError> {
             };
             crate::run_guidance::GuidanceForLaunch::from_dirs(dirs)
                 .record_drop(&label, crate::run_guidance::DropReason::HookDeliveryFailed);
-            Err(error)
+            // Exit 1 says "recorded here" to the hooks binary, which records
+            // any other failure itself.
+            Err(match error {
+                GuideError::Usage(text) => GuideError::Unsafe(text),
+                other => other,
+            })
         }
     }
 }

@@ -27,13 +27,20 @@ use std::process::{Command, Stdio};
 
 const MARKER: &str = "MARKER-3435-check-the-release-notes-before-you-push";
 
-/// Runs the PostToolUse handler named in `$1` (a settings or hooks file)
-/// twice after the release, saving each output in `hook.1` and `hook.2`.
+/// Runs the PostToolUse handler named in `$HOOKS_FILE` (a settings or
+/// hooks file) once before blocking, as a step's first tool call, saving its
+/// output in `hook.0`, then twice after the release, in `hook.1` and
+/// `hook.2`. With `HOOKS_NEVER_FIRE` set it runs none, as a harness whose
+/// hook does not fire.
 const RUN_HOOKS: &str = r#"
 printf '%s' "$AMPLIHACK_GUIDANCE_STEP_ID" > "$RECORD_DIR/stepid"
 printf '%s' "$HOOKS_FILE" > "$RECORD_DIR/hooksfile"
-read _ < "$RELEASE_FIFO"
 cmd=$(grep -o '"command": *".* post-tool-use"' "$HOOKS_FILE" | head -n 1 | sed 's/^"command": *"//; s/"$//; s/\\"/"/g')
+[ -n "$HOOKS_NEVER_FIRE" ] && cmd=
+if [ -n "$cmd" ]; then
+  printf '%s' "$HOOK_PAYLOAD" | sh -c "$cmd" > "$RECORD_DIR/hook.0"
+fi
+read _ < "$RELEASE_FIFO"
 if [ -n "$cmd" ]; then
   for n in 1 2; do
     printf '%s' "$HOOK_PAYLOAD" | sh -c "$cmd" > "$RECORD_DIR/hook.$n"
@@ -160,8 +167,10 @@ fn assert_delivered_once(step: &mut Step) {
     let entry = Step::entry_name(&o);
     let id = step.step_id();
     assert!(!id.is_empty());
-    // A step with a hook is not reported as unreachable.
+    // A step whose hook has run is neither reported as unreachable nor as
+    // unconfirmed.
     assert!(!stdout(&o).contains(&id), "{}", show(&o));
+    assert!(step.context(0).is_empty(), "{}", step.context(0));
 
     let run = step.live.finish();
     assert!(run.status.success(), "{}", fifo_release::describe(&run));
@@ -174,6 +183,13 @@ fn assert_delivered_once(step: &mut Step) {
     assert_eq!(injected[0]["entry_names"], serde_json::json!([entry]));
     assert!(step.records("guidance_dropped").is_empty());
     assert!(step.records("guidance_step_unhooked").is_empty());
+    let hooked = step.records("guidance_step_hooked");
+    assert_eq!(hooked.len(), 1, "{hooked:?}");
+    assert_eq!(hooked[0]["step_id"], id.as_str());
+    // Recorded once, by the first hook run, however many runs follow.
+    let seen = step.records("guidance_step_hook_seen");
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0]["step_id"], id.as_str());
     // The guidance text is in the agent's context only.
     let raw = fs::read_to_string(step.guidance.parent().unwrap().join("guidance.log")).unwrap();
     assert!(!raw.contains(MARKER));
@@ -305,6 +321,86 @@ fn a_step_without_a_hook_is_named_to_the_sender_while_it_runs() {
     assert!(step.records("guidance_injected").is_empty());
 }
 
+#[test]
+fn a_hooked_step_whose_hook_never_fires_is_named_to_the_sender_while_it_runs() {
+    // The launch finds amplihack's hooks settings file and judges the step
+    // hooked; the stand-in harness never runs the hook.
+    let mut step = start_with(
+        GuideFixture::new(),
+        "claude",
+        &standin_claude(),
+        &["--add-dir", "."],
+        None,
+        &[("HOOKS_NEVER_FIRE", "1")],
+    );
+    let id = step.step_id();
+    assert!(!id.is_empty());
+    assert_eq!(step.records("guidance_step_hooked").len(), 1);
+    assert!(step.records("guidance_step_unhooked").is_empty());
+
+    let o = step.guide();
+    let named = stdout(&o).lines().filter(|l| l.contains(&id)).count();
+    assert_eq!(named, 1, "{}", show(&o));
+
+    let run = step.live.finish();
+    assert!(run.status.success(), "{}", fifo_release::describe(&run));
+    assert!(step.records("guidance_step_hook_seen").is_empty());
+    assert!(step.records("guidance_injected").is_empty());
+    // Once the step has ended it is no longer named.
+    let o = step.guide();
+    assert!(!stdout(&o).contains(&id), "{}", show(&o));
+}
+
+#[test]
+fn a_hook_that_cannot_run_deliver_records_the_failure_for_the_sender() {
+    // An `amplihack` that fails `recipe guidance deliver` with a status
+    // other than its own recorded-failure status (as a crash or an older
+    // release without the command would), and is the real one otherwise.
+    let f = GuideFixture::new();
+    let broken = f.root.join("broken-amplihack");
+    executable(
+        &broken,
+        &format!(
+            "#!/bin/sh
+[ \"$1 $2 $3\" = 'recipe guidance deliver' ] && exit 3
+exec '{}' \"$@\"
+",
+            amplihack_bin().display()
+        ),
+    );
+    let mut step = start_with(
+        f,
+        "claude",
+        &standin_claude(),
+        &["--add-dir", "."],
+        None,
+        &[("AMPLIHACK_AMPLIHACK_BINARY_PATH", broken.to_str().unwrap())],
+    );
+    let id = step.step_id();
+    // The first hook run, before the append, could not deliver.
+    let failed = step.records("guidance_dropped");
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["reason"], "hook_delivery_failed");
+
+    let o = step.guide();
+    let out = stdout(&o);
+    assert!(out.contains("hook_delivery_failed"), "{}", show(&o));
+    // Nothing shows that the hook reaches `amplihack`, so it is unconfirmed.
+    assert_eq!(
+        out.lines().filter(|l| l.contains(&id)).count(),
+        1,
+        "{}",
+        show(&o)
+    );
+
+    let run = step.live.finish();
+    assert!(run.status.success(), "{}", fifo_release::describe(&run));
+    assert!(!step.context(1).contains(MARKER), "{}", step.context(1));
+    assert!(step.records("guidance_injected").is_empty());
+    assert!(step.records("guidance_step_hook_seen").is_empty());
+    assert_eq!(step.records("guidance_dropped").len(), 3);
+}
+
 /// [`start`] with a fixture the caller prepared.
 fn start_in(
     f: GuideFixture,
@@ -312,6 +408,18 @@ fn start_in(
     standin: &str,
     tail: &[&str],
     stdin: Option<&[u8]>,
+) -> Step {
+    start_with(f, tool, standin, tail, stdin, &[])
+}
+
+/// [`start_in`] with `env` added to the launch's environment.
+fn start_with(
+    f: GuideFixture,
+    tool: &str,
+    standin: &str,
+    tail: &[&str],
+    stdin: Option<&[u8]>,
+    env: &[(&str, &str)],
 ) -> Step {
     let run = f.make_run("r-3435", "c-3435");
     let guidance = run.join("guidance");
@@ -337,6 +445,9 @@ fn start_in(
         .env("CODEX_BINARY_PATH", &agent)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (name, value) in env {
+        c.env(name, value);
+    }
     match stdin {
         Some(bytes) => {
             let input = f.root.join("stdin");

@@ -20,11 +20,21 @@ Unreleased changes appear at the top under `[Unreleased]`.
 - `recipe guide` now names each running step that has no such hook (Copilot,
   or a launch without amplihack's hooks), with a line that starts
   `not reachable while running:`. The entry stays for later steps.
+- A step judged at launch to have the hooks is recorded as
+  `guidance_step_hooked`, and its first hook run that reaches `amplihack`
+  records `guidance_step_hook_seen`. Until then, `recipe guide` names the
+  running step with a line that starts `not yet confirmed:`, so a hook that
+  never fires is reported rather than assumed to work.
+- When the hooks binary cannot find or start `amplihack recipe guidance
+  deliver`, or the command ends without recording its own failure, the hooks
+  binary records the `hook_delivery_failed` drop itself, so `recipe guide`
+  reports it.
 - Command arguments and exit codes are unchanged. A hidden internal
   subcommand, `amplihack recipe guidance deliver`, is added for the hooks.
   Agent launches inside a recipe run export `AMPLIHACK_GUIDANCE_STEP_ID`.
   `guidance.log` gains an optional `step_id` field on `guidance_injected`,
-  a new `guidance_step_unhooked` event and a new `hook_delivery_failed` drop
+  new `guidance_step_unhooked`, `guidance_step_hooked` and
+  `guidance_step_hook_seen` events and a new `hook_delivery_failed` drop
   reason. A launch now writes its `guidance_injected` record for a block on
   the agent's stdin as soon as the block is written, not after the agent
   exits.

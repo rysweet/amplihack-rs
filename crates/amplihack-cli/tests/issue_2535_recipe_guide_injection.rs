@@ -157,11 +157,21 @@ fn a_entry_appended_mid_run_reaches_the_next_claude_step_only() {
     // Evidence: one append and one injection, no text.
     let log = f.log(&guidance);
     let events: Vec<&str> = log.iter().map(|l| l["event"].as_str().unwrap()).collect();
-    assert_eq!(events, ["guidance_appended", "guidance_injected"]);
-    assert_eq!(log[1]["entries"], 1);
-    assert_eq!(log[1]["bytes"], MARKER.len());
+    // Issue #3435: each step is recorded as it starts (it has amplihack's
+    // hooks), so `recipe guide` can name it if its hooks never run.
     assert_eq!(
-        log[1]["step_run_id"].as_str().unwrap(),
+        events,
+        [
+            "guidance_step_hooked",
+            "guidance_appended",
+            "guidance_step_hooked",
+            "guidance_injected"
+        ]
+    );
+    assert_eq!(log[3]["entries"], 1);
+    assert_eq!(log[3]["bytes"], MARKER.len());
+    assert_eq!(
+        log[3]["step_run_id"].as_str().unwrap(),
         f.record("corr_id.run").trim()
     );
     let raw = fs::read_to_string(run.join("guidance.log")).unwrap();
@@ -353,7 +363,15 @@ fn b_per_pr_entry_survives_a_relaunch_and_the_run_folders_differ() {
         .iter()
         .map(|l| l["event"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(events, ["guidance_appended", "guidance_injected"]);
+    // Issue #3435: the relaunched step is recorded as it starts.
+    assert_eq!(
+        events,
+        [
+            "guidance_appended",
+            "guidance_step_hooked",
+            "guidance_injected"
+        ]
+    );
 }
 
 #[test]
@@ -406,7 +424,13 @@ fn u4_without_the_variable_or_entries_the_prompt_is_unchanged() {
     let o = f.launch_claude("empty", "exact prompt", Some(guidance.as_os_str()));
     assert!(o.status.success(), "{}", show(&o));
     assert_eq!(f.record("prompt.empty"), "exact prompt");
-    assert!(f.log(&guidance).is_empty(), "no injection is logged");
+    // Issue #3435: the step is recorded as it starts, and nothing else is.
+    let events: Vec<String> = f
+        .log(&guidance)
+        .iter()
+        .map(|l| l["event"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(events, ["guidance_step_hooked"], "no injection is logged");
 }
 
 #[test]

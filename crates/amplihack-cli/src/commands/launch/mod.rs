@@ -709,17 +709,17 @@ fn run_launch_core(
         };
         // Issue #3435: a step with a hook is given new guidance at its next
         // prompt or tool call; one without is recorded, so `recipe guide`
-        // can tell the sender while the step runs.
+        // can tell the sender while the step runs. A hooked step is recorded
+        // too: the judgement is not proof, and until one of its hooks runs
+        // `recipe guide` names it as not yet confirmed.
         let step_hooked = step_has_hook(
             tool,
             hook_settings.is_some(),
             matches!(agent_binary_for_tool(tool), Some(AgentBinary::Codex))
                 && codex_hook_check::codex_step_has_hook(local_model.is_some(), &extra_args),
         );
-        if let Some(step_id) = guidance_step_id.as_deref()
-            && !step_hooked
-        {
-            crate::run_guidance::step::record_unhooked(step_id, &guidance_label);
+        if let Some(step_id) = guidance_step_id.as_deref() {
+            crate::run_guidance::step::record_step_start(step_id, &guidance_label, step_hooked);
         }
         if let GuidanceRoute::Undeliverable(reason) = settle_route(guidance_route, step_hooked) {
             report_guidance_drop(&guidance, &guidance_label, reason);
