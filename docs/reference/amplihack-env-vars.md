@@ -89,6 +89,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE` | user preference |  | Allows installing an older recipe runner. |
 | `AMPLIHACK_GIT_1278_CHILD` | test-only |  | Re-exec switch for the #1278 git test. |
 | `AMPLIHACK_GIT_1278_PLAIN` | test-only |  | Re-exec switch for the #1278 git test. |
+| `AMPLIHACK_GUIDANCE_STEP_ID` | internal |  | Id of the running agent step, set by the agent launcher on its child inside a recipe run (`AMPLIHACK_RUN_GUIDANCE_DIRS` set) and removed outside one. A new id for every launch; an inherited value is replaced. The step's PostToolUse and UserPromptSubmit hooks use it to give the step guidance appended while it runs, once. See [Guidance for a running step](recipe-cli-reference.md#guidance-for-a-running-step). |
 | `AMPLIHACK_GOVERNOR` | user preference |  | `on`, `1` or `true` turns the [capacity governor](./capacity-governor.md) on (it ships off); `off`, `0` or `false` turns it off. Read by the governor itself; outranks `governor.enabled`. |
 | `AMPLIHACK_GOVERNOR_CLASS` | user preference |  | Default admission class for the capacity governor. |
 | `AMPLIHACK_GOVERNOR_MANIFEST` | user preference |  | Usage manifest that `governor status` reads for `token_share`. |

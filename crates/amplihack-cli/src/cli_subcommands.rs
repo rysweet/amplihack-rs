@@ -768,6 +768,10 @@ pub enum GuidanceCommands {
         #[arg(last = true, value_name = "COMMAND", value_parser = clap::value_parser!(std::ffi::OsString))]
         command: Vec<std::ffi::OsString>,
     },
+    /// Internal: run by an agent step's hooks. Prints the guidance this step
+    /// (AMPLIHACK_GUIDANCE_STEP_ID) has not been given yet, and records it.
+    #[command(hide = true)]
+    Deliver,
 }
 
 #[derive(Subcommand, Debug)]

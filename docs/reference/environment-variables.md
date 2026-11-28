@@ -32,6 +32,7 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_RECIPE_LOG](#amplihack_recipe_log)
   - [AMPLIHACK_RECIPE_LOG_JSONL](#amplihack_recipe_log_jsonl)
   - [AMPLIHACK_RUN_GUIDANCE_DIRS](#amplihack_run_guidance_dirs)
+  - [AMPLIHACK_GUIDANCE_STEP_ID](#amplihack_guidance_step_id)
   - [AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS](#amplihack_recipe_transient_max_attempts)
   - [AMPLIHACK_RECIPE_TRANSIENT_BUDGET_SECS](#amplihack_recipe_transient_budget_secs)
   - [NONINTERACTIVE](#noninteractive)
@@ -850,6 +851,22 @@ jq 'select(.type == "heartbeat")' /tmp/default-workflow.jsonl
 ```
 
 Equivalent config key: `recipe.log_jsonl` in `~/.amplihack/config`.
+
+---
+
+### AMPLIHACK_GUIDANCE_STEP_ID
+
+**Type:** string, `[A-Za-z0-9._-]`, at most 200 bytes
+**Set by:** the agent launcher (`amplihack claude`, `codex`, `copilot`), on
+its agent child only, when `AMPLIHACK_RUN_GUIDANCE_DIRS` is set and not empty
+**Read by:** `amplihack recipe guidance deliver`, which the agent step's
+PostToolUse and UserPromptSubmit hooks run
+
+The id of the running agent step: the recipe run id, a `-`, and a random
+suffix. Every launch gets a new id, and a value inherited from a parent step
+is replaced, so a nested launch never takes guidance meant for its parent.
+Outside a recipe run the launcher removes the variable. See
+[Guidance for a running step](./recipe-cli-reference.md#guidance-for-a-running-step).
 
 ---
 

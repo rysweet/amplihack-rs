@@ -109,6 +109,9 @@ fn copilot_launch(s: &Setup, step: &str) -> Command {
     c
 }
 
+/// The events of `log`, in order. Issue #3435: Copilot has no hook that
+/// gives a running step new guidance, so every launch in a recipe run writes
+/// `guidance_step_unhooked` at its start, before any injection or drop.
 fn events(log: &[serde_json::Value]) -> Vec<String> {
     log.iter()
         .map(|l| l["event"].as_str().unwrap().to_string())
@@ -186,16 +189,20 @@ fn a_copilot_launch_with_a_prompt_on_stdin_gets_the_block_after_it() {
     let log = s.f.log(&s.guidance);
     assert_eq!(
         events(&log),
-        ["guidance_appended", "guidance_injected"],
+        [
+            "guidance_appended",
+            "guidance_step_unhooked",
+            "guidance_injected"
+        ],
         "{log:?}"
     );
-    assert_eq!(log[1]["entries"], 1, "{log:?}");
+    assert_eq!(log[2]["entries"], 1, "{log:?}");
     assert_eq!(
-        log[1]["entry_names"],
+        log[2]["entry_names"],
         serde_json::json!([s.entry]),
         "{log:?}"
     );
-    assert_eq!(log[1]["step_run_id"], "c-a", "{log:?}");
+    assert_eq!(log[2]["step_run_id"], "c-a", "{log:?}");
 
     let shown = guidance_show_json(&s.f, "r-copilot-a");
     assert!(entry_read(&shown, &s.entry), "{shown}");
@@ -234,13 +241,17 @@ fn b_a_copilot_that_closes_stdin_early_is_a_recorded_drop() {
     let log = s.f.log(&s.guidance);
     assert_eq!(
         events(&log),
-        ["guidance_appended", "guidance_dropped"],
+        [
+            "guidance_appended",
+            "guidance_step_unhooked",
+            "guidance_dropped"
+        ],
         "no guidance_injected record: {log:?}"
     );
-    assert_eq!(log[1]["reason"], "trailer_not_written", "{log:?}");
-    assert_eq!(log[1]["tool"], "copilot", "{log:?}");
+    assert_eq!(log[2]["reason"], "trailer_not_written", "{log:?}");
+    assert_eq!(log[2]["tool"], "copilot", "{log:?}");
     assert_eq!(
-        log[1]["launch_form"], "copilot, prompt expected on stdin",
+        log[2]["launch_form"], "copilot, prompt expected on stdin",
         "{log:?}"
     );
     assert!(stderr(&o).contains("trailer_not_written"), "{}", show(&o));
@@ -268,11 +279,15 @@ fn c_a_copilot_launch_with_nothing_on_stdin_is_a_recorded_drop() {
     let log = s.f.log(&s.guidance);
     assert_eq!(
         events(&log),
-        ["guidance_appended", "guidance_dropped"],
+        [
+            "guidance_appended",
+            "guidance_step_unhooked",
+            "guidance_dropped"
+        ],
         "{log:?}"
     );
-    assert_eq!(log[1]["reason"], "no_prompt_on_stdin", "{log:?}");
-    assert_eq!(log[1]["tool"], "copilot", "{log:?}");
+    assert_eq!(log[2]["reason"], "no_prompt_on_stdin", "{log:?}");
+    assert_eq!(log[2]["tool"], "copilot", "{log:?}");
 
     let shown = guidance_show_json(&s.f, "r-copilot-c");
     assert!(!entry_read(&shown, &s.entry), "{shown}");
