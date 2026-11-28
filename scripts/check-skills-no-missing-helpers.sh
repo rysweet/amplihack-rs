@@ -38,7 +38,7 @@ regex=$(IFS='|'; echo "${patterns[*]}")
 command_regex="$regex|\.claude/[A-Za-z0-9_./-]+\.py"
 
 skill_violations=""
-if skill_violations="$(rg -n "$regex" amplifier-bundle/skills)"; then
+if skill_violations="$(git grep -n -E "$regex" -- amplifier-bundle/skills)"; then
     :
 else
     status=$?
@@ -48,7 +48,7 @@ else
 fi
 
 command_violations=""
-if command_violations="$(rg -n "$command_regex" docs/claude/commands)"; then
+if command_violations="$(git grep -n -E "$command_regex" -- docs/claude/commands)"; then
     :
 else
     status=$?
