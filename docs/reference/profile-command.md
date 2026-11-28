@@ -3363,7 +3363,7 @@ one line per measured cycle to `<root>/.auto-switch.d/usage-history.jsonl`
 (mode `0600`). Each line is one JSON object:
 
 ```json
-{"at":"2026-10-30T16:15:00Z","by":"usage","profiles":{"example":{"s":20,"w":30,"w_reset":"2026-10-31T09:00:00Z","observed_at":"2026-10-30T16:14:42Z"}}}
+{"at":"2026-10-30T16:15:00Z","by":"usage","profiles":{"example":{"s":20,"w":30,"w_reset":"2026-10-31T09:00:00Z","observed_ago":18}}}
 ```
 
 | Key | Meaning |
@@ -3376,6 +3376,7 @@ one line per measured cycle to `<root>/.auto-switch.d/usage-history.jsonl`
 | `w` | All-models week percentage, a whole number `0`–`100`. `weekly_exhausted` is written as `100`. |
 | `w_reset` | When the week resets, UTC, or `null` when not known. |
 | `observed_at` | When the figures were observed, UTC. For a fresh probe with no separate timestamp, this is the batch time. Older points may omit this field. |
+| `observed_ago` | Seconds from the observation to the line's `at`, written in place of `observed_at` for a point observed at or before the line's time. |
 | `unknown` | Names of the logins the writer tried and could not read, or whose reading was a [stale reading](#stale-readings), sorted. Absent when there are none. Never counted in a figure; a name that also has a reading is ignored on read. |
 
 ##### Reading times in the history
