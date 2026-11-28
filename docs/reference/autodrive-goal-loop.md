@@ -138,7 +138,7 @@ The agent picks one. The word is used only to dispatch the mechanical step.
 | Action | What runs |
 |--------|-----------|
 | `review` | One Crusty round (`autodrive-crusty-round`). Its verdict is evidence in the next reading. Nothing requires the reviewed head to equal the current head. |
-| `wait` | Reads the head's checks over REST at the [configured interval](#ci-check-interval). Returns when the checks complete, the head changes or guidance arrives. |
+| `wait` | Reads the head's checks over REST at the [configured interval](#ci-check-interval). Returns when the checks complete, the head changes or guidance arrives. Returns `base-conflict`, with `head`, `base` and `base_sha`, as soon as a read of the PR shows `mergeable` false and `mergeable_state` dirty, because GitHub runs no checks for a PR that conflicts with its base (#3440). An unknown mergeable state keeps the wait going. |
 | `merge` | Merges with an allowed merge method and `--match-head-commit`. Authority comes only from the captured authorisation. Before it merges, guidance must have been read again after the decision, and every [required outcome](#required-outcomes) is checked by name. |
 | `continue` | Nothing mechanical; the next turn reads the live state again. The agent chooses it after it pushed, installed something or did a task step. |
 | `wait-owner` | Waits for the owner's answer: `amplihack recipe guidance wait` with no command. args: `owner`, `question`. Before the wait starts, the turn tool writes `waiting.json` in the run folder and one line in the run log; `amplihack recipe waiting` lists the run while it waits, and the record is removed when the wait returns (issue #3364). |

@@ -236,7 +236,8 @@ case "${1:-} ${2:-}" in
         api_base="$(cat "$G/moved-base" 2>/dev/null || cat "$G/basename" 2>/dev/null || echo main)"
         api_base_sha="$(cat "$G/moved-base-sha" 2>/dev/null || base_head)"
         http 200 "$(jq -cn --arg head "$api_head" --arg branch "$BR" --arg base "$api_base" --arg tip "$api_base_sha" \
-          '{state:"open",head:{sha:$head,ref:$branch,repo:{full_name:"o/r"}},base:{ref:$base,sha:$tip}}')" ;;
+          --argjson extra "$(cat "$G/rest-mergeable" 2>/dev/null || echo '{}')" \
+          '{state:"open",head:{sha:$head,ref:$branch,repo:{full_name:"o/r"}},base:{ref:$base,sha:$tip}} + $extra')" ;;
       repos/o/r/commits/*/check-runs\?*)
         decline core check-runs
         if [ -f "$G/decline-core-after-checks" ]; then
@@ -555,6 +556,13 @@ impl Harness {
     /// Makes the stand-in report this base branch name.
     pub fn base_name(&self, name: &str) {
         fs::write(self.gh.join("basename"), name).unwrap();
+    }
+
+    /// Adds `mergeable` and `mergeable_state` to the stand-in's REST pull
+    /// request body. Without it the body has neither field.
+    pub fn rest_mergeable(&self, mergeable: Value, state: &str) {
+        let v = serde_json::json!({"mergeable": mergeable, "mergeable_state": state});
+        fs::write(self.gh.join("rest-mergeable"), v.to_string()).unwrap();
     }
 
     /// Makes the wait's pull request REST call exit 79.

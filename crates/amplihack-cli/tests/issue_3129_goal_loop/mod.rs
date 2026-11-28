@@ -10,6 +10,7 @@
 
 mod checks_watch_interval;
 pub(crate) mod ci_wait;
+mod ci_wait_conflict;
 mod codex_limit_wait;
 mod contract;
 mod drive;

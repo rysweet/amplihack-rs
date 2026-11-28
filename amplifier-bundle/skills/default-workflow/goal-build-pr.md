@@ -73,7 +73,9 @@ do. It never widens what a build may do.
    or for an owner's stated reason. Use `git fetch` and
    `git merge --no-ff --no-edit origin/<base>` in the worktree, resolve any
    conflict, commit and push. Never rebase or force-push. A branch that is only
-   behind needs no base merge.
+   behind needs no base merge. A `wait` whose result is `base-conflict` is a
+   conflict GitHub states: GitHub runs no checks for the pull request until
+   the base is merged.
 10. The quality bar: tests for every change in behaviour, the repository's own
     checks, QA scenarios where the change is visible to users (write them when
     they do not exist), and a `review` round at the pushed head before

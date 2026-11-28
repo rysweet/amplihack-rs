@@ -76,7 +76,7 @@ pub(crate) fn sleeps(h: &Harness) -> Vec<u64> {
         .collect()
 }
 
-fn wait(h: &Harness, interval: &str) -> Value {
+pub(super) fn wait(h: &Harness, interval: &str) -> Value {
     let out = goal(h, &["act", "wait"])
         .env("RECIPE_VAR_checks_watch_interval", interval)
         .output()

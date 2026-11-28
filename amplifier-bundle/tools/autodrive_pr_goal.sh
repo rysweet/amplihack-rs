@@ -81,6 +81,13 @@ ci_wait_read_pr() {
   [ "$(jq -r '.head.sha' "$GH_READ_BODY")" = "$head" ] || return 10
 }
 
+# ci_wait_base_conflict <head>: GitHub runs no checks for a PR it states conflicts with its base, so
+# write base-conflict and return 0 (2 if unwritable). Any other state, unknown included, returns 1 (#3440).
+ci_wait_base_conflict() {
+  jq -e '.mergeable == false and .mergeable_state == "dirty"' "$GH_READ_BODY" >/dev/null || return 1
+  jq -c --arg head "$1" '{outcome:"base-conflict", head:$head, base:.base.ref, base_sha:.base.sha, summary:"GitHub reports that the pull request conflicts with its base \(.base.ref) at \(.base.sha), so no checks will run. Merge the current base into the branch with a merge commit, resolve the conflict, run the affected checks and push."}' "$GH_READ_BODY" | goal_atomic_write "$TD/result.json" || return 2
+}
+
 # crusty_round <label> <log>: one autodrive-crusty-round at the worktree's head.
 crusty_round() {
   local label="$1" log="$2" head record recipe rc d
@@ -162,6 +169,7 @@ do_ci_wait() {
 
   while :; do
     ci_wait_read_pr "$slug" "$head" "$cache" "$build_branch" || return $?
+    ci_wait_base_conflict "$head"; case $? in 0) return 0 ;; 1) ;; *) return 2 ;; esac
     if ! gh_pr_base_matches "$base" "$base_sha"; then
       base="$(jq -r '.base.ref' "$GH_READ_BODY")"
       base_sha="$(jq -r '.base.sha' "$GH_READ_BODY")"
@@ -193,6 +201,7 @@ do_ci_wait() {
             state=pending
             continue
           fi
+          ci_wait_base_conflict "$head"; case $? in 0) return 0 ;; 1) ;; *) return 2 ;; esac
         fi
         if jq -e '.state == "pending"' "$GH_READ_DIR/ci.json" >/dev/null; then
           state=pending
