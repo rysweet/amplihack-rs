@@ -61,7 +61,7 @@ fn run_folders(root: &Path) -> Folders {
 }
 
 fn sh(script: String) -> Vec<OsString> {
-    ["/bin/sh".into(), "-c".into(), script.into()].to_vec()
+    ["sh".into(), "-c".into(), script.into()].to_vec()
 }
 
 fn name_of(appended: &Appended) -> String {
@@ -125,7 +125,7 @@ fn one_waiter_per_parent_and_none_beside_a_path_that_is_not_a_guidance_folder() 
 
 #[test]
 fn stop_reaps_a_command_that_already_exited_without_signalling_it() {
-    let mut child = Command::new("/bin/sh")
+    let mut child = Command::new("sh")
         .args(["-c", "exit 0"])
         .stdin(Stdio::null())
         .spawn()
@@ -143,7 +143,7 @@ fn stop_ends_a_running_command_with_sigterm_and_reaps_it() {
     let block = root.join("block.fifo");
     mkfifo(&block);
     // Blocks reading a FIFO nobody writes, until SIGTERM ends it.
-    let mut child = Command::new("/bin/sh")
+    let mut child = Command::new("sh")
         .arg("-c")
         .arg(format!("exec 3<> {}; read x <&3", block.display()))
         .stdin(Stdio::null())

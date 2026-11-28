@@ -41,6 +41,7 @@ steps:
       **Target:** {{target_path}}
       **Task:** {{task_description}}
 
+      You are the first layer of a 5-layer philosophy audit.
       Detect anti-patterns using the code-philosophy criteria.
       Run `amplihack directory find code-philosophy` and read `reference.md`
       beside the returned skill file. Apply "Layer 1 Anti-Pattern Detection"
@@ -100,6 +101,7 @@ steps:
       **Layer 1 findings (already reported — do NOT duplicate):**
       {{layer_1_findings}}
 
+      You are the second layer.
       Check architecture alignment using the code-philosophy criteria.
       Run `amplihack directory find code-philosophy` and read `reference.md`
       beside the returned skill file. Apply "Layer 2 Architecture Alignment"
