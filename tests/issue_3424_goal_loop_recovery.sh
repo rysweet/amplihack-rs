@@ -127,12 +127,30 @@ run_marker_case failed_decide_unmarked environmental "workspace unavailable" "" 
 
 make_build_case() {
   local name="$1" mode="$2" c="$WORK/$1" main="$WORK/$1/main" candidate="$WORK/$1/candidate" bundle="$WORK/$1/bundle"
+  local remote alias_branch
   mkdir -p "$c" "$bundle/tools" "$bundle/recipes" "$c/home"
   git init -q "$main"
   git -C "$main" config user.name test; git -C "$main" config user.email test@example.com
   printf 'base\n' > "$main/file"; git -C "$main" add file; git -C "$main" commit -q -m base
   head="$(git -C "$main" rev-parse HEAD)"
-  git -C "$main" worktree add -q -b issue-3424 "$candidate" "$head"
+  if [ "$mode" = alias ] || [ "$mode" = alias-wrong-upstream ]; then
+    remote="$c/origin.git"
+    git init --bare -q "$remote"
+    git -C "$main" remote add origin "$remote"
+    git -C "$main" checkout -q -b issue-3424
+    git -C "$main" push -q -u origin issue-3424
+    if [ "$mode" = alias-wrong-upstream ]; then
+      git -C "$main" branch other "$head"
+      git -C "$main" push -q origin other
+    fi
+    alias_branch=issue-3424--wt-1
+    git -C "$main" worktree add -q --track -b "$alias_branch" "$candidate" origin/issue-3424
+    if [ "$mode" = alias-wrong-upstream ]; then
+      git -C "$main" branch --set-upstream-to=origin/other "$alias_branch" >/dev/null
+    fi
+  else
+    git -C "$main" worktree add -q -b issue-3424 "$candidate" "$head"
+  fi
   if [ "$mode" = other-head ]; then printf 'changed\n' >> "$candidate/file"; git -C "$candidate" add file; git -C "$candidate" commit -q -m changed; fi
   cp -R "$TOOLS"/* "$bundle/tools/"
   cp -R "$ROOT/amplifier-bundle/recipes"/* "$bundle/recipes/"
@@ -148,7 +166,9 @@ exit 0
 DRIVER
   chmod 755 "$bundle/tools/autodrive_goal_loop.sh"
   mkdir -p "$c/state/turns" "$c/state/no-worktree"
-  jq -n --arg b issue-3424 --arg w "$c/missing" --arg h "$head" \
+  identity_worktree="$c/missing"
+  [ "$mode" = alias-wrong-upstream ] && identity_worktree="$candidate"
+  jq -n --arg b issue-3424 --arg w "$identity_worktree" --arg h "$head" \
     '{schema_version:1,branch:$b,worktree:$w,source:"worktree_setup",base:"main",head:$h,started:"2026-01-01T00:00:00Z"}' > "$c/state/identity.json"
   set +e
   ( cd "$main" && env -u AMPLIHACK_HOME -u CODEX_HOME HOME="$c/home" TMPDIR="$c" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
@@ -167,6 +187,31 @@ ok adopted_loop_started test -f "$ADOPT_CASE/state/driver-invoked"
 IFS='|' read -r REFUSE_RC REFUSE_CASE REFUSE_CANDIDATE REFUSE_HEAD < <(make_build_case refuse other-head)
 ok different_head_refused test "$REFUSE_RC" -eq 2
 ok refusal_before_loop test ! -e "$REFUSE_CASE/state/driver-invoked"
+
+IFS='|' read -r ALIAS_RC ALIAS_CASE ALIAS_CANDIDATE ALIAS_HEAD < <(make_build_case alias alias)
+ok alias_worktree_adopted test "$ALIAS_RC" -eq 0
+ok alias_path_persisted test "$(jq -r .worktree "$ALIAS_CASE/state/identity.json")" = "$(cd "$ALIAS_CANDIDATE" && pwd -P)"
+ok alias_loop_started test -f "$ALIAS_CASE/state/driver-invoked"
+ok alias_worktree_check_accepts bash -c '
+  cd "$1/main" || exit 1
+  source "$1/bundle/tools/autodrive_build_lib.sh"
+  build_worktree_check "$2" issue-3424 "$1/main"
+' _ "$ALIAS_CASE" "$ALIAS_CANDIDATE"
+
+IFS='|' read -r WRONG_ALIAS_RC WRONG_ALIAS_CASE WRONG_ALIAS_CANDIDATE WRONG_ALIAS_HEAD < <(make_build_case alias-wrong-upstream alias-wrong-upstream)
+ok wrong_alias_fixture_created test "$WRONG_ALIAS_RC" -eq 0
+ok wrong_alias_reason test "$(
+  cd "$WRONG_ALIAS_CASE/main" || exit 1
+  set +e
+  source "$WRONG_ALIAS_CASE/bundle/tools/autodrive_build_lib.sh"
+  build_worktree_check "$WRONG_ALIAS_CANDIDATE" issue-3424 "$WRONG_ALIAS_CASE/main"
+  printf '%s' "$BUILD_WT_WHY"
+)" = "the recorded worktree does not track origin/issue-3424 or the local branch issue-3424"
+ok wrong_alias_worktree_check_refused bash -c '
+  cd "$1/main" || exit 1
+  source "$1/bundle/tools/autodrive_build_lib.sh"
+  ! build_worktree_check "$2" issue-3424 "$1/main"
+' _ "$WRONG_ALIAS_CASE" "$WRONG_ALIAS_CANDIDATE"
 
 echo "${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

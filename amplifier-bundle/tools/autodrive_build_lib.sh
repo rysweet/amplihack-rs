@@ -178,18 +178,56 @@ build_run_branch() {
   return 1
 }
 
+# A linked worktree is on <branch> when Git lists refs/heads/<branch>, or when
+# workflow_remote_branch.sh resolves a valid <branch>--wt-<n> alias that tracks
+# origin/<branch>. An alias with another upstream is never a match.
+build_worktree_branch_matches() {
+  local path="$1" branch="$2" listed_branch="$3" resolved=""
+  [ "$listed_branch" = "refs/heads/$branch" ] && return 0
+  case "$listed_branch" in refs/heads/*) ;; *) return 1 ;; esac
+  [ -d "$path" ] && [ ! -L "$path" ] || return 1
+  [ -f "$_BUILD_LIB_HOME/workflow_remote_branch.sh" ] || return 1
+  resolved="$(bash "$_BUILD_LIB_HOME/workflow_remote_branch.sh" "$path" 2>/dev/null)" || return 1
+  [ "$resolved" = "$branch" ]
+}
+
 build_worktree_lookup() {
-  git -C "$1" worktree list --porcelain 2>/dev/null | awk -v want="refs/heads/$2" '
-    /^worktree /{p = substr($0, 10)} /^branch /{if (substr($0, 8) == want) {print p; exit}}'
+  local launch="$1" branch="$2" line path="" listed_branch="" launch_real="" fallback=""
+  launch_real="$(cd "$launch" 2>/dev/null && pwd -P)" || launch_real=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }"; listed_branch="" ;;
+      "branch "*)
+        listed_branch="${line#branch }"
+        if build_worktree_branch_matches "$path" "$branch" "$listed_branch"; then
+          if [ -n "$launch_real" ] && [ "$(cd "$path" 2>/dev/null && pwd -P)" = "$launch_real" ]; then
+            fallback="$path"
+          else
+            printf '%s\n' "$path"
+            return 0
+          fi
+        fi
+        ;;
+    esac
+  done < <(git -C "$launch" worktree list --porcelain 2>/dev/null)
+  [ -z "$fallback" ] || printf '%s\n' "$fallback"
 }
 
 # build_worktree_candidates <launch> <branch>: every Git-listed worktree on the
-# exact branch. A missing path is retained so recovery can refuse it loudly.
+# exact branch or a valid origin-tracking alias. A missing exact-branch path is
+# retained so recovery can refuse it loudly. Aliases are resolved only when
+# their listed checkout is present, as required by workflow_remote_branch.sh.
 build_worktree_candidates() {
-  git -C "$1" worktree list --porcelain 2>/dev/null | awk -v want="refs/heads/$2" '
-    /^worktree / { p = substr($0, 10); b = "" }
-    /^branch / { b = substr($0, 8); if (b == want) print p }
-  '
+  local launch="$1" branch="$2" line path="" listed_branch=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }"; listed_branch="" ;;
+      "branch "*)
+        listed_branch="${line#branch }"
+        build_worktree_branch_matches "$path" "$branch" "$listed_branch" && printf '%s\n' "$path"
+        ;;
+    esac
+  done < <(git -C "$launch" worktree list --porcelain 2>/dev/null)
 }
 
 # build_worktree_recover <launch> <branch> <recorded-head>:
@@ -198,7 +236,7 @@ build_worktree_candidates() {
 #   listed so the caller preserves the existing missing-worktree behavior.
 BUILD_WT_PATH=""; BUILD_WT_WHY=""
 build_worktree_recover() {
-  local launch="$1" branch="$2" head="$3" path real current candidate="" count=0
+  local launch="$1" branch="$2" head="$3" path real current candidate="" count=0 launch_seen=false
   local -a listed=()
   BUILD_WT_PATH=""; BUILD_WT_WHY=""
   [ -n "$head" ] || { BUILD_WT_WHY="the continuation has no recorded commit"; return 1; }
@@ -208,20 +246,30 @@ build_worktree_recover() {
     case "$path" in /*) ;; *) BUILD_WT_WHY="a listed worktree for ${branch} has an invalid path"; return 1 ;; esac
     [ -d "$path" ] && [ ! -L "$path" ] || { BUILD_WT_WHY="a listed worktree for ${branch} is missing"; return 1; }
     real="$(cd "$path" 2>/dev/null && pwd -P)" || { BUILD_WT_WHY="a listed worktree for ${branch} cannot be entered"; return 1; }
-    [ "$real" != "$(cd "$launch" 2>/dev/null && pwd -P)" ] || { BUILD_WT_WHY="the listed worktree for ${branch} is the launch checkout"; return 1; }
+    if [ "$real" = "$(cd "$launch" 2>/dev/null && pwd -P)" ]; then
+      launch_seen=true
+      continue
+    fi
     current="$(git -C "$real" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)" || { BUILD_WT_WHY="the listed worktree for ${branch} has no readable commit"; return 1; }
     [ "$current" = "$head" ] || { BUILD_WT_WHY="the listed worktree for ${branch} is at another commit"; return 1; }
     [ -z "$(git -C "$real" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)" ] || { BUILD_WT_WHY="the listed worktree for ${branch} is dirty"; return 1; }
     candidate="$real"; count=$((count + 1))
   done
-  [ "$count" -eq 1 ] || { BUILD_WT_WHY="more than one clean worktree is listed for ${branch}"; return 1; }
+  [ "$count" -eq 1 ] || {
+    if [ "$count" -eq 0 ] && [ "$launch_seen" = true ]; then
+      BUILD_WT_WHY="the only listed worktree for ${branch} is the launch checkout"
+    else
+      BUILD_WT_WHY="more than one clean worktree is listed for ${branch}"
+    fi
+    return 1
+  }
   BUILD_WT_PATH="$candidate"
   return 0
 }
 
 BUILD_WT_WHY=""
 build_worktree_check() {
-  local path="${1:-}" branch="${2:-}" launch="${3:-}" listed real lreal
+  local path="${1:-}" branch="${2:-}" launch="${3:-}" listed real lreal listed_branch
   BUILD_WT_WHY=""
   [ -n "$path" ] || { BUILD_WT_WHY="no worktree is recorded"; return 1; }
   case "$path" in /*) ;; *) BUILD_WT_WHY="the recorded worktree is not an absolute path"; return 1 ;; esac
@@ -230,6 +278,11 @@ build_worktree_check() {
   real="$(cd "$path" && pwd -P)" || { BUILD_WT_WHY="the recorded worktree cannot be entered"; return 1; }
   lreal="$(cd "$launch" 2>/dev/null && pwd -P)" || lreal=""
   [ "$real" != "$lreal" ] || { BUILD_WT_WHY="the recorded worktree is the launch checkout"; return 1; }
+  listed_branch="$(git -C "$real" symbolic-ref -q HEAD 2>/dev/null || true)"
+  build_worktree_branch_matches "$real" "$branch" "$listed_branch" || {
+    BUILD_WT_WHY="the recorded worktree does not track origin/${branch} or the local branch ${branch}"
+    return 1
+  }
   listed="$(build_worktree_lookup "$launch" "$branch")"
   [ -n "$listed" ] || { BUILD_WT_WHY="git lists no worktree on branch ${branch}"; return 1; }
   [ "$(cd "$listed" 2>/dev/null && pwd -P)" = "$real" ] || { BUILD_WT_WHY="the worktree git lists on branch ${branch} is not the recorded one"; return 1; }
