@@ -81,17 +81,11 @@ ci_wait_read_pr() {
   [ "$(jq -r '.head.sha' "$GH_READ_BODY")" = "$head" ] || return 10
 }
 
-# ci_wait_base_conflict <head>: when the PR body just read states a conflict
-# with the base (mergeable false, mergeable_state dirty), write the
-# base-conflict result and return 0 (2 if the result cannot be written). GitHub
-# builds no merge ref for such a PR, so its checks would stay pending; the next
-# turn merges the base. Any other state, including an unknown one (null while
-# GitHub computes it), returns 1 and the wait goes on as before (#3440).
+# ci_wait_base_conflict <head>: GitHub runs no checks for a PR it states conflicts with its base, so
+# write base-conflict and return 0 (2 if unwritable). Any other state, unknown included, returns 1 (#3440).
 ci_wait_base_conflict() {
   jq -e '.mergeable == false and .mergeable_state == "dirty"' "$GH_READ_BODY" >/dev/null || return 1
-  jq -c --arg head "$1" '{outcome:"base-conflict", head:$head, base:.base.ref, base_sha:.base.sha,
-    summary:"GitHub reports that the pull request conflicts with its base \(.base.ref) at \(.base.sha), so it builds no merge ref and the checks will not run. Merge the current base into the branch with a merge commit, resolve the conflict, run the affected checks and push."}' \
-    "$GH_READ_BODY" | goal_atomic_write "$TD/result.json" || return 2
+  jq -c --arg head "$1" '{outcome:"base-conflict", head:$head, base:.base.ref, base_sha:.base.sha, summary:"GitHub reports that the pull request conflicts with its base \(.base.ref) at \(.base.sha), so no checks will run. Merge the current base into the branch with a merge commit, resolve the conflict, run the affected checks and push."}' "$GH_READ_BODY" | goal_atomic_write "$TD/result.json" || return 2
 }
 
 # crusty_round <label> <log>: one autodrive-crusty-round at the worktree's head.
