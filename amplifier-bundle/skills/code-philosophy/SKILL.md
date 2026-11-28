@@ -74,6 +74,7 @@ flowchart TD
     end
 
     VERDICT -->|PASS| DONE([Report: PASS])
+    VERDICT -->|INCOMPLETE| RETRY([Restore criteria and rerun the full audit])
     VERDICT -->|PASS-WITH-WARNINGS| DELEGATE
     VERDICT -->|FAIL| DELEGATE
 
@@ -203,7 +204,8 @@ amplihack recipe run code-philosophy-audit \
 | **code-philosophy** (this skill) | 3-pass structured audit + orchestration | Layer 3 + trigger |
 
 Each layer receives prior layer findings and deduplicates. Layer 4 merges
-all findings into a unified severity-sorted report.
+all findings into a unified severity-sorted report. If a layer could not apply
+its criteria or its output is missing or invalid, the verdict is `INCOMPLETE`.
 
 ## When to Use
 
@@ -361,7 +363,7 @@ Each audit produces a report with the following structure:
 **Header:**
 - **Target**: files/directory/diff audited
 - **Mode**: file | directory | git-diff | pr-diff
-- **Verdict**: PASS | FAIL | PASS-WITH-WARNINGS
+- **Verdict**: PASS | FAIL | PASS-WITH-WARNINGS | INCOMPLETE
 
 **Findings Table:**
 

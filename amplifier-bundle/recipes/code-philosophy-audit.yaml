@@ -8,8 +8,6 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["philosophy", "audit", "quality", "compliance", "orchestrated"]
 
-# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
-
 recursion:
   max_depth: 4
   max_total_steps: 20
@@ -24,13 +22,36 @@ context:
   consolidation_report: ""
   fix_results: ""
   reassessment_report: ""
+  criteria_lookup: |
+    usable() {
+      [ -f "$1/SKILL.md" ] && [ -r "$1/SKILL.md" ] && [ -f "$1/reference.md" ] &&
+        grep -qFx '### Layer 1 Anti-Pattern Detection' "$1/reference.md" 2>/dev/null &&
+        grep -qFx '### Layer 2 Architecture Alignment' "$1/reference.md" 2>/dev/null
+    }
+    matches=$(amplihack directory find code-philosophy 2>/dev/null) || matches=
+    paths=$(printf '%s\n' "$matches" | awk -F '\t' '$1 == "skill" && $2 == "code-philosophy" {print ($4 ~ /^\/.*\/SKILL\.md$/ ? $4 : $3)}')
+    while IFS= read -r skill; do
+      case "$skill" in /*/SKILL.md) dir=${skill%/*};; *) continue;; esac
+      if usable "$dir"; then printf '%s\n' "$dir"; exit 0; fi
+    done <<EOF
+    $paths
+    EOF
+    for root in "${AMPLIHACK_HOME:-}" "${HOME:+$HOME/.amplihack}"; do
+      case "$root" in /*) ;; *) continue;; esac
+      for dir in "$root/amplifier-bundle/skills/code-philosophy" "$root/.claude/skills/code-philosophy"; do
+        if usable "$dir"; then printf '%s\n' "$dir"; exit 0; fi
+      done
+    done
+    printf '%s\n' 'Cannot locate usable code-philosophy SKILL.md and reference.md. Run amplihack install to restore them.' >&2
+    exit 1
+  criteria_instructions: >-
+    Set criteria_status to "loaded" only after you read and apply the required criteria.
+    If lookup fails or you cannot read the required criteria, set criteria_status to
+    "unavailable", include a criteria_error with the reason, and return empty findings
+    and zero counts. Do not substitute the prompt's overview for the criteria.
 
 steps:
-  # ========================================================================
   # LAYER 1: Anti-Pattern Detection
-  # Detects: over-abstraction, complex inheritance, large functions,
-  # tight coupling, missing __all__ exports.
-  # ========================================================================
   - id: "layer-1-anti-patterns"
     agent: "amplihack:core:reviewer"
     working_dir: "{{repo_path}}"
@@ -42,10 +63,12 @@ steps:
       **Task:** {{task_description}}
 
       You are the first layer of a 5-layer philosophy audit.
-      Detect anti-patterns using the code-philosophy criteria.
-      Run `amplihack directory find code-philosophy` and read `reference.md`
-      beside the returned skill file. Apply "Layer 1 Anti-Pattern Detection"
-      under "Criteria for Layers 1 and 2" to the audit target.
+      Run this lookup as a standalone shell command:
+      ```sh
+      {{criteria_lookup}}
+      ```
+      Apply "Layer 1 Anti-Pattern Detection" from `reference.md` in the returned directory.
+      {{criteria_instructions}}
 
       Focus on these categories:
       1. Over-abstraction (unnecessary layers, single-impl traits)
@@ -58,11 +81,11 @@ steps:
       audit only that path. For diff-based audits, the task_description
       will specify the diff source (git diff, PR number).
 
-      **Output format — JSON:**
       ```json
       {
         "layer": 1,
         "source": "anti-patterns",
+        "criteria_status": "loaded|unavailable",
         "findings": [
           {
             "id": "L1-001",
@@ -83,11 +106,7 @@ steps:
       Do NOT report speculative issues.
     output: "layer_1_findings"
 
-  # ========================================================================
   # LAYER 2: Architecture Alignment
-  # Checks: ruthless simplicity, brick philosophy, Zen minimalism.
-  # Has access to Layer 1 findings to avoid re-reporting.
-  # ========================================================================
   - id: "layer-2-architecture"
     agent: "amplihack:core:reviewer"
     working_dir: "{{repo_path}}"
@@ -102,10 +121,12 @@ steps:
       {{layer_1_findings}}
 
       You are the second layer.
-      Check architecture alignment using the code-philosophy criteria.
-      Run `amplihack directory find code-philosophy` and read `reference.md`
-      beside the returned skill file. Apply "Layer 2 Architecture Alignment"
-      under "Criteria for Layers 1 and 2" to the audit target.
+      Run this lookup as a standalone shell command:
+      ```sh
+      {{criteria_lookup}}
+      ```
+      Apply "Layer 2 Architecture Alignment" from `reference.md` in the returned directory.
+      {{criteria_instructions}}
 
       Focus on:
       1. Ruthless simplicity — over-engineered solutions where simpler exists
@@ -119,11 +140,11 @@ steps:
       Only report architecture-level findings not covered by anti-pattern
       detection. When in doubt, check `layer_1_findings` above.
 
-      **Output format — JSON:**
       ```json
       {
         "layer": 2,
         "source": "architecture",
+        "criteria_status": "loaded|unavailable",
         "findings": [
           {
             "id": "L2-001",
@@ -141,13 +162,7 @@ steps:
       ```
     output: "layer_2_findings"
 
-  # ========================================================================
   # LAYER 3: Three-Pass Structured Audit (code-philosophy SKILL.md)
-  # Pass 1: Brick Rules (LOC limits, god objects, inheritance depth)
-  # Pass 2: Quality Invariants (unwrap/panic, error handling, stubs)
-  # Pass 3: Philosophy Spirit (naming, sycophancy, over-abstraction)
-  # See SKILL.md and reference.md for full check tables.
-  # ========================================================================
   - id: "layer-3-three-pass-audit"
     agent: "amplihack:core:reviewer"
     working_dir: "{{repo_path}}"
@@ -162,9 +177,12 @@ steps:
       - Layer 1 (anti-patterns): {{layer_1_findings}}
       - Layer 2 (architecture): {{layer_2_findings}}
 
-      You are the third layer. Perform the structured 3-pass audit defined
-      in the code-philosophy skill. Run `amplihack directory find code-philosophy`
-      and read the returned skill file for the full check tables and thresholds. Resolve resources relative to that file.
+      You are the third layer. Run this lookup as a standalone shell command:
+      ```sh
+      {{criteria_lookup}}
+      ```
+      Read `SKILL.md` and `reference.md` in the returned directory for the full 3-pass audit criteria.
+      {{criteria_instructions}}
 
       **Phase 0: File Classification**
       Classify target files by language and tag exclusions (test, vendored,
@@ -193,19 +211,17 @@ steps:
       - Sycophancy in comments → low
       - Future-proofing anti-patterns → medium
 
-      **De-duplication (efficient):** Before scanning, extract a skip-set of
-      `file:line:category` tuples from Layer 1/2 findings above. During
-      analysis, check each candidate against the skip-set — O(1) lookup,
-      not full-JSON comparison. Only report findings NOT in the skip-set.
+      **De-duplication:** Build a set of `file:line:category` tuples from
+      Layers 1 and 2. Report only findings absent from the set.
 
       **Early exit:** If a file has >3 critical findings in Pass 1,
       flag it for rewrite and skip Pass 2/3 analysis on that file.
 
-      **Output format — JSON:**
       ```json
       {
         "layer": 3,
         "source": "code-philosophy-3-pass",
+        "criteria_status": "loaded|unavailable",
         "classification": {"total_files": 0, "by_language": {}, "excluded": []},
         "findings": [
           {
@@ -230,12 +246,7 @@ steps:
       ```
     output: "layer_3_findings"
 
-  # ========================================================================
   # LAYER 4: Consolidation
-  # Merges findings from all three layers, deduplicates by file:line +
-  # category, resolves severity conflicts (keep highest), and produces
-  # a unified severity-sorted report.
-  # ========================================================================
   - id: "layer-4-consolidation"
     agent: "amplihack:core:reviewer"
     working_dir: "{{repo_path}}"
@@ -245,8 +256,6 @@ steps:
 
       **Repository:** {{repo_path}}
       **Target:** {{target_path}}
-
-      Merge findings from all three layers into a unified report.
 
       **Layer 1 findings (anti-patterns):**
       {{layer_1_findings}}
@@ -269,21 +278,17 @@ steps:
          - L2 brick-modularity ↔ L3 Pass 3 brick-modularity
       4. When merging, note both source layers in the consolidated finding
 
-      **Severity resolution:** When two layers report different severities
-      for the same issue, use the HIGHER severity.
-
       **Severity escalation:** Apply the escalation rules from reference.md:
       - Violation in critical path (auth, payment, data) → bump one level
       - Same violation repeated >5 times → bump one level
       - Violation in public API surface → bump one level
       - Generated/vendored code → demote to low
 
-      **Output format — unified report:**
       ```json
       {
         "layer": 4,
         "source": "consolidation",
-        "verdict": "PASS|FAIL|PASS-WITH-WARNINGS",
+        "verdict": "PASS|FAIL|PASS-WITH-WARNINGS|INCOMPLETE",
         "dedup_stats": {
           "total_raw": 0,
           "duplicates_removed": 0,
@@ -311,23 +316,20 @@ steps:
       }
       ```
 
-      **Verdict rules:**
+      **Verdict rules (in order):**
+      - INCOMPLETE: Any layer output is missing, invalid, or lacks criteria_status "loaded".
+        Retain verified findings and name the affected layers and their criteria_error in verdict_reason.
       - FAIL: Any critical finding present
       - PASS-WITH-WARNINGS: No critical, but high or medium findings
       - PASS: No critical, high, or medium findings (low-only or clean)
 
-      **Short-circuit:** If all three layers report 0 findings, emit a
-      PASS verdict immediately without dedup or severity analysis.
+      **Short-circuit:** Emit PASS without dedup only when all three layers
+      confirm criteria_status "loaded" and report zero findings.
 
       Sort findings by severity (critical first), then by file path.
     output: "consolidation_report"
 
-  # ========================================================================
   # LAYER 5: Re-Assessment (conditional)
-  # Only runs if fixes were applied via dev-orchestrator delegation.
-  # Re-runs Layers 1-3 on changed files only, then re-consolidates.
-  # Max 1 re-assessment — no recursion.
-  # ========================================================================
   - id: "layer-5-reassessment"
     agent: "amplihack:core:reviewer"
     working_dir: "{{repo_path}}"
@@ -344,8 +346,8 @@ steps:
       **Fix results (what was changed):**
       {{fix_results}}
 
-      Fixes were applied. Re-assess ONLY the changed files to verify
-      fixes did not introduce new philosophy violations.
+      If the consolidated verdict is INCOMPLETE, preserve it and require a full audit retry.
+      Otherwise re-assess only changed files for new philosophy violations.
 
       **Scope:** Extract the list of changed files from fix_results.
       Only audit those files — do not re-audit the entire codebase.
@@ -362,7 +364,6 @@ steps:
       6. Compare against original report — are original findings resolved?
          Did fixes introduce new violations?
 
-      **Output format — JSON:**
       ```json
       {
         "layer": 5,
@@ -370,7 +371,7 @@ steps:
         "changed_files": ["list of files re-assessed"],
         "original_findings_resolved": 0,
         "new_findings_introduced": 0,
-        "verdict": "PASS|FAIL|PASS-WITH-WARNINGS",
+        "verdict": "PASS|FAIL|PASS-WITH-WARNINGS|INCOMPLETE",
         "findings": [
           {
             "id": "R-001",

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-code-philosophy-audit-recipe.sh — structural validation for the
-# code-philosophy-audit recipe.
+# code-philosophy-audit recipe, including the shared criteria lookup.
 #
 # Contracts under test:
 #   1. Recipe YAML parses and has 5 sequential agent steps.
@@ -372,6 +372,79 @@ else
   echo "SKIP[17]: amplihack binary not available (validator skipped)"
 fi
 
+# ─── Assertion 18: Criteria lookup and recovery ───────────────────────────────
+
+if command -v amplihack >/dev/null 2>&1; then
+  python3 - "$RECIPE" <<'PY' || fail "[18] Criteria lookup failed its contract"
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import yaml
+
+recipe_path = Path(sys.argv[1])
+recipe = yaml.safe_load(recipe_path.read_text())
+lookup = recipe['context']['criteria_lookup']
+bundle_skill = recipe_path.parents[1] / 'skills/code-philosophy'
+
+with tempfile.TemporaryDirectory(prefix='philosophy-lookup-') as temp:
+    root = Path(temp)
+    home = root / 'home'
+    index = home / '.amplihack/.claude/install/skills-and-agents-index.tsv'
+    index.parent.mkdir(parents=True)
+    env = dict(os.environ, HOME=str(home))
+    env.pop('AMPLIHACK_HOME', None)
+    env.pop('CODEX_HOME', None)
+
+    def run(*command):
+        return subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+
+    def install_skill(path):
+        path.mkdir(parents=True)
+        for name in ('SKILL.md', 'reference.md'):
+            shutil.copyfile(bundle_skill / name, path / name)
+
+    def expect_lookup(path):
+        result = run('sh', '-c', lookup)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [str(path)], result.stdout
+
+    indexed_skill = root / 'indexed skill' / 'code-philosophy'
+    decoy = root / 'decoy'
+    fallback = home / '.amplihack/amplifier-bundle/skills/code-philosophy'
+    for path in (indexed_skill, decoy, fallback):
+        install_skill(path)
+
+    unrelated = f'skill\tother\t{decoy}/SKILL.md\tUnrelated skill\n'
+    indexed = f'skill\tcode-philosophy\t{indexed_skill}/SKILL.md\tAudit\n'
+    index.write_text(f'agent\tcode-philosophy\t{decoy}/SKILL.md\tDecoy\n' + indexed)
+    expect_lookup(indexed_skill)
+
+    (indexed_skill / 'reference.md').unlink()
+    expect_lookup(fallback)
+
+    index.write_text(unrelated)
+    no_match = run('amplihack', 'directory', 'find', 'code-philosophy')
+    assert no_match.returncode == 0 and no_match.stdout == '', no_match
+    expect_lookup(fallback)
+
+    index.unlink()
+    expect_lookup(fallback)
+
+    index.write_text(indexed)
+    (fallback / 'reference.md').write_text('# Outdated reference\n')
+    incomplete = run('sh', '-c', lookup)
+    assert incomplete.returncode != 0 and incomplete.stdout == '', incomplete
+    assert 'reference.md' in incomplete.stderr and 'amplihack install' in incomplete.stderr, incomplete
+PY
+  echo "PASS[18]: Criteria lookup handles exact hits, stale entries, empty results, and missing criteria"
+else
+  echo "SKIP[18]: amplihack binary not available (criteria lookup skipped)"
+fi
+
 echo ""
-echo "PASS: All code-philosophy-audit recipe structural assertions passed."
+echo "PASS: All available code-philosophy-audit recipe assertions passed."
 exit 0

@@ -1,13 +1,8 @@
 # Code Philosophy Audit — Reference Guide
 
-Detailed detection criteria, code examples, severity escalation rules, and
-report format specification for the code-philosophy audit skill.
-
 ## Recipe Architecture
 
-The code-philosophy skill is executed via the `code-philosophy-audit` recipe
-(`amplifier-bundle/recipes/code-philosophy-audit.yaml`). The recipe orchestrates
-five layers, each as a separate recipe step.
+The `code-philosophy-audit` recipe runs each of the five layers as a separate step.
 
 ### Layer Interactions
 
@@ -27,39 +22,35 @@ Layer 4 (consolidation)
 Layer 5 (re-assessment) ← conditional: only if fixes were applied
 ```
 
-Each layer receives the prior layers' findings as context and is responsible
-for de-duplicating against them. Layer 4 does a final cross-layer merge.
-
 ### Finding Deduplication Logic
 
-Findings are deduplicated by matching on `file + line (±3 lines) + category`.
-When overlapping findings are detected across layers:
+Layers deduplicate prior findings by `file + line (±3 lines) + category`.
+Layer 4 merges known overlaps as follows.
 
 | Layer 1 Category | Overlapping Layer 3 Category | Resolution |
 |-----------------|------------------------------|------------|
 | over-abstraction | Pass 3: over-abstraction | Keep higher severity, merge descriptions |
 | large-function | Pass 1: function-loc | Keep higher severity, note both sources |
 | inheritance | Pass 1: inheritance | Keep higher severity, note both sources |
-
-| Layer 2 Category | Overlapping Layer 3 Category | Resolution |
-|-----------------|------------------------------|------------|
+| **Layer 2 category** | **Overlapping Layer 3 category** | **Resolution** |
 | ruthless-simplicity | Pass 3: ruthless-simplicity | Keep higher severity, merge descriptions |
 | brick-modularity | Pass 3: brick-modularity | Keep higher severity, note both sources |
 
 Non-overlapping findings pass through to consolidation unchanged.
 
-### Running Individual Layers vs Full Audit
+### Running the Full Audit
 
 | Mode | Command |
 |------|---------|
-| Full audit (all 5 layers) | `amplihack recipe run code-philosophy-audit -c target_path="src/" -c task_description="Full audit" -c repo_path=.` |
-| Layer 3 only | `Skill(skill="code-philosophy")` — launches full recipe if runtime supports `recipe:` frontmatter |
+| Full audit via CLI | `amplihack recipe run code-philosophy-audit -c target_path="src/" -c task_description="Full audit" -c repo_path=.` |
+| Full audit via skill | `Skill(skill="code-philosophy")` when the runtime supports `recipe:` front matter |
 
 Audit scope is controlled by `target_path`: a file, directory, or empty for full repo.
+To run an individual layer, apply its criteria in this guide directly to the target.
 
 ## Configuration Reference
 
-All context variables passed via `-c key=value` to the recipe:
+Pass context variables with `-c key=value`.
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -147,6 +138,7 @@ the consolidated report as a review comment.
 | Problem | Cause | Fix |
 |---------|-------|-----|
 | "agent not found" | `amplihack:core:reviewer` not registered | Run `amplihack install` to stage bundled agents |
+| `INCOMPLETE` verdict | A layer output is missing or invalid, or the layer could not load its criteria | See `verdict_reason` for the affected layers. If criteria are missing, run `amplihack install` to restore the skill files, then rerun the full audit |
 | Layer 5 never runs | `fix_results` not set externally | Set `fix_results` after dev-orchestrator applies fixes; skipped by design in standalone audits |
 | Duplicate findings | Different categories or line numbers >3 apart | Check `dedup_stats` in Layer 4 output |
 | Audit too slow | Full repo scan on large codebase | Use `target_path` to scope; for >10K files, audit per-directory |
@@ -235,9 +227,9 @@ prompts. For large codebases, this can consume significant tokens. Strategies:
 
 | Condition | Optimization |
 |-----------|-------------|
-| Phase 0 finds 0 files | Skip all passes, emit PASS |
+| Phase 0 finds 0 files after loading criteria | Skip all passes, report zero findings |
 | Pass 1 flags file for rewrite (>3 critical) | Skip Pass 2/3 on that file |
-| All three layers report 0 findings | Layer 4 short-circuits to PASS |
+| All three layers confirm criteria loaded and report 0 findings | Layer 4 short-circuits to PASS |
 | Layer 5 changed-file list is empty | Skip re-assessment |
 
 ---
@@ -773,8 +765,10 @@ at most.
 
 ## Output Schema Reference
 
-Each layer produces structured JSON output. The schemas below define the
-contract between layers and with downstream consumers.
+Layers 1–3 resolve the exact `code-philosophy` skill through `amplihack directory find`.
+They fall back to the bundled and staged skill directories under `AMPLIHACK_HOME` and `~/.amplihack`.
+Each reports `criteria_status: loaded` after applying its criteria, or `unavailable` with a
+`criteria_error`, empty findings, and zero counts when it cannot load them.
 
 ### Layer 1/2 Finding Schema
 
@@ -782,6 +776,7 @@ contract between layers and with downstream consumers.
 {
   "layer": 1,
   "source": "anti-patterns",
+  "criteria_status": "loaded",
   "findings": [{
     "id": "L1-001",
     "category": "over-abstraction|inheritance|large-function|tight-coupling|missing-exports",
@@ -804,6 +799,7 @@ Layer 3 adds `pass` and `classification` fields:
 {
   "layer": 3,
   "source": "code-philosophy-3-pass",
+  "criteria_status": "loaded",
   "classification": {
     "total_files": 47,
     "by_language": {"rust": 32, "python": 10, "shell": 5},
@@ -895,6 +891,10 @@ Layer 3 adds `pass` and `classification` fields:
 
 | Condition | Verdict |
 |-----------|---------|
+| A layer output is missing or invalid, or any layer lacks `criteria_status: loaded` | `INCOMPLETE` |
 | Any `critical` finding present | `FAIL` |
 | No `critical`, but `high` or `medium` present | `PASS-WITH-WARNINGS` |
 | Only `low` findings or no findings | `PASS` |
+
+Apply the first matching rule. An `INCOMPLETE` report keeps verified findings and names
+affected layers in `verdict_reason`. Rerun the full audit to resolve it.
