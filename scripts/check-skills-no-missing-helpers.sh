@@ -37,8 +37,25 @@ patterns=(
 regex=$(IFS='|'; echo "${patterns[*]}")
 command_regex="$regex|\.claude/[A-Za-z0-9_./-]+\.py"
 
-skill_violations="$(rg -n "$regex" amplifier-bundle/skills || true)"
-command_violations="$(rg -n "$command_regex" docs/claude/commands || true)"
+skill_violations=""
+if skill_violations="$(rg -n "$regex" amplifier-bundle/skills)"; then
+    :
+else
+    status=$?
+    if (( status != 1 )); then
+        exit "$status"
+    fi
+fi
+
+command_violations=""
+if command_violations="$(rg -n "$command_regex" docs/claude/commands)"; then
+    :
+else
+    status=$?
+    if (( status != 1 )); then
+        exit "$status"
+    fi
+fi
 
 if [[ -n "$skill_violations" || -n "$command_violations" ]]; then
     cat >&2 <<EOF
