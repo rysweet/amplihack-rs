@@ -9,6 +9,7 @@ mod checkout;
 mod codex_agent_step;
 mod codex_copilot_rewrite;
 mod codex_exec_args;
+mod codex_extra_hooks;
 /// Local-model launches of `amplihack codex`: a small Codex home of
 /// amplihack's own and no hook text for the model.
 pub(crate) mod codex_local_model;
@@ -687,8 +688,20 @@ fn run_launch_core(
         // This final check catches ordinary package and symlink replacement
         // after preflight and narrows same-user races without claiming the
         // stronger guarantees of descriptor-based execution.
-        let hook_settings = match hook_settings::prepare(&binary.name, &extra_args) {
-            hook_settings::Inject::Path(path) => Some(path),
+        let extra_hooks = hook_settings::ExtraHooks::from_env()?;
+        let prepared_hooks = hook_settings::prepare(
+            &binary.name,
+            &extra_args,
+            &execution_dir,
+            extra_hooks.as_ref(),
+        );
+        let mut settings_args = None;
+        let hook_settings = match &prepared_hooks {
+            hook_settings::Inject::Path(path) => Some(path.as_path()),
+            hook_settings::Inject::Scoped(path, args) => {
+                settings_args = args.as_deref();
+                Some(path.as_ref())
+            }
             hook_settings::Inject::NotPrivate => {
                 // SR-15: the one skip the user can fix, so say it once.
                 let dir = hook_settings::launch_file_path()
@@ -705,6 +718,9 @@ fn run_launch_core(
             hook_settings::Inject::Skip(reason) => {
                 tracing::debug!("no hooks --settings file: {reason}");
                 None
+            }
+            hook_settings::Inject::Error(error) => {
+                anyhow::bail!("{error}");
             }
         };
         // Issue #3435: a step with a hook is given new guidance at its next
@@ -724,17 +740,39 @@ fn run_launch_core(
         if let GuidanceRoute::Undeliverable(reason) = settle_route(guidance_route, step_hooked) {
             report_guidance_drop(&guidance, &guidance_label, reason);
         }
+        let codex_hooks = if binary.name == "codex" {
+            extra_hooks.as_ref().and_then(|hooks| {
+                codex_extra_hooks::prepare(
+                    hooks,
+                    binary.version.as_deref(),
+                    &extra_args,
+                    local_model.is_some(),
+                )
+            })
+        } else {
+            None
+        };
+        let codex_args = codex_hooks
+            .as_ref()
+            .and_then(|hooks| hooks.arguments(&extra_args));
         let mut cmd = build_command_for_dir(
             &binary,
             resume,
             continue_session,
             skip_permissions,
-            &extra_args,
+            settings_args
+                .or(codex_args.as_deref())
+                .unwrap_or(&extra_args),
             Some(&execution_dir),
             subprocess_safe,
             claude_config_dir.as_deref(),
             contract_file.as_deref(),
-            hook_settings.as_deref(),
+            command::HookOptions {
+                claude_settings: hook_settings,
+                omit_codex_trust_flag: codex_hooks
+                    .as_ref()
+                    .is_some_and(codex_extra_hooks::LaunchHooks::omit_trust_flag),
+            },
         )?;
         cmd.current_dir(&execution_dir);
         // Issue #2030, step 6: a rewritten `-p <text>` reaches the child on a
@@ -803,6 +841,13 @@ fn run_launch_core(
                 );
             }
         };
+        if let Some(hooks) = codex_hooks {
+            hooks.report_omissions(
+                guidance_step_id
+                    .as_deref()
+                    .unwrap_or(&guidance_label.step_run_id),
+            );
+        }
 
         // Issue #3435: when the block goes to the child's stdin, the writer
         // records it as soon as every byte is written and before stdin is

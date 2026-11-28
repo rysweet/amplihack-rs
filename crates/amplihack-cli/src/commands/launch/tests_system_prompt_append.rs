@@ -262,7 +262,7 @@ fn argv_for(extra: &[String]) -> Vec<String> {
         false,
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
-        None,
+        Default::default(),
     )
     .unwrap()
     .get_args()
@@ -367,7 +367,7 @@ fn copilot_launches_are_untouched_by_this_feature() {
             false,
             None,
             Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
-            None,
+            Default::default(),
         )
         .unwrap()
         .get_args()

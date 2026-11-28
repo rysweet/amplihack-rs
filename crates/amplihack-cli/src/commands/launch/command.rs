@@ -14,6 +14,12 @@ use std::process::Command;
 
 pub(super) const COPILOT_HOME_ENV: &str = "COPILOT_HOME";
 
+#[derive(Default)]
+pub(super) struct HookOptions<'a> {
+    pub claude_settings: Option<&'a Path>,
+    pub omit_codex_trust_flag: bool,
+}
+
 /// Reject repository custom agents before a routed Copilot process starts.
 ///
 /// `COPILOT_HOME` isolates user configuration, but Copilot independently
@@ -103,7 +109,7 @@ pub(super) fn build_command(
         false, // subprocess_safe
         None,  // claude_config_dir
         Some(Path::new(TEST_CONTRACT_PATH)),
-        None, // hook_settings
+        HookOptions::default(),
     )
     .expect("a contract path is supplied")
 }
@@ -119,7 +125,7 @@ pub(super) fn build_command_for_dir(
     subprocess_safe: bool,
     claude_config_dir: Option<&Path>,
     contract_file: Option<&Path>,
-    hook_settings: Option<&Path>,
+    hooks: HookOptions<'_>,
 ) -> Result<Command> {
     let mut cmd = Command::new(&binary.path);
 
@@ -261,7 +267,7 @@ pub(super) fn build_command_for_dir(
     // Issue #2279 (D5): amplihack's hooks block as a settings source of its
     // own, by path (#2030), before the user's arguments. The caller decides
     // whether it applies (`hook_settings::prepare`).
-    if let Some(path) = hook_settings {
+    if let Some(path) = hooks.claude_settings {
         cmd.arg("--settings");
         cmd.arg(path);
     }
@@ -271,11 +277,17 @@ pub(super) fn build_command_for_dir(
     // trust as Claude's `--dangerously-skip-permissions` (#2317), unless the
     // caller chose a sandbox. Interactive argv is unchanged.
     // The recipe runs in a real checkout; Codex performs its normal Git check.
-    if binary.name == "codex" {
-        if let Some(line) = codex_agent_step::codex_agent_step_notice(extra_args) {
+    if let Some(mut plan) = (binary.name == "codex")
+        .then(|| codex_agent_step::plan(extra_args))
+        .flatten()
+    {
+        if hooks.omit_codex_trust_flag {
+            plan.omit_hook_trust();
+        }
+        if let Some(line) = plan.notice() {
             eprintln!("{line}");
         }
-        cmd.args(codex_agent_step::codex_agent_step_args(extra_args));
+        cmd.args(plan.arguments(extra_args));
     } else {
         cmd.args(extra_args);
     }

@@ -44,7 +44,7 @@ fn build(name: &str, extra: &[String]) -> Vec<String> {
         false,
         None,
         Some(std::path::Path::new("/tmp/amplihack-contract-test")),
-        None,
+        Default::default(),
     )
     .expect("a contract path is supplied");
     argv(&cmd)
@@ -287,7 +287,7 @@ fn every_claude_family_harness_is_pinned_to_the_directory_the_policy_is_written_
             false,
             Some(&config_dir),
             Some(std::path::Path::new("/tmp/amplihack-contract-test")),
-            None,
+            Default::default(),
         )
         .expect("a contract path is supplied");
         let pinned = cmd

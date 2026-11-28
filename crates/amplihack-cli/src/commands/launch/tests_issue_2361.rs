@@ -224,8 +224,10 @@ fn recipe_step_environment_keeps_state_and_contract_out_of_the_checkout() {
             newer_stamp: false,
             target: Some(&target),
             amplihack_home: &contract_dir,
+            execution_dir: &contract_dir,
+            extra_hooks: None,
         });
-        assert_eq!(injected, Inject::Path(expected.clone()));
+        assert!(matches!(injected, Inject::Path(path) if path == expected));
         let settings: serde_json::Value =
             serde_json::from_slice(&fs::read(expected).unwrap()).unwrap();
         assert_eq!(settings, serde_json::json!({ "hooks": block(&target) }));

@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 mod file;
 pub(super) use file::create_file;
-#[cfg(test)]
+#[cfg(unix)]
 pub(crate) use file::owner_refusal;
 pub(crate) use file::update_file_with_backup;
 pub(crate) use file::{FileDrift, FileMerge, drift_file, merge_file, reason, update_file};

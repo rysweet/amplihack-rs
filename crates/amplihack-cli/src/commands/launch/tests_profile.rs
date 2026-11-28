@@ -28,7 +28,7 @@ fn build(name: &str, dir: Option<&Path>) -> std::process::Command {
         false,
         dir,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
-        None,
+        Default::default(),
     )
     .unwrap()
 }
