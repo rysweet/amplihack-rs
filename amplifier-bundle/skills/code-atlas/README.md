@@ -77,12 +77,12 @@ skills/code-atlas/
 ```
 code-atlas (orchestrator)
   compile-deps analyzer (language-pluggable, mode always labelled):
-    code-visualizer     Python repos only: Python AST module analysis (optional adapter)
+    python-ast          Code-atlas reads Python imports using the rules in reference.md
     cargo metadata      Rust repos: dependency + module static approximation
     analyzer agent      Other languages: static-approximation mapping
   mermaid-diagram-generator   Mermaid syntax and formatting
   lsp-setup             Symbol queries, dead code (ast-lsp-bindings layer)
-  visualization-architect     Complex DOT layouts
+  architect             Complex DOT layouts
   analyzer              Deep dependency mapping
   reviewer              Contradiction hunting (all 3 passes)
 ```

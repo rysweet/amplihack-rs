@@ -63,6 +63,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 const ACCESS: &str = "FAKE-ACCESS-1844-src";
+const REFRESH: &str = "FAKE-REFRESH-1844-src";
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
@@ -132,7 +133,7 @@ fn setup() -> Setup {
     let creds = root.join("spare").join(".credentials.json");
     let doc = json!({"claudeAiOauth": {
         "accessToken": ACCESS,
-        "refreshToken": "FAKE-REFRESH-1844-src",
+        "refreshToken": REFRESH,
         "expiresAt": chrono::Utc::now().timestamp_millis() + 3_600_000
     }});
     fs::write(&creds, doc.to_string()).unwrap();
@@ -195,6 +196,7 @@ impl Fallback {
             raw: None,
             source: Some(Source::Fallback),
             direct_failure: None,
+            retry_until_ms: None,
             spend: self.spend,
             extra_shape: None,
         }
@@ -1451,6 +1453,86 @@ fn assert_falls_back_once(p: &Probe, fb: &Fallback, why: &'static str) {
     assert_eq!(p.source, Some(Source::Fallback), "{why}");
     assert_eq!(p.direct_failure, Some(why));
     assert!(p.error.is_none(), "{why}: {:?}", p.error);
+}
+
+#[test]
+fn a_429_without_a_retry_time_uses_only_the_control_request() {
+    let s = setup();
+    let fake = FakeHttp::start(|_, _| Reply::raw(429, ""));
+    let env = env_for(&fake, ProbeMode::Ordered);
+    let fb = Fallback::new();
+
+    let measured = read(&env, &s.plan(), &s.root, now(), |mode| fb.run(mode));
+    assert_eq!(fb.calls(), [ProbeMode::ControlOnly]);
+    assert_eq!(measured.source, Some(Source::Fallback));
+    assert_eq!(measured.direct_failure, Some(reason::HTTP_429));
+    assert_eq!(session(&measured), Some(33.0));
+    assert!(measured.error.is_none());
+
+    let unread = read(&env, &s.plan(), &s.root, now(), |mode| {
+        assert_eq!(mode, ProbeMode::ControlOnly);
+        Probe::read(UsageReport::empty(UsageState::Timeout), Source::Fallback)
+    });
+    assert_eq!(unread.report.state, UsageState::Error);
+    assert_eq!(unread.error, Some(ErrorReason::Direct(reason::HTTP_429)));
+    assert_eq!(unread.direct_failure, Some(reason::HTTP_429));
+    assert!(unread.retry_until_ms.is_none());
+    assert_eq!(fake.count("GET", super::usage_direct::USAGE_PATH), 2);
+}
+
+#[test]
+fn a_contended_retry_lock_leaves_the_probe_unread_in_every_source_path() {
+    use super::usage_direct::reason;
+    use super::usage_retry::{Held, Key};
+
+    let s = setup();
+    let fake = ok_server();
+    let held = Held::take(&s.root, &Key::new(&fake.base(), REFRESH)).unwrap();
+    let fallback = Fallback::new();
+    let probe = |mode| {
+        read(&env_for(&fake, mode), &s.plan(), &s.root, now(), |mode| {
+            fallback.run(mode)
+        })
+    };
+    let direct = probe(ProbeMode::Ordered);
+    s.seed_passive();
+    let passive = probe(ProbeMode::Ordered);
+    let text = probe(ProbeMode::Text);
+    drop(held);
+
+    for p in [direct, passive, text] {
+        assert_eq!(p.report.state, UsageState::Error);
+        assert_eq!(p.error, Some(ErrorReason::Direct(reason::RETRY_BUSY)));
+        assert!(p.retry_until_ms.is_none());
+    }
+    assert!(fallback.calls().is_empty());
+    assert!(fake.seen().is_empty());
+}
+
+#[test]
+fn a_figureless_fallback_preserves_the_direct_failure() {
+    let s = setup();
+    let fake = failing_server();
+    let now = now();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now,
+        |_| {
+            let report = super::usage_parse::parse_usage(
+                "You are currently using your subscription to power your Claude Code usage",
+                "",
+                now,
+            );
+            assert_eq!(report.state, UsageState::Unparsed);
+            Probe::read(report, Source::Fallback)
+        },
+    );
+    assert_eq!(fake.count("GET", "/api/oauth/usage"), 1);
+    assert_eq!(p.report.state, UsageState::Error);
+    assert_eq!(p.error, Some(ErrorReason::Direct(reason::HTTP_5XX)));
+    assert_eq!(p.direct_failure, Some(reason::HTTP_5XX));
 }
 
 #[test]

@@ -59,6 +59,7 @@ mod backup_cleanup;
 mod cleanup_guard;
 mod completion_proof;
 mod config;
+mod config_diff;
 mod package_cleanup;
 mod recovery;
 mod recovery_archive;
@@ -145,6 +146,8 @@ mod classify_tests;
 mod cleanup_performance_tests;
 #[cfg(all(test, unix))]
 mod completion_proof_tests;
+#[cfg(all(test, unix))]
+mod config_layout_tests;
 #[cfg(all(test, unix))]
 mod deny_rules_tests;
 #[cfg(test)]

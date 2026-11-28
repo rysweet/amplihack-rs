@@ -81,10 +81,18 @@ pub(super) fn config_states(
     Ok(states)
 }
 
+/// Recorded config states, in the order a refusal prefers them: the original,
+/// the expected config, then each predicted native write.
+pub(super) fn candidates(pending: &Value) -> impl Iterator<Item = &Value> {
+    [&pending["config"], &pending["expected"]["config"]]
+        .into_iter()
+        .chain(pending["config_states"].as_array().into_iter().flatten())
+}
+
+/// Byte equality first. Otherwise, issue #3423: native Codex may lay out the
+/// same content differently from the prediction, so a config with the same
+/// parsed values and the same comment lines matches (see `config_diff`).
 pub(super) fn config_matches(pending: &Value, current: &Value) -> bool {
-    current == &pending["config"]
-        || current == &pending["expected"]["config"]
-        || pending["config_states"]
-            .as_array()
-            .is_some_and(|states| states.contains(current))
+    candidates(pending).any(|state| state == current)
+        || candidates(pending).any(|state| config_diff::same_content(state, current))
 }

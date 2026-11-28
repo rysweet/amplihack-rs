@@ -96,7 +96,8 @@ gh_cancel_owned() {
 }
 
 # --- classifier ------------------------------------------------------------
-# classify_gh_error <stderr_file> -> echoes: auth | rate_limit | transient | other
+# classify_gh_error <stderr_file> [explicit] -> auth | rate_limit | transient | other
+# The goal reader supplies explicit when a bare 403 is insufficient evidence.
 #
 # Order matters: permanent auth errors are checked first (never retried), then
 # rate-limit signals (wait-for-reset), then generic transient signals.
@@ -116,7 +117,7 @@ classify_gh_error() {
 
   # A bare 403 is treated as a (secondary) rate-limit signal UNLESS it clearly
   # reads as a permission error, in which case it is not retryable.
-  if grep -Eiq 'HTTP 403|(^|[^0-9])403([^0-9]|$)' "$f"; then
+  if [ "${2:-}" != explicit ] && grep -Eiq 'HTTP 403|(^|[^0-9])403([^0-9]|$)' "$f"; then
     if grep -Eiq 'resource not accessible|must have admin|not authorized|insufficient|permission' "$f"; then
       printf 'other\n'; return 0
     fi
@@ -486,4 +487,555 @@ _gh_retry_attempts() {
         ;;
     esac
   done
+}
+
+# --- goal-loop reads and CI waits (#1918) ---------------------------------
+
+# Call in the shell that owns the operation, with an EXIT trap that calls
+# gh_goal_cancel. Bash can handle a signal immediately while in builtin wait.
+gh_goal_command() {
+  local rc=0
+  "$@" &
+  GH_GOAL_PID=$!
+  wait "$GH_GOAL_PID" || rc=$?
+  GH_GOAL_PID=""
+  return "$rc"
+}
+
+gh_goal_cancel() {
+  [ -n "${GH_GOAL_PID:-}" ] || return 0
+  kill -TERM "$GH_GOAL_PID" 2>/dev/null || :
+  wait "$GH_GOAL_PID" 2>/dev/null || :
+}
+
+_gh_header() {
+  LC_ALL=C awk -v name="$2" '
+    BEGIN { name = tolower(name) ":" }
+    index(tolower($0), name) == 1 {
+      value = substr($0, length(name) + 1)
+      sub(/^[ \t]+/, "", value)
+      sub(/[ \t\r]+$/, "", value)
+      print value
+      exit
+    }' "$1"
+}
+
+# The reading can supply gh_rate_limit_guidance to wait for a new entry.
+# A CI wait is already under guidance wait. With no deadline, block until
+# the enclosing guidance wake or a cancellation interrupts the shell.
+_gh_goal_wait_for_guidance() {
+  local rc=0
+  if declare -F gh_rate_limit_guidance >/dev/null; then
+    gh_rate_limit_guidance || rc=$?
+    case "$rc" in 0|75|79) return "$rc" ;; esac
+  fi
+  mkfifo "$GH_READ_DIR/rate-limit.wait" || return 1
+  read -r <> "$GH_READ_DIR/rate-limit.wait"
+}
+
+_gh_goal_wait_for_reset() {
+  local resource="$1" headers="$2" reported_at="$3"
+  local retry remaining reset deadline=0 rc=0 now
+  retry="$(_gh_header "$headers" retry-after)"
+  remaining="$(_gh_header "$headers" x-ratelimit-remaining)"
+  reset="$(_gh_header "$headers" x-ratelimit-reset)"
+  # This lookup is outside the primary allowance. Check the declined
+  # resource even when the response already supplies a retry deadline.
+  gh_goal_command gh api rate_limit > "$GH_READ_DIR/rate-limit.json" 2> "$GH_READ_DIR/rate-limit.err" || rc=$?
+  case "$rc" in 75|79) return "$rc" ;; esac
+  if [ -z "$remaining" ] || { [ "$remaining" = 0 ] && ! [[ "$reset" =~ ^[0-9]{1,12}$ ]]; }; then
+    reset=""
+    if [ "$rc" -eq 0 ]; then
+      reset="$(jq -r --arg resource "$resource" '
+        .resources[$resource] | select(.remaining == 0) | .reset // empty
+      ' "$GH_READ_DIR/rate-limit.json" 2>/dev/null)" || reset=""
+    else
+      printf 'WARNING: GitHub rate-limit lookup failed: %s\n' "$(gh_safe_stderr "$GH_READ_DIR/rate-limit.err")" >&2
+    fi
+  elif [ "$remaining" != 0 ]; then
+    reset=""
+  fi
+  if [[ "$reset" =~ ^[0-9]{1,12}$ ]]; then deadline=$((10#$reset)); fi
+  if [[ "$retry" =~ ^[0-9]{1,9}$ ]] && [ "$((reported_at + 10#$retry))" -gt "$deadline" ]; then
+    deadline=$((reported_at + 10#$retry))
+  fi
+  if [ "$deadline" -le "$reported_at" ]; then
+    printf 'GitHub declined a %s read and supplied no future retry deadline. The read is pending.\n' "$resource" >&2
+    rc=0
+    _gh_goal_wait_for_guidance || rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    if [ "$rc" -eq 0 ]; then
+      GH_READ_DEFERRED_ERROR="GitHub declined the read without a retry deadline. Guidance arrived while it was pending"
+    else
+      GH_READ_DEFERRED_ERROR="GitHub declined the read without a retry deadline and the guidance wait failed"
+    fi
+    GH_READ_ERROR="$GH_READ_DEFERRED_ERROR"
+    return 1
+  fi
+  now="$(date +%s)" || return 1
+  if [ "$deadline" -gt "$now" ]; then
+    printf 'GitHub declined a %s read. Waiting until its retry deadline.\n' "$resource" >&2
+    gh_goal_command sleep "$((deadline - now))" || return $?
+  fi
+}
+
+# GraphQL CLI reads write their response headers to the API trace. Keep the final
+# response's headers and the CLI diagnostic, omitting traffic from diagnostics
+# so successful requests and their payloads cannot classify a later failure.
+_gh_goal_trace_response() {
+  LC_ALL=C awk -v headers="$2" '
+    BEGIN { diagnostic = 1 }
+    /^\* Request to / { response = ""; phase = "request"; diagnostic = 0; message = ""; next }
+    phase == "request" && /^< HTTP\// { phase = "headers" }
+    phase == "headers" {
+      if (/^< /) { response = response substr($0, 3) "\n"; next }
+      phase = "body"
+    }
+    /^\* Request took / { phase = ""; diagnostic = 1; next }
+    diagnostic { message = message $0 "\n" }
+    END { printf "%s", response > headers; printf "%s", message }
+  ' "$1"
+}
+
+# gh_goal_read <core|graphql> <header mode: true|false|trace> <gh args...>
+# GH_READ_DIR is the caller's private scratch. GH_READ_BODY points to a file
+# valid until the next read. Only a rate-limit response retries the command.
+# GH_READ_RETRIED lets callers invalidate evidence across a retry.
+gh_goal_read() {
+  local resource="$1" header_mode="$2" rc headers diagnostic reported_at
+  shift 2
+  local raw="$GH_READ_DIR/gh.raw" err="$GH_READ_DIR/gh.err"
+  local -a command=(gh "$@")
+  if [ "$header_mode" = trace ]; then
+    command=(env GH_DEBUG=api GH_FORCE_TTY= NO_COLOR=1 "${command[@]}")
+  fi
+  GH_READ_BODY="$raw"
+  GH_READ_ERROR=""
+  GH_READ_STATUS=""
+  if [ -n "${GH_READ_DEFERRED_ERROR:-}" ]; then
+    GH_READ_ERROR="$GH_READ_DEFERRED_ERROR"
+    return 1
+  fi
+  while :; do
+    rc=0
+    GH_READ_STATUS=""
+    gh_goal_command "${command[@]}" > "$raw" 2> "$err" || rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    headers="$err"
+    diagnostic="$err"
+    if [ "$header_mode" = true ]; then
+      headers="$GH_READ_DIR/gh.headers"
+      LC_ALL=C awk '{ sub(/\r$/, "") } !length { exit } { print }' "$raw" > "$headers" || return 1
+      GH_READ_STATUS="$(LC_ALL=C awk 'NR == 1 && /^HTTP\// { print $2 }' "$headers")"
+      if [ "$GH_READ_STATUS" = 304 ]; then return 0; fi
+      if [ "$GH_READ_STATUS" = 200 ] && [ "$rc" -eq 0 ]; then
+        GH_READ_BODY="$GH_READ_DIR/gh.body"
+        LC_ALL=C awk 'body { print; next } /^\r?$/ { body = 1 }' "$raw" > "$GH_READ_BODY"
+        return $?
+      fi
+    elif [ "$rc" -eq 0 ]; then
+      return 0
+    elif [ "$header_mode" = trace ]; then
+      headers="$GH_READ_DIR/gh.headers"
+      diagnostic="$GH_READ_DIR/gh.diagnostic"
+      _gh_goal_trace_response "$err" "$headers" > "$diagnostic" || return 1
+      GH_READ_STATUS="$(LC_ALL=C awk 'NR == 1 && /^HTTP\// { print $2 }' "$headers")"
+    fi
+    if [ "$GH_READ_STATUS" = 429 ] ||
+      { [ "$GH_READ_STATUS" = 403 ] &&
+        { [ "$(_gh_header "$headers" x-ratelimit-remaining)" = 0 ] ||
+          [ -n "$(_gh_header "$headers" retry-after)" ]; }; } ||
+      [ "$(classify_gh_error "$diagnostic" explicit)" = rate_limit ]; then
+      reported_at="$(date +%s)" || return 1
+      _gh_goal_wait_for_reset "$resource" "$headers" "$reported_at" || return $?
+      GH_READ_RETRIED=true
+    else
+      GH_READ_ERROR="$(gh_safe_stderr "$diagnostic")"
+      [ "$rc" -ne 0 ] || rc=1
+      return "$rc"
+    fi
+  done
+}
+
+# gh_rest_get <endpoint> <cache_dir> <jq validation> [<cache scope>]
+# The caller creates cache_dir in the run's private state folder, on the same
+# filesystem as GH_READ_DIR.
+# Read a validated 200 or reuse the same entry on a 304. Snapshot the old
+# entry before the request so a concurrent writer cannot pair its ETag with
+# a different body. Publish the replacement with an atomic rename.
+gh_rest_get() {
+  local endpoint="$1" cache="$2" validate="$3" scope="${4:-}" key entry etag=""
+  local snapshot="$GH_READ_DIR/cache.previous" staged="$GH_READ_DIR/cache.next"
+  # Keep the array nonempty for Bash 3.2 under set -u.
+  local -a args=(api --include)
+  GH_READ_ERROR=""
+  GH_REST_LINK=""
+  key="$(printf '%s\n%s' "$scope" "$endpoint" | git hash-object --stdin)" || return 1
+  entry="$cache/$key.json"
+  if [ -f "$entry" ] && [ ! -L "$entry" ] && cp -- "$entry" "$snapshot" &&
+      etag="$(jq -er '.etag | strings | select(length > 0)' "$snapshot" 2>/dev/null)"; then
+    args+=(-H "If-None-Match: $etag")
+  else
+    etag=""
+  fi
+  gh_goal_read core true "${args[@]}" "$endpoint" || return $?
+  if [ "$GH_READ_STATUS" = 304 ]; then
+    if [ -z "$etag" ]; then
+      GH_READ_ERROR="GitHub returned 304 without a matching cached response"
+      return 1
+    fi
+    GH_READ_BODY="$GH_READ_DIR/gh.body"
+    GH_REST_LINK="$(jq -r '.link' "$snapshot")" &&
+      jq -c '.body' "$snapshot" > "$GH_READ_BODY"
+    return $?
+  fi
+  etag="$(_gh_header "$GH_READ_DIR/gh.headers" etag)"
+  GH_REST_LINK="$(_gh_header "$GH_READ_DIR/gh.headers" link)"
+  if ! jq -s -c -e --arg etag "$etag" --arg link "$GH_REST_LINK" '
+    if length == 1 and (.[0] | ('"$validate"')) then {etag:$etag, link:$link, body:.[0]}
+    else error("unexpected response") end
+  ' "$GH_READ_BODY" > "$staged" 2>/dev/null; then
+    GH_READ_ERROR="GitHub returned an unreadable response for ${endpoint%%\?*}"
+    return 1
+  fi
+  if ! mv -f -- "$staged" "$entry"; then
+    GH_READ_ERROR="the conditional REST cache could not be updated"
+    return 1
+  fi
+}
+
+# Each page has its own cache entry, including its Link header. Use only
+# the next page number from that header and keep the request on the same
+# endpoint and host. No request is made for a page GitHub did not report.
+gh_rest_pages() {
+  local endpoint="$1" cache="$2" validate="$3" select_items="$4" page=1 separator='?'
+  local next_link='<[^>]*[?&]page=([0-9]+)(&[^>]*)?>;[[:space:]]*rel="next"'
+  if [[ "$endpoint" == *'?'* ]]; then separator='&'; fi
+  while :; do
+    gh_rest_get "${endpoint}${separator}per_page=100&page=$page" "$cache" "$validate" || return $?
+    jq -c "$select_items" "$GH_READ_BODY" || return 1
+    if [[ "$GH_REST_LINK" != *'rel="next"'* ]]; then return 0; fi
+    page=$((page + 1))
+    if ! [[ "$GH_REST_LINK" =~ $next_link && "${BASH_REMATCH[1]}" = "$page" ]]; then
+      GH_READ_ERROR="GitHub returned an invalid next page for $endpoint"
+      return 1
+    fi
+  done
+}
+
+# Read both sources of required-check policy, preserving known requirements
+# when one source is unreadable. Return the policy in GH_BRANCH_POLICY.
+gh_read_branch_policy() {
+  local repo="$1" base="$2" cache="$3"
+  local required='[]' policy_error="" strict=null strict_source="" strict_error="" rules_read=false
+  local check_fields base_path rules protection protection_source classic_error classic_strict rc
+  GH_BRANCH_POLICY=""
+  # shellcheck disable=SC2016
+  check_fields='
+    def context: type == "string" and length > 0;
+    def app_id: . == null or . == -1 or (type == "number" and . > 0 and floor == .);
+    def source: if . == -1 then null else . end;
+    def classic($branch):
+      select((.strict | type) == "boolean" or ($branch and .strict == null))
+      | select((.contexts | type == "array") or (.checks | type == "array"))
+      | select((.contexts | . == null or (type == "array" and all(.[]; context)))
+           and (.checks | . == null or (type == "array" and all(.[]; (.context | context) and (.app_id | app_id)))))
+      | [(.checks // [])[] | {name:.context, app_id:(.app_id | source)}
+          + (if $branch and (has("app_id") | not) then {source_known:false} else {} end)] as $checks
+      | {strict, required:($checks + [(.contexts // [])[] as $name
+          | select(all($checks[]; .name != $name)) | {name:$name, app_id:null}
+          + (if $branch then {source_known:false} else {} end)])};
+  '
+  if [ -n "$base" ] && [[ "$base" != -* ]] && git check-ref-format "refs/heads/$base" >/dev/null 2>&1; then
+    base_path="$(jq -nr --arg base "$base" '$base | @uri')"
+    gh_rest_pages "repos/$repo/rules/branches/$base_path" "$cache" \
+      'type == "array" and all(.[]; (.type | type == "string"))' \
+      '.[] | select(.type == "required_status_checks" or .type == "workflows")' > "$GH_READ_DIR/rules.jsonl"; rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    if [ "$rc" -eq 0 ] && rules="$(jq -sce "$check_fields"'
+      [.[] | select(.type == "required_status_checks")] as $status_rules
+      | select(all($status_rules[]; .parameters.required_status_checks
+        | type == "array" and all(.[]; (.context | context) and (.integration_id | app_id))))
+      | {strict:any($status_rules[]; .parameters.strict_required_status_checks_policy == true),
+         required:[$status_rules[].parameters.required_status_checks[] | {name:.context, app_id:(.integration_id | source)}],
+         workflows:any(.[]; .type == "workflows")}
+    ' "$GH_READ_DIR/rules.jsonl" 2>/dev/null)"; then
+      rules_read=true
+      required="$(jq -c '.required' <<< "$rules")"
+      if jq -e '.strict' <<< "$rules" >/dev/null; then strict=true; strict_source=rules; fi
+      if jq -e '.workflows' <<< "$rules" >/dev/null; then
+        policy_error="required workflow results cannot be verified from check runs and commit statuses"
+      fi
+    else policy_error="rules endpoint: ${GH_READ_ERROR:-unreadable response}"; fi
+    protection=""; protection_source=protection
+    gh_rest_get "repos/$repo/branches/$base_path/protection/required_status_checks" "$cache" 'type == "object"'; rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    if [ "$rc" -ne 0 ] || ! protection="$(jq -sce "$check_fields"'
+      select(length == 1) | .[0] | objects | classic(false)
+    ' "$GH_READ_BODY" 2>/dev/null)"; then
+      protection=""
+      case "$GH_READ_STATUS:${GH_READ_ERROR% }" in
+        '404:gh: Branch not protected (HTTP 404)'|'404:gh: Required status checks not enabled (HTTP 404)')
+          protection='{"strict":false,"required":[]}'
+          protection_source="rules (no strict status check rule)" ;;
+        *)
+          classic_error="${GH_READ_ERROR:-unreadable response}"
+          # The administration endpoint may return a generic 404 to a
+          # non-admin. The regular branch object can still list the checks.
+          gh_rest_get "repos/$repo/branches/$base_path" "$cache" 'type == "object"'; rc=$?
+          case "$rc" in 75|79) return "$rc" ;; esac
+          if [ "$rc" -eq 0 ] && protection="$(jq -sce "$check_fields"'
+            select(length == 1) | .[0] | objects | select(.protected | type == "boolean")
+            | if .protected == false or .protection.enabled == false or
+                 .protection.required_status_checks.enforcement_level == "off" then
+                {strict:false, required:[]}
+              else .protection.required_status_checks | objects | classic(true) end
+          ' "$GH_READ_BODY" 2>/dev/null)"; then
+            protection_source=branch
+          else
+            policy_error="${policy_error:+$policy_error; }classic protection: $classic_error; branch policy: ${GH_READ_ERROR:-unreadable response}"
+          fi ;;
+      esac
+    fi
+    if [ -n "$protection" ]; then
+      required="$(jq -c --argjson rules "$required" '$rules + .required' <<< "$protection")"
+      if [ "$strict" != true ]; then
+        classic_strict="$(jq -r '.strict' <<< "$protection")"
+        if [ "$classic_strict" = null ]; then
+          strict_error="the branch policy did not report strict status checks"
+        elif [ "$classic_strict" = true ] || [ "$rules_read" = true ]; then
+          strict="$classic_strict"; strict_source="$protection_source"
+        fi
+      fi
+    fi
+  else policy_error="the base name was refused"; fi
+  GH_BRANCH_POLICY="$(jq -cn --argjson required "$required" --arg error "$policy_error" \
+    --argjson strict "$strict" --arg source "$strict_source" --arg strict_error "${policy_error:+$policy_error${strict_error:+; }}$strict_error" '
+    {required:($required | unique), error:$error,
+     strict_status_checks:$strict, strict_source:(if $source == "" then null else $source end),
+     strict_unreadable:(if $strict == null then $strict_error else null end)}')"
+}
+
+# Compare the current policy with the policy used for the scan. Callers
+# verifying a pass expect a complete policy (an empty error).
+gh_verify_branch_policy() {
+  gh_read_branch_policy "$1" "$2" "$3" || return $?
+  jq -e --argjson required "$4" --argjson strict "$5" --arg error "${6:-}" '
+    .error == $error and .required == ($required | unique) and .strict_status_checks == $strict
+  ' <<< "$GH_BRANCH_POLICY" >/dev/null
+}
+
+# The PR body is scoped to the head the caller is verifying.
+gh_rest_pr() {
+  gh_rest_get "repos/$1/pulls/$2" "$3" \
+    'def sha: type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$");
+     (.head.sha | sha) and (.base.sha | sha) and (.base.ref | type == "string" and length > 0)' "$4"
+}
+
+gh_pr_base_matches() {
+  jq -e --arg ref "$1" --arg sha "$2" '.base.ref == $ref and .base.sha == $sha' "$GH_READ_BODY" >/dev/null
+}
+
+_gh_read_actions_attempts() {
+  local repo="$1" head="$2" cache="$3" aggregate="$4" runs="$GH_READ_DIR/workflow-runs.jsonl"
+  local matched
+  gh_rest_pages "repos/$repo/actions/runs?head_sha=$head" "$cache" '
+    (.workflow_runs | type == "array") and all(.workflow_runs[];
+      (.id | type == "number" and . > 0 and floor == .) and
+      (.run_attempt | type == "number" and . >= 1 and floor == .) and
+      (.status | type == "string"))
+  ' '.workflow_runs[] | {id, head_sha, check_suite_id, run_attempt, status}' > "$runs" || return $?
+  matched="$(jq -csr --arg head "$head" --slurpfile summary "$aggregate" '
+    . as $runs
+    | ($summary[0].actions | map(.suite_id) | unique) as $suites
+    | $suites | map(. as $suite | {
+        suite:($suite | if type == "number" and . > 0 and floor == . then . else null end),
+        runs:[$runs[] | select(.head_sha == $head and .check_suite_id == $suite)]})
+    | map(select(.suite == null or (.runs | length) != 1)) as $unmatched
+    | if ($unmatched | length) == 0 then map(.runs[0])
+      else "no unique workflow run for check suites: " +
+        ($unmatched[:20] | map(.suite // "missing or invalid ID") | join(", ")) +
+        (if ($unmatched | length) > 20 then ", and \(($unmatched | length) - 20) more" else "" end)
+      end
+  ' "$runs" 2>/dev/null)" || {
+    GH_READ_ERROR="the workflow runs and check suites could not be compared"
+    return 1
+  }
+  case "$matched" in
+    '['*) printf '%s\n' "$matched" ;;
+    *) GH_READ_ERROR="$matched"; return 1 ;;
+  esac
+}
+
+_gh_compare_actions_attempts() {
+  local current="$GH_READ_DIR/current-attempts.json" rc
+  GH_EXECUTION_STATE=unverified
+  GH_EXECUTION_DETAIL="the current GitHub Actions workflow runs could not be revalidated"
+  _gh_read_actions_attempts "$@" > "$current" || {
+    rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    GH_EXECUTION_DETAIL="$GH_EXECUTION_DETAIL: ${GH_READ_ERROR:-unreadable response}"
+    [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
+    return "$rc"
+  }
+  if cmp -s "$GH_READ_DIR/attempts.json" "$current"; then
+    GH_EXECUTION_STATE=verified
+    GH_EXECUTION_DETAIL=""
+  else
+    GH_EXECUTION_STATE=pending
+    GH_EXECUTION_DETAIL="a GitHub Actions workflow changed during attempt verification"
+  fi
+}
+
+# The check-runs endpoint can still serve the previous attempt's jobs while
+# Actions has a rerun queued. Verify the workflow state independently and
+# match check-run IDs and conclusions to the current attempt after it completes.
+_gh_verify_actions_checks() {
+  local repo="$1" head="$2" cache="$3" aggregate="$4" run attempt suite rc
+  local attempts="$GH_READ_DIR/attempts.json"
+  local reruns="$GH_READ_DIR/reruns.tsv" jobs="$GH_READ_DIR/attempt-jobs.jsonl"
+  GH_EXECUTION_STATE=unverified
+  GH_EXECUTION_DETAIL="the current GitHub Actions workflow runs could not be verified"
+  _gh_read_actions_attempts "$repo" "$head" "$cache" "$aggregate" > "$attempts" || {
+    rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    GH_EXECUTION_DETAIL="$GH_EXECUTION_DETAIL: ${GH_READ_ERROR:-unreadable response}"
+    [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
+    return "$rc"
+  }
+  if jq -e 'any(.[]; .status != "completed")' "$attempts" >/dev/null; then
+    GH_EXECUTION_STATE=pending
+    GH_EXECUTION_DETAIL="a GitHub Actions workflow for the checks is still running or queued"
+    return 0
+  fi
+  jq -r '.[] | select(.run_attempt > 1) | [.id, .run_attempt, .check_suite_id] | @tsv' \
+    "$attempts" > "$reruns" || return 0
+  while IFS=$'\t' read -r run attempt suite; do
+    GH_EXECUTION_DETAIL="the check runs for suite $suite could not be matched to GitHub Actions run $run attempt $attempt"
+    gh_rest_pages "repos/$repo/actions/runs/$run/attempts/$attempt/jobs" "$cache" '
+      .jobs | type == "array"
+    ' '.jobs[] | objects | select(.status == "completed")
+      | {url:(.check_run_url | strings | ascii_downcase), conclusion:(.conclusion | strings)}' > "$jobs" || {
+      rc=$?
+      case "$rc" in 75|79) return "$rc" ;; esac
+      GH_EXECUTION_DETAIL="$GH_EXECUTION_DETAIL: ${GH_READ_ERROR:-unreadable response}"
+      [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
+      return "$rc"
+    }
+    jq -es --arg repo "$repo" --argjson suite "$suite" --slurpfile summary "$aggregate" '
+      . as $jobs
+      | all($summary[0].actions[] | select(.suite_id == $suite);
+          .id != null and ({url:("https://api.github.com/repos/\($repo)/check-runs/\(.id)" | ascii_downcase),
+                            conclusion} | IN($jobs[])))
+    ' "$jobs" >/dev/null || return 0
+  done < "$reruns"
+  if [ -s "$reruns" ]; then
+    # Pinned jobs remain readable after another attempt queues. Check all
+    # matched runs again after the jobs reads, before accepting their IDs.
+    _gh_compare_actions_attempts "$repo" "$head" "$cache" "$aggregate"
+    return $?
+  fi
+  GH_EXECUTION_STATE=verified
+  GH_EXECUTION_DETAIL=""
+}
+
+_gh_checks_with_execution() {
+  jq -c --arg state "$GH_EXECUTION_STATE" --arg detail "$GH_EXECUTION_DETAIL" '
+    del(.actions)
+    | if $state == "verified" then .
+      else . + {state:$state, execution_detail:$detail}
+        | {name:"GitHub Actions workflow execution", state:$state, link:"", elapsed:""} as $execution
+        | .counts.total += 1
+        | .checks = ([$execution] + .checks)[:200]
+        | .counts[$state] += 1
+      end
+  ' "$1"
+}
+
+# Revalidate the Actions attempts from the last check scan after policy and
+# PR reads. A same-head rerun can queue while those reads are in flight.
+gh_revalidate_actions_checks() {
+  local result="$4" updated="$GH_READ_DIR/revalidated-ci.json"
+  [ "$GH_EXECUTION_STATE" = verified ] || return 0
+  _gh_compare_actions_attempts "$1" "$2" "$3" "$GH_READ_DIR/checks-summary.json" || return $?
+  if [ "$GH_EXECUTION_STATE" != verified ]; then
+    _gh_checks_with_execution "$result" > "$updated" && mv -- "$updated" "$result"
+  fi
+}
+
+# gh_head_checks <owner/repo> <sha> <cache_dir> <required_checks_json> <required_only> <policy_error>
+# Requirements are {name, app_id}, with source_known:false when the branch
+# policy supplies the name alone. A missing required check and a head with
+# no reported checks are pending. The display is capped separately from counts.
+gh_head_checks() {
+  local commit="repos/$1/commits/$2" cache="$3" required="$4" required_only="$5" policy_error="$6"
+  local rows="$GH_READ_DIR/checks.jsonl" aggregate="$GH_READ_DIR/checks-summary.json"
+  GH_EXECUTION_STATE=""
+  gh_rest_pages "$commit/check-runs" "$cache" '
+    (.check_runs | type == "array") and all(.check_runs[];
+      (.name | type == "string" and length > 0) and (.status | type == "string") and
+      (.conclusion | . == null or type == "string"))
+  ' '
+    .check_runs[] | {name, app_id:.app.id, link:(.html_url // .details_url // ""),
+      actions:(if .app.slug == "github-actions" then {id, suite_id:.check_suite.id, conclusion} else null end), state:(
+      if .status != "completed" or .conclusion == null then "pending"
+      elif .conclusion == "success" then "pass"
+      elif .conclusion == "skipped" or .conclusion == "neutral" then "skipping"
+      elif .conclusion == "cancelled" then "cancel"
+      else "fail" end
+    )}
+  ' > "$rows" || return $?
+  gh_rest_pages "$commit/status" "$cache" '
+    (.statuses | type == "array") and all(.statuses[];
+      (.context | type == "string" and length > 0) and
+      (.state | . == "success" or . == "pending" or . == "failure" or . == "error"))
+  ' '
+    .statuses[] | {name:.context, app_id:null, legacy_status:true, link:(.target_url // ""), state:(
+      if .state == "success" then "pass" elif .state == "pending" then "pending" else "fail" end
+    )}
+  ' >> "$rows" || return $?
+  jq -c -s --argjson required "$required" --argjson required_only "$required_only" --arg policy_error "$policy_error" '
+    def matches($check): .name == $check.name and (.app_id == null or .app_id == $check.app_id);
+    def has_unattributed_status($checks):
+      . as $need | any($checks[]; .legacy_status and .name == $need.name);
+    . as $all
+    | [$required[] | . as $need | select(all($all[]; . as $check | $need | matches($check) | not))] as $missing
+    | [$missing[] | select(has_unattributed_status($all) | not) | . + {state:"pending", link:""}] as $absent
+    | ([$all[] | . as $check
+        | [$required[] | select(matches($check))] as $matches
+        | ([$required[] | select(.app_id != null and has_unattributed_status([$check])) | .app_id] | unique) as $expected_apps
+        | select(($required | length) == 0 or ($required_only | not) or $policy_error != "" or
+                 ($matches | length) > 0 or ($expected_apps | length) > 0)
+        | if .state == "pending" then .
+          elif ($expected_apps | length) > 0 then
+            . + {observed_state:.state, state:(if .state == "fail" then "fail" else "unverified" end),
+                 unverified_reason:"status_app_unverified", expected_app_ids:$expected_apps}
+          elif any($matches[]; .source_known == false) then
+            . + {observed_state:.state, state:"unverified", unverified_reason:"required_app_unreadable"}
+          elif .state == "skipping" and ($matches | length) > 0 then
+            . + {unverified_reason:"skipped_or_neutral"}
+          else . end]
+       + $absent
+       | map(del(.legacy_status) + {elapsed:""})) as $checks
+    | ($checks | group_by(.state) | map({key:.[0].state, value:length}) | from_entries) as $n
+    | (if ($n.pass // 0) == 0 then
+         $checks | map(if .state == "skipping" then . + {unverified_reason:"skipped_or_neutral"} else . end)
+       else $checks end) as $display
+    | [$display[] | select(.unverified_reason)] as $unverified
+    | {checks:($display[:200] | map(del(.actions))), unverified_checks:($unverified[:200] | map(del(.actions))),
+       actions:[$checks[] | select(.state == "pass" or .state == "fail" or .state == "cancel") | .actions | objects],
+       missing_required:($absent | length > 0),
+       required_error:(if $policy_error == "" then null else $policy_error end),
+       counts:{total:($checks | length), passed:($n.pass // 0), unverified:($unverified | length),
+        failing:(($n.fail // 0) + ($n.cancel // 0)), pending:($n.pending // 0), skipped:($n.skipping // 0)}}
+    | .state = (if .counts.total == 0 or .counts.pending > 0 then "pending"
+        elif .counts.failing > 0 then "failed"
+        elif .counts.unverified > 0 or $policy_error != "" then "unverified" else "passed" end)
+  ' "$rows" > "$aggregate" || return $?
+  if jq -e '(.state == "passed" or .state == "failed") and (.actions | length > 0)' "$aggregate" >/dev/null; then
+    _gh_verify_actions_checks "$1" "$2" "$cache" "$aggregate" || return $?
+    _gh_checks_with_execution "$aggregate"
+  else
+    jq -c 'del(.actions)' "$aggregate"
+  fi
 }

@@ -6,7 +6,7 @@
 use chrono::{Datelike, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
 use chrono_tz::Tz;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 /// Phrases meaning the profile is not signed in. Matched without regard to
@@ -74,7 +74,7 @@ const DAY: i64 = 86_400;
 const TIME_ONLY_SLACK: i64 = 600;
 const ALL_MODELS: &str = "all models";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageState {
     Ok,
@@ -106,7 +106,7 @@ impl UsageState {
 /// reset clause. A session line at 0% with none, next to an all-models week
 /// line, means the reading has no session limit (issue #1818); the parser
 /// then keeps no session window at all, see [`settle_session`].
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct UsageWindow {
     /// `session`, `all models`, or the model name as printed.
     pub label: String,
@@ -122,7 +122,7 @@ pub struct UsageWindow {
     pub observed_at: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct UsageReport {
     pub state: UsageState,
     pub session: Option<UsageWindow>,

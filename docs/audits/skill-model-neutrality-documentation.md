@@ -86,7 +86,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | auto-drive-to-merge | Enumerated | Yes |
 | azure-admin | Enumerated | Yes |
 | azure-devops | Enumerated | No |
-| backlog-curator | Enumerated | Yes |
 | biologist-analyst | Enumerated | Yes |
 | cascade-workflow | Enumerated | Yes |
 | chemist-analyst | Enumerated | Yes |
@@ -94,7 +93,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | code-atlas | Enumerated | No |
 | code-philosophy | Enumerated | No |
 | code-smell-detector | Enumerated | Yes |
-| code-visualizer | Enumerated | Yes |
 | computer-scientist-analyst | Enumerated | Yes |
 | consensus-voting | Enumerated | Yes |
 | context-management | Enumerated | No |
@@ -112,7 +110,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | dotnet-install | Enumerated | No |
 | dotnet10-pack-tool | Enumerated | No |
 | dynamic-debugger | Enumerated | Yes |
-| e2e-outside-in-test-generator | Enumerated | No |
 | economist-analyst | Enumerated | Yes |
 | email-drafter | Enumerated | Yes |
 | engineer-analyst | Enumerated | Yes |
@@ -170,7 +167,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | quality-audit | Enumerated | Yes |
 | repository-oom-audit | Enumerated | No |
 | research/researching-topics | Enumerated | Yes |
-| roadmap-strategist | Enumerated | Yes |
 | self-improving-agent-builder | Enumerated | No |
 | session-learning | Enumerated | No |
 | session-replay | Enumerated | No |
@@ -191,9 +187,7 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | transcript-viewer | Enumerated | Yes |
 | urban-planner-analyst | Enumerated | Yes |
 | verus-expert | Enumerated | Yes |
-| work-delegator | Enumerated | Yes |
 | work-iq | Enumerated | No |
-| workstream-coordinator | Enumerated | Yes |
 | xlsx | Enumerated | Yes |
 
 The follow-up replaces the regression heredoc with native Bash fixtures rather

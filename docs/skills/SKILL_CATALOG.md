@@ -11,8 +11,8 @@ to extend the lists or restore the full lists through a managed installation.
 
 ## Summary
 
-- **Unique bundled skill names:** 122
-- **Skill definition files:** 122
+- **Unique bundled skill names:** 116
+- **Skill definition files:** 116
 
 ## Bundled Skills
 
@@ -29,7 +29,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `auto-drive-to-merge` | `auto-drive-to-merge/SKILL.md` |
 | `azure-admin` | `azure-admin/SKILL.md` |
 | `azure-devops` | `azure-devops/SKILL.md` |
-| `backlog-curator` | `backlog-curator/SKILL.md` |
 | `biologist-analyst` | `biologist-analyst/SKILL.md` |
 | `cascade-workflow` | `cascade-workflow/SKILL.md` |
 | `chemist-analyst` | `chemist-analyst/SKILL.md` |
@@ -38,7 +37,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `code-atlas` | `code-atlas/SKILL.md` |
 | `code-philosophy` | `code-philosophy/SKILL.md` |
 | `code-smell-detector` | `code-smell-detector/SKILL.md` |
-| `code-visualizer` | `code-visualizer/SKILL.md` |
 | `computer-scientist-analyst` | `computer-scientist-analyst/SKILL.md` |
 | `consensus-voting` | `consensus-voting/SKILL.md` |
 | `context-management` | `context-management/SKILL.md` |
@@ -55,7 +53,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `dotnet-install` | `dotnet-install/SKILL.md` |
 | `dotnet10-pack-tool` | `dotnet10-pack-tool/SKILL.md` |
 | `dynamic-debugger` | `dynamic-debugger/SKILL.md` |
-| `e2e-outside-in-test-generator` | `e2e-outside-in-test-generator/SKILL.md` |
 | `economist-analyst` | `economist-analyst/SKILL.md` |
 | `email-drafter` | `email-drafter/SKILL.md` |
 | `engineer-analyst` | `engineer-analyst/SKILL.md` |
@@ -112,7 +109,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `repository-oom-audit` | `repository-oom-audit/SKILL.md` |
 | `researching-topics` | `research/researching-topics/SKILL.md` |
 | `reviewing-code` | `quality/reviewing-code/SKILL.md` |
-| `roadmap-strategist` | `roadmap-strategist/SKILL.md` |
 | `self-improving-agent-builder` | `self-improving-agent-builder/SKILL.md` |
 | `session-learning` | `session-learning/SKILL.md` |
 | `session-replay` | `session-replay/SKILL.md` |
@@ -136,7 +132,5 @@ to extend the lists or restore the full lists through a managed installation.
 | `transcript-viewer` | `transcript-viewer/SKILL.md` |
 | `urban-planner-analyst` | `urban-planner-analyst/SKILL.md` |
 | `verus-expert` | `verus-expert/SKILL.md` |
-| `work-delegator` | `work-delegator/SKILL.md` |
 | `work-iq` | `work-iq/SKILL.md` |
-| `workstream-coordinator` | `workstream-coordinator/SKILL.md` |
 | `xlsx` | `xlsx/SKILL.md` |

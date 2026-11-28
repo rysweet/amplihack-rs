@@ -81,8 +81,7 @@ pub(super) enum ErrorReason {
     StartFailed,
     ReadFailed,
     WaitFailed,
-    /// Issue #1844: a direct read failed with this fixed reason, and the
-    /// mode starts no `claude`.
+    /// A direct read failed with this fixed reason and no fallback read the login.
     Direct(&'static str),
     /// Issue #1844: a row needed `claude` and none was found.
     NoClaude,
@@ -147,6 +146,8 @@ pub(super) struct Probe {
     pub(super) source: Option<Source>,
     /// Issue #1844: the direct read's reason when it led to a fallback.
     pub(super) direct_failure: Option<&'static str>,
+    /// The server's next eligible time for a direct usage read.
+    pub(super) retry_until_ms: Option<i64>,
     /// Issue #1856: what is known of the usage-credit spend limit.
     pub(super) spend: Spend,
     /// Issue #1856: the redacted `extra_usage` shape of a credits-on direct
@@ -162,6 +163,7 @@ impl Probe {
             raw,
             source: None,
             direct_failure: None,
+            retry_until_ms: None,
             spend: Spend::Unknown,
             extra_shape: None,
         }
@@ -176,6 +178,7 @@ impl Probe {
             raw: None,
             source: Some(source),
             direct_failure: None,
+            retry_until_ms: None,
             spend: Spend::NotApplicable,
             extra_shape: None,
         }
@@ -246,6 +249,9 @@ pub(super) struct Row {
     pub(super) source: Option<Source>,
     /// Issue #1844: the direct read's reason when the row fell back.
     pub(super) direct_failure: Option<&'static str>,
+    pub(super) retry_until_ms: Option<i64>,
+    /// Display-only windows and age from a prior observation.
+    pub(super) cached: Option<(UsageReport, u64)>,
     /// Issue #1856: what is known of the usage-credit spend limit. Shown
     /// only; it plays no part in ordering or recording.
     pub(super) spend: Spend,
@@ -255,6 +261,32 @@ pub(super) struct Row {
 }
 
 impl Row {
+    pub(super) fn displayed_report(&self) -> &UsageReport {
+        self.cached
+            .as_ref()
+            .map_or(&self.report, |(report, _)| report)
+    }
+
+    fn failure_label(&self) -> Option<&'static str> {
+        #[cfg(unix)]
+        {
+            super::rotate::measure::label_for(self.report.state, self.error, self.direct_failure)
+                .map(|label| label.as_str())
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
+    fn displayed_failure_label(&self) -> Option<&'static str> {
+        if self.direct_failure.is_some() || self.cached.is_some() {
+            self.failure_label()
+        } else {
+            None
+        }
+    }
+
     /// Issue #2218: the profile is in the auto-switch `exclude` list and was
     /// not read.
     pub(super) fn is_excluded(&self) -> bool {
@@ -394,7 +426,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         record_usage: false, // The command records its rows together after output.
     };
     let pool = match mode {
-        ProbeMode::Auto | ProbeMode::Text => claude_bound,
+        ProbeMode::Auto | ProbeMode::Text | ProbeMode::ControlOnly => claude_bound,
         ProbeMode::Ordered | ProbeMode::Direct => direct_bound,
     };
     let mut probes = pooled(profiles.len(), pool, |i| {
@@ -458,6 +490,12 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     };
     // Issue #3181: shown at no less than the rotator's highest readings.
     let shown = shown_rows(store, &rows, at);
+    #[cfg(unix)]
+    let shown = {
+        let mut shown = shown;
+        reader.show_cached_usage(&mut shown, at, swapped.as_ref());
+        shown
+    };
     print_output(
         &shown,
         output,
@@ -1040,6 +1078,8 @@ impl ApiKeys {
                     raw: None,
                     source: None,
                     direct_failure: None,
+                    retry_until_ms: None,
+                    cached: None,
                     spend: Spend::NotApplicable,
                     extra_shape: None,
                 }
@@ -1086,6 +1126,8 @@ fn build_rows(
                 raw: p.raw,
                 source: p.source,
                 direct_failure: p.direct_failure,
+                retry_until_ms: p.retry_until_ms,
+                cached: None,
                 spend: p.spend,
                 extra_shape: p.extra_shape,
             }
@@ -1226,6 +1268,42 @@ pub(super) struct RowReader {
 }
 
 impl RowReader {
+    #[cfg(unix)]
+    pub(super) fn show_cached_usage(
+        &self,
+        rows: &mut [Row],
+        now: i64,
+        swapped: Option<&ProfileName>,
+    ) {
+        let root = self.store.root();
+        for row in rows
+            .iter_mut()
+            .filter(|row| row.is_login() && row.failure_label().is_some())
+        {
+            row.cached = (|| {
+                let name = ProfileName::parse(&row.profile).ok()?;
+                if swapped == Some(&name) {
+                    return None;
+                }
+                let plan = self.plan(&name, row.live_in)?;
+                let location = super::usage_retry::Location {
+                    parent: self.home.as_deref().unwrap_or(root),
+                    slot: &plan.retry_slot(root),
+                };
+                let report =
+                    super::usage_direct::cached(&self.env.endpoints, &plan.creds_dir, location)?;
+                let age = now.checked_sub(report.observed_at?)?;
+                let unexpired = report
+                    .week_all
+                    .as_ref()
+                    .and_then(|week| week.resets_at)
+                    .is_none_or(|reset| now < reset);
+                (unexpired && (0..=super::rotate::fresh::MAX_READING_AGE_SECS).contains(&age))
+                    .then_some((report, age as u64))
+            })();
+        }
+    }
+
     /// Issue #2218: whether `name` is in the auto-switch `exclude` list.
     pub(super) fn is_excluded(&self, name: &ProfileName) -> bool {
         self.excluded.as_ref().is_none_or(|l| l.contains(name))
@@ -1287,10 +1365,11 @@ impl RowReader {
             .then(|| default_live::detect(&self.store, self.home.as_deref()).0)
             .flatten()
             .filter(|l| &l.name == name);
-        let p = self.finish(usage_source::read(
+        let p = self.finish(usage_source::read_from(
             &self.env,
             &plan,
             self.store.root(),
+            self.home.as_deref().unwrap_or(self.store.root()),
             self.now,
             claude,
         ));
@@ -1366,10 +1445,11 @@ impl RowReader {
             allow_refresh: false,
             overflow: false,
         };
-        self.finish(usage_source::read(
+        self.finish(usage_source::read_from(
             &self.env,
             &plan,
             self.store.root(),
+            home,
             self.now,
             claude,
         ))
@@ -1384,6 +1464,13 @@ impl RowReader {
     fn spend(&self, target: SpendTarget<'_>) -> Spend {
         if self.is_excluded(target.0) {
             return Spend::NotApplicable;
+        }
+        let Some(plan) = self.plan(target.0, target.1) else {
+            return Spend::Unknown;
+        };
+        let retry_parent = self.home.as_deref().unwrap_or(self.store.root());
+        if usage_source::declined(&self.env, &plan, self.store.root(), retry_parent).is_some() {
+            return Spend::Unknown;
         }
         let Some(bin) = self.binary.get() else {
             return Spend::Unknown;
@@ -1445,8 +1532,9 @@ pub(super) fn no_refresh_dirs(store: &ProfileStore) -> Option<Vec<String>> {
 
 /// Probes one profile by `mode`, against `~/.claude` when `live`. A profile
 /// marked as overflow is probed with `/usage` only, the one method that
-/// reports the spend limit. The command is built inside the probe, right
-/// before each spawn, so the directory check is as late as possible.
+/// reports the spend limit. A control-only probe after a 429 stays
+/// control-only if the overflow mark changes. The command is built right
+/// before each spawn so the directory check is as late as possible.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn probe_profile(
     store: &ProfileStore,
@@ -1463,7 +1551,9 @@ pub(super) fn probe_profile(
     } else {
         run::build_profile_command
     };
-    let mode = if super::overflow::overflow_names(store.root()).contains(name) {
+    let mode = if mode != ProbeMode::ControlOnly
+        && super::overflow::overflow_names(store.root()).contains(name)
+    {
         ProbeMode::Text
     } else {
         mode
@@ -1540,7 +1630,8 @@ pub(super) fn probe_with(
 /// Otherwise, if the attempt ended before the deadline and nothing cancelled
 /// it, `claude -p /usage` runs with a new command in the time left; else the
 /// probe is `timeout`. At most one `claude` runs at a time, and `--raw`
-/// shows the attempt that gave the row.
+/// shows the attempt that gave the row. `ControlOnly` returns the control
+/// attempt's result without starting `/usage`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn probe_with_sandbox(
     build: impl Fn(&[String]) -> Result<Command, ProfileError>,
@@ -1583,6 +1674,7 @@ pub(super) fn probe_with_sandbox(
         raw: output.filter(|_| keep_raw),
         source: None,
         direct_failure: None,
+        retry_until_ms: None,
         spend,
         extra_shape: None,
     };
@@ -1603,6 +1695,13 @@ pub(super) fn probe_with_sandbox(
         || Instant::now() >= deadline
     {
         return Ok(row(timed_out, a.output, Spend::Unknown));
+    }
+    if mode == ProbeMode::ControlOnly {
+        return Ok(row(
+            UsageReport::empty(UsageState::Unparsed),
+            a.output,
+            Spend::Unknown,
+        ));
     }
     let cmd = prepared(&text_args)?;
     Ok(text_probe(attempt(cmd, None, deadline), now, keep_raw))
@@ -1720,6 +1819,7 @@ fn text_probe(a: Attempt, now: i64, keep_raw: bool) -> Probe {
         raw: a.output.filter(|_| keep_raw),
         source: None,
         direct_failure: None,
+        retry_until_ms: None,
         spend: Spend::Unknown,
         extra_shape: None,
     };
@@ -2072,6 +2172,20 @@ pub(super) fn marks_parts(row: &Row, with_live: bool) -> Vec<String> {
     if row.source == Some(Source::Fallback) {
         parts.push("(fallback)".to_string());
     }
+    if let Some(until) = row
+        .retry_until_ms
+        .and_then(chrono::DateTime::from_timestamp_millis)
+    {
+        parts.push(format!(
+            "HTTP 429, retry after {}",
+            until.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+        ));
+    } else if let Some(label) = row.displayed_failure_label() {
+        parts.push(label.to_string());
+    }
+    if let Some((_, age)) = &row.cached {
+        parts.push(format!("cached={age}s"));
+    }
     parts.iter().map(|p| sanitize_display(p, false)).collect()
 }
 
@@ -2144,6 +2258,7 @@ pub(super) fn render_table(rows: &[Row]) -> String {
     let cells: Vec<[String; 8]> = rows
         .iter()
         .map(|r| {
+            let displayed = r.displayed_report();
             [
                 sanitize_display(&r.profile, false),
                 sanitize_display(&marks(r), false),
@@ -2152,14 +2267,14 @@ pub(super) fn render_table(rows: &[Row]) -> String {
                     EXCLUDED_CELL.to_string()
                 } else if r.api_key {
                     API_KEY_CELL.to_string()
-                } else if no_session_limit(r) {
+                } else if no_session_limit(displayed) {
                     NO_SESSION_LIMIT_CELL.to_string()
                 } else {
-                    pct(&r.report.session)
+                    pct(&displayed.session)
                 },
-                resets(&r.report.session),
-                pct(&r.report.week_all),
-                resets(&r.report.week_all),
+                resets(&displayed.session),
+                pct(&displayed.week_all),
+                resets(&displayed.week_all),
                 r.spend.as_str().to_string(),
             ]
         })
@@ -2242,9 +2357,8 @@ pub(super) const EXCLUDED_CELL: &str = "excluded (not probed)";
 pub(super) const NO_SESSION_LIMIT_CELL: &str = "no session limit";
 
 /// A usable reading that showed no session window (#1818).
-pub(super) fn no_session_limit(r: &Row) -> bool {
-    !r.report.session_limit
-        && matches!(r.report.state, UsageState::Ok | UsageState::WeeklyExhausted)
+pub(super) fn no_session_limit(report: &UsageReport) -> bool {
+    !report.session_limit && matches!(report.state, UsageState::Ok | UsageState::WeeklyExhausted)
 }
 
 /// The `STATE` of a row: `excluded` for a profile in the auto-switch
@@ -2317,7 +2431,23 @@ struct JsonRow<'a> {
     week_models: &'a [UsageWindow],
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    retry_until_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_label: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached: Option<JsonCachedUsage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     raw: Option<&'a Raw>,
+}
+
+#[derive(Serialize)]
+struct JsonCachedUsage<'a> {
+    observed_at: Option<i64>,
+    age_secs: u64,
+    session: Option<&'a UsageWindow>,
+    session_limit: bool,
+    week_all: Option<&'a UsageWindow>,
+    week_models: &'a [UsageWindow],
 }
 
 /// The stable interface: one array of Claude rows in display order. Issue
@@ -2397,6 +2527,16 @@ fn json_rows(rows: &[Row]) -> Vec<JsonRow<'_>> {
                 .error
                 .and_then(ErrorReason::json_error)
                 .map(|e| e.into_owned()),
+            retry_until_ms: r.retry_until_ms,
+            failure_label: r.displayed_failure_label(),
+            cached: r.cached.as_ref().map(|(report, age)| JsonCachedUsage {
+                observed_at: report.observed_at,
+                age_secs: *age,
+                session: report.session.as_ref(),
+                session_limit: report.session_limit,
+                week_all: report.week_all.as_ref(),
+                week_models: &report.week_models,
+            }),
             raw: r.raw.as_ref(),
         })
         .collect()

@@ -70,6 +70,7 @@ fn pt(s: Option<u8>, w: u8, w_reset: Option<i64>, s_reset: Option<i64>) -> Point
         w,
         w_reset,
         s_reset,
+        observed_at: None,
         no_session_limit: false,
         passive: false,
     }
@@ -86,13 +87,31 @@ fn from_probes_records_the_live_profile_under_its_name() {
     assert_eq!(s.at, T);
     assert_eq!(
         s.points["work"],
-        pt(Some(10), 20, Some(T + DAY), Some(T + HOUR))
+        Point {
+            observed_at: Some(T),
+            ..pt(Some(10), 20, Some(T + DAY), Some(T + HOUR))
+        }
     );
     assert_eq!(
         s.points["spare"],
-        pt(Some(30), 41, Some(T + DAY), Some(T + HOUR)),
+        Point {
+            observed_at: Some(T),
+            ..pt(Some(30), 41, Some(T + DAY), Some(T + HOUR))
+        },
         "rounded half away from zero"
     );
+}
+
+#[test]
+fn from_probes_keeps_an_earlier_cycles_observation_time() {
+    let mut pending = probed(10.0, 20.0);
+    pending.carried = true;
+    let mut dated = pending.clone();
+    dated.observed_at = Some(T - 60);
+    let probes = (pending, vec![(n("example"), dated)]);
+    let s = from_probes(T, Some(&n("work")), &probes, None, &[]);
+    assert_eq!(s.points["work"].observed_at, None);
+    assert_eq!(s.points["example"].observed_at, Some(T - 60));
 }
 
 #[test]

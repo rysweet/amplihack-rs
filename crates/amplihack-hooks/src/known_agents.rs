@@ -51,7 +51,6 @@ static AMPLIHACK_AGENTS: &[&str] = &[
     "tester",
     "tla-plus-expert",
     "verus-expert",
-    "visualization-architect",
     "worktree-manager",
     "xpia-defense",
 ];
@@ -112,8 +111,8 @@ mod tests {
 
     #[test]
     fn agent_count_matches_unique_bundled_agents() {
-        // One name for each of the 38 agent `.md` files.
-        assert_eq!(agent_count(), 38);
+        // One name for each of the 37 agent `.md` files.
+        assert_eq!(agent_count(), 37);
     }
 
     #[test]

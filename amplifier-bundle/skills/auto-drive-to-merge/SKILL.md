@@ -74,3 +74,6 @@ The `autodrive_budget_*` keys are accepted and ignored.
 ```bash
 amplihack recipe run auto-drive-to-merge -c pr_number=3129 -c autodrive_minor_findings=judge
 ```
+
+Set `checks_watch_interval` at launch to change the 120-second interval
+between CI reads during `wait`. Give a positive whole number of seconds.

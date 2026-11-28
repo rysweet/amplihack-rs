@@ -49,10 +49,10 @@ use the suffix search used by `find`.
 
 | Form | Meaning |
 | --- | --- |
-| `skill:code-visualizer` | A skill's leaf folder name, including a skill nested under a category. |
+| `skill:design-patterns-expert` | A skill's leaf folder name, including a skill nested under a category. |
 | `agent:core/guide` | An agent's path relative to the bundle's agents folder, without `.md`. |
-| `code-visualizer` | An unqualified name, accepted only if it identifies one entry. |
-| `amplihack:code-visualizer` | The same entry with the tool prefix. |
+| `design-patterns-expert` | An unqualified name, accepted only if it identifies one entry. |
+| `amplihack:design-patterns-expert` | The same entry with the tool prefix. |
 | `amplihack:core:guide` | A Claude-style qualified agent name; its full path is preserved. |
 
 Names shared by a skill and an agent, such as `tla-plus-expert`, need a type:

@@ -19,8 +19,8 @@ session after changing the selection.
 Search the installed directory, then enable the entry you want:
 
 ```sh
-amplihack directory find code-visualizer
-amplihack directory enable skill:code-visualizer
+amplihack directory find design-patterns-expert
+amplihack directory enable skill:design-patterns-expert
 ```
 
 The command saves the extension in the user setting `lists.enabled` and
@@ -46,7 +46,7 @@ published assets. See [Find installed skills and agents](find-installed-skills-a
 ## Remove an extension
 
 ```sh
-amplihack directory disable skill:code-visualizer
+amplihack directory disable skill:design-patterns-expert
 ```
 
 This removes the explicit extension and republishes the selection. It leaves

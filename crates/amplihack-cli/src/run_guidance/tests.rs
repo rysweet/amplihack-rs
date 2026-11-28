@@ -959,7 +959,7 @@ fn u4_no_guidance_leaves_the_prompt_unchanged_byte_for_byte() {
         for prompt in ["", "p", "p\n", "p\n\n", "  spaced  "] {
             assert_eq!(g.append_to(prompt), prompt);
         }
-        g.record_injection("step-1");
+        g.record_injection("step-1", None);
     }
     assert!(!empty.parent().unwrap().join(GUIDANCE_LOG).exists());
 }
@@ -998,7 +998,7 @@ fn record_injection_logs_counts_in_each_folder_read_without_text() {
     append_entry(&run, "RUN-TEXT", "alice").unwrap();
     append_entry(&pr, "PR-TEXT", "alice").unwrap();
     let g = GuidanceForLaunch::from_dirs(vec![run.clone(), pr.clone()]);
-    g.record_injection("corr-1");
+    g.record_injection("corr-1", None);
     for dir in [&run, &pr] {
         let raw = fs::read_to_string(dir.parent().unwrap().join(GUIDANCE_LOG)).unwrap();
         assert!(
@@ -1428,7 +1428,7 @@ fn record_injection_lists_only_the_entry_names_of_each_folder() {
     let r = append_entry(&run, "RUN-TEXT", "alice").unwrap();
     let p = append_entry(&pr, "PR-TEXT", "alice").unwrap();
     let g = GuidanceForLaunch::from_dirs(vec![run.clone(), pr.clone()]);
-    g.record_injection("corr-1");
+    g.record_injection("corr-1", None);
     let name = |a: &Appended| a.path.file_name().unwrap().to_string_lossy().into_owned();
     for (dir, expect) in [(&run, name(&r)), (&pr, name(&p))] {
         let injected: Vec<_> = log_lines(dir)
@@ -1452,7 +1452,7 @@ fn a_duplicate_entry_is_named_in_every_folder_that_holds_a_copy() {
     append_entry_at(&pr, "TEXT", "alice", at(9)).unwrap();
     let g = GuidanceForLaunch::from_dirs(vec![run.clone(), pr.clone()]);
     assert_eq!(g.entries(), 1);
-    g.record_injection("corr-2");
+    g.record_injection("corr-2", None);
     for dir in [&run, &pr] {
         assert!(read_log_state(dir).read.len() == 1, "{}", dir.display());
     }
@@ -1500,7 +1500,7 @@ fn log_state_marks_an_entry_read_only_when_a_record_names_it() {
     let (_tmp, root) = private_root();
     let run = run_guidance_dir(&root, "run-state");
     let first = append_entry(&run, "one", "alice").unwrap();
-    GuidanceForLaunch::from_dirs(vec![run.clone()]).record_injection("corr-1");
+    GuidanceForLaunch::from_dirs(vec![run.clone()]).record_injection("corr-1", None);
     let second = append_entry(&run, "two", "alice").unwrap();
     let state = read_log_state(&run);
     let n1 = first
@@ -1526,7 +1526,7 @@ fn log_state_drops_are_those_after_the_last_injection() {
     append_entry(&run, "one", "alice").unwrap();
     let g = GuidanceForLaunch::from_dirs(vec![run.clone()]);
     g.record_drop(&label(), DropReason::NoPromptOnStdin);
-    g.record_injection("corr-1");
+    g.record_injection("corr-1", None);
     g.record_drop(&label(), DropReason::TrailerNotWritten);
     let state = read_log_state(&run);
     assert_eq!(state.drops_since_injection.len(), 1);
@@ -1591,7 +1591,7 @@ fn log_state_has_no_log_error_for_a_missing_or_readable_log() {
     let run = run_guidance_dir(&root, "run-ok");
     assert_eq!(read_log_state(&run).log_error, None, "missing log");
     append_entry(&run, "one", "alice").unwrap();
-    GuidanceForLaunch::from_dirs(vec![run.clone()]).record_injection("corr-1");
+    GuidanceForLaunch::from_dirs(vec![run.clone()]).record_injection("corr-1", None);
     assert_eq!(read_log_state(&run).log_error, None, "readable log");
 }
 

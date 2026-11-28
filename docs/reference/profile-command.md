@@ -135,6 +135,11 @@ result decides the row:
    `claude -p /usage`. A profile with no login to use ends at step 2 as
    `not_logged_in`, and no `claude` is started for it.
 
+An HTTP 429 skips `/usage`. With a future `Retry-After`, both Claude
+fallback attempts are skipped. Without a usable retry time, the ordered
+mode can still send the `get_usage` control request once. If it supplies
+no reading, the row reports the direct failure.
+
 Every row records which step gave it as its [source](#reading-source):
 `passive`, `direct` or `fallback`. Some profiles skip steps:
 
@@ -313,9 +318,31 @@ could leave the profile logged out, while a skipped refresh costs only this
 read. The `POST`'s connect and read timeouts are `min(10 seconds, time
 left)`, so never below 3 seconds, and it too ends by the deadline. With a
 deadline under 3 seconds, a direct read never refreshes.
-Redirects are not followed, no proxy is used (`HTTPS_PROXY` and similar are
-ignored), and a `429` is not retried. One read makes at most two `GET`s and
-one refresh `POST`.
+Redirects are not followed. `HTTPS_PROXY` and similar variables are ignored.
+One read makes at most two `GET`s and one refresh `POST`. An HTTP 429 ends
+the direct read. A future `Retry-After` expressed as delay-seconds or an
+HTTP date gives the earliest time a later caller can make a direct read
+for that login. The usage row shows that time. The usage command and every
+rotate mode, including `--dry-run`, share the deadline. An absent, invalid,
+or elapsed value leaves the next ordinary caller eligible.
+The deadline is shared by callers using the same OAuth login or the same
+named profile. A profile moved into `~/.claude` keeps its profile scope,
+and a Claude or Amplihack token rewrite in that scope keeps the deadline.
+A replacement login under the same profile name also waits if the previous
+login left an active deadline there. A caller that finds a usage request in
+progress reports the probe as unread and returns without sending a request.
+
+An interrupted request or failed deadline write leaves no known server
+deadline. Once the lock is available, the next ordinary caller may make one
+request. A later 429 replaces the incomplete record with the new server
+deadline. This can result in one additional early request after a failed
+publication.
+
+For a failed `profile usage` row, the table and JSON can show a direct
+reading up to 300 seconds old when the current OAuth credential matches
+the one used for that reading. The cached figures keep their original
+observation time and are for display only. Profile-name history and passive
+readings lack that credential match and cannot supply these figures.
 
 **Endpoint overrides.** Two variables point the direct read at another
 server, for tests or a local relay:
@@ -3336,7 +3363,7 @@ one line per measured cycle to `<root>/.auto-switch.d/usage-history.jsonl`
 (mode `0600`). Each line is one JSON object:
 
 ```json
-{"at":"2026-10-30T16:15:00Z","by":"usage","profiles":{"night":{"s":100,"w":85,"w_reset":"2026-10-31T02:00:00Z"},"review":{"s":5,"w":10,"w_reset":"2026-11-03T09:00:00Z"},"team":{"s":100,"w":68,"w_reset":"2026-11-04T09:00:00Z"},"work":{"s":20,"w":30,"w_reset":"2026-10-31T09:00:00Z"}}}
+{"at":"2026-10-30T16:15:00Z","by":"usage","profiles":{"example":{"s":20,"w":30,"w_reset":"2026-10-31T09:00:00Z","observed_at":"2026-10-30T16:14:42Z"}}}
 ```
 
 | Key | Meaning |
@@ -3348,11 +3375,12 @@ one line per measured cycle to `<root>/.auto-switch.d/usage-history.jsonl`
 | `session_limit` | Written only as `false`, beside `"s":null`, when the reading showed no session window (see [Usable now](#usable-now)). Absent otherwise. A missing key, `null`, or `false` beside a session figure, reads as "not read". |
 | `w` | All-models week percentage, a whole number `0`–`100`. `weekly_exhausted` is written as `100`. |
 | `w_reset` | When the week resets, UTC, or `null` when not known. |
+| `observed_at` | When the figures were observed, UTC. For a fresh probe with no separate timestamp, this is the batch time. Older points may omit this field. |
 | `unknown` | Names of the logins the writer tried and could not read, or whose reading was a [stale reading](#stale-readings), sorted. Absent when there are none. Never counted in a figure; a name that also has a reading is ignored on read. |
 
 ##### Reading times in the history
 
-Every reading in a line is taken as read at the line's `at`. A row read
+The capacity summary and rate use the line's `at` for each reading. A row read
 directly or by `claude` was read during the run, so that holds. A
 [passive reading](#passive-readings) was stored by Claude's status line
 earlier: up to `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` before the
@@ -3384,6 +3412,13 @@ the run and `at` are the same. The rule is:
   rate, it is listed under `unknown`, and the table still shows its
   numbers. This happens only when
   `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` is set above `300`.
+
+For a probe failure with a cause such as HTTP 429, `profile usage` and the
+rotator's live row can show dated history figures up to 300 seconds after
+`observed_at`. Candidate rows can show figures under the rotator's existing
+[last good reading](#last-good-reading) rule, up to five hours old. Their
+age uses the observation time when the history includes it. When the figures
+expire, the cause stays visible.
 
 A row that could not be read is unknown in the same way, whatever step
 failed. That includes a row whose [direct read](#direct-read) failed, with
@@ -3497,10 +3532,9 @@ newest reading in the history, and is stale when any of these holds:
 | Its `w_reset` is more than one hour earlier than the recorded one, so it belongs to an earlier week. | Recorded `w_reset` `2026-11-10T09:00:00Z`, passive `w_reset` `2026-11-03T09:00:00Z`. |
 
 A stale reading is not written. In its place the line holds that login's
-newest recorded reading (its `s`, `w` and `w_reset`), so the login stays in
-the line. Passive readings come from Claude's status line, so a stale one
-belongs to a login in use, and leaving it out would hide the login being
-used up: a `profile usage` line that is the start of the
+newest recorded reading (its `s`, `w`, `w_reset` and `observed_at`), so the
+login stays in the line. A stale status-line reading belongs to a login in use.
+Leaving it out can underestimate usage. A `profile usage` line at the start of the
 [rate](#rate-and-runway) would leave it out of the rate, and
 [`rotate status`](#rotate-status) would say the rotator cycle left a login
 out and leave its headroom out of the `capacity:` line. The recorded figure
@@ -5934,7 +5968,7 @@ amplihack profile rotate owner [clear]
 | Command | Behaviour |
 |---------|-----------|
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
-| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no rotate state, moves nothing, and never refreshes a token or starts `claude`: every read is a direct read with refresh off, so an expired login shows as unmeasured with its [cause](#identity-read-causes), and the dry run can pick a different target than a real cycle that would have refreshed that login. It prints `would refresh: expired login in ~/.claude` when a real cycle would refresh the live login, and the `would` lines of [seeding](#seeding-a-record) for a live profile with no record. It skips both the [prototype check](#rotate-prototype-coexistence) and [journal recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Makes the same [hand-change](#rotate-hand-change-recovery) identity reads as a real cycle, never writes `hand_suspect`, and reports the result as `would recover: <recovered line>`, `would note: <note>`, or `would alert: <ALERT line>` with its `fix` lines; see the dry-run table there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
+| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no rotate state lock, writes no rotate state, moves nothing, and never refreshes a token or starts `claude`: every read is a direct read with refresh off, so an expired login shows as unmeasured with its [cause](#identity-read-causes), and the dry run can pick a different target than a real cycle that would have refreshed that login. It prints `would refresh: expired login in ~/.claude` when a real cycle would refresh the live login, and the `would` lines of [seeding](#seeding-a-record) for a live profile with no record. It skips both the [prototype check](#rotate-prototype-coexistence) and [journal recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Makes the same [hand-change](#rotate-hand-change-recovery) identity reads as a real cycle, never writes `hand_suspect`, and reports the result as `would recover: <recovered line>`, `would note: <note>`, or `would alert: <ALERT line>` with its `fix` lines; see the dry-run table there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
 | `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
 | `rotate watch` | Runs a cycle in the foreground until `SIGTERM` or `SIGINT`, and wakes for the next one on a [limit event](#rotate-wake): a change to the ledger, or the earliest recorded reset. `--interval` is only the outer bound of that wait. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log, apart from the [owner marker](#rotate-owner) when it runs supervised. |
 | `rotate watch --supervised[=UNIT]` | As `rotate watch`, and records itself as the [rotation owner](#rotate-owner) so that launches do not start a second rotator. `UNIT` names the service manager unit, for example `--supervised=amplihack-rotator.service`; the `=` is required. Without `UNIT` the name is found as described in [Owner unit name](#owner-unit-name). A `watch` that systemd runs as a service records itself without the flag: `INVOCATION_ID` is set and the unit is found in `/proc/self/cgroup` as in step 2 of [Owner unit name](#owner-unit-name). Like any `watch`, it refuses with status 1 when another verified rotator is running, and then writes no marker; stop that rotator with `rotate stop` before starting the unit. `rotate start --supervised` is refused with `RotateRefused` (`--supervised applies to rotate watch only`, status 1). |
@@ -6735,14 +6769,11 @@ used when all of these hold:
 - it has a session figure, or it records that the login has no session
   limit, which counts as `0`.
 
-A point written in place of a [stale passive reading](#stale-readings) is
-not skipped. It carries the figures of an older recorded reading under the
-newer time of the line it was written in, and nothing in the point marks it,
-so the rotator cannot tell it from a measured one. The age it shows may
-therefore be understated. The recorded week figure is a lower bound of the
-true one, so such a point can overstate a login's room but never its use; the
-[confirmation](#rotate-confirmation) of the target and the rule that a swap is never made without a fresh reading are what limit
-that.
+A point written in place of a [stale passive reading](#stale-readings) can
+still inform candidate selection, which uses the batch time. The recorded
+week figure is a lower bound of the current figure, so such a point can
+overstate room. [Target confirmation](#rotate-confirmation) requires a fresh
+reading before a swap.
 
 The history records a point only for a probe that read the login. A login
 whose later probe reported a spend limit or a refused token has no newer
@@ -6779,7 +6810,7 @@ the unknown probe alone keeps overflow out.
 A login's standing shows in the `cycle` line:
 
 ```
-2026-11-22T00:02:05Z cycle live=rrowan rrowan:s=100%,w=71% login-al:unknown, HTTP 429, last s=78%,w=92% 41m ago login-ar:unknown, HTTP 429 login-bf:failed
+2026-11-22T00:02:05Z cycle live=work work:s=100%,w=71% login-al:unknown, HTTP 429 login-ar:unknown, HTTP 429 login-bf:failed
 ```
 
 `login-al` is unknown and has a last good reading, so it can be a target.
@@ -10693,7 +10724,7 @@ run and prints their `reread:` lines; see
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. The line is written after the [live reading freshness](#freshest-live-reading) step, so the live entry shows the figures the cycle decided on, and carries `,cached=<n>s` (whole seconds) when those figures were read before this cycle's measurement began, for example `work:s=5%,w=95%,cached=612s`. Candidate entries show their figures as measured and never carry it. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe did not read it shows `<name>:unknown, <label>` when the cause is one of the [labelled kinds](#rotate-unknown-readings) (`HTTP 429`, `transport`, `timeout`, `still running`, `probe error`; a login whose identity could not be read is not probed, so it is not on this line and is counted in the [no-target line](#rotate-no-target)), and `<name>:failed` for every other cause, never a percentage: its usage is unknown, and it is probed again on the next cycle. When a [last good reading](#last-good-reading) is in use for an unknown candidate the entry ends `, last s=<n>%,w=<n>% <m>m ago`, for example `login-al:unknown, HTTP 429, last s=78%,w=92% 41m ago`; `<m>` is whole minutes, at most 300. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A measured profile that the [target rule](#rotate-target-choice) leaves out carries its reason after its figures: `above ceiling <n>%` when its week is above `--target-week-max`, or `blocked until <YYYY-MM-DDTHH:MMZ> (<kind>)` while it has a recorded block, where `<kind>` is the block's fixed label (`spend limit`, `session limit`, `week limit`, `credit limit`, `API key exhausted`, `API key revoked`, `API key rate limited`, or `a recorded limit` for any other recorded kind), for example `y:s=10%,w=40% blocked until 2026-11-26T00:00Z (week limit)`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A live profile in the auto-switch `exclude` list shows `<name>:excluded (not probed)`; see [Rotate excluded live profile](#rotate-excluded-live-profile). A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. The line is written after the [live reading freshness](#freshest-live-reading) step, so the live entry shows the figures the cycle decided on, and carries `,cached=<n>s` (whole seconds) when those figures were read before this cycle's measurement began, for example `work:s=5%,w=95%,cached=612s`. Candidate entries show their figures as measured when the probe succeeds. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe did not read it shows `<name>:unknown, <label>` when the cause is one of the [labelled kinds](#rotate-unknown-readings) (`HTTP 429`, `transport`, `timeout`, `still running`, `probe error`; a login whose identity could not be read is not probed, so it is not on this line and is counted in the [no-target line](#rotate-no-target)), and `<name>:failed` for every other cause, never a percentage: its usage is unknown, and it is probed again on the next cycle. For a labelled failure, a last good reading up to 300 seconds old adds its figures and age, for example `login-al:unknown, HTTP 429, last s=78%,w=92%,cached=41s`. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` without a failure label also show `<name>:failed`. A measured profile that the [target rule](#rotate-target-choice) leaves out carries its reason after its figures: `above ceiling <n>%` when its week is above `--target-week-max`, or `blocked until <YYYY-MM-DDTHH:MMZ> (<kind>)` while it has a recorded block, where `<kind>` is the block's fixed label (`spend limit`, `session limit`, `week limit`, `credit limit`, `API key exhausted`, `API key revoked`, `API key rate limited`, or `a recorded limit` for any other recorded kind), for example `y:s=10%,w=40% blocked until 2026-11-26T00:00Z (week limit)`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A live profile in the auto-switch `exclude` list shows `<name>:excluded (not probed)`; see [Rotate excluded live profile](#rotate-excluded-live-profile). A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|projected\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. The live figures carry ` cached=<n>s` under the same rule as the `cycle` line, for example `live s=5% w=95% cached=612s`; the target figures never do. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=projected` is a swap made because the live login's [projected session use](#projected-swap) reached `--session-at`, or because its last known reading was near `--session-at` when the live read failed or was stale and the stale reading would not itself have needed a swap (see [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)); the `live` figures are those the cycle decided on, as described in [Freshest live reading](#freshest-live-reading). A cycle that decides on a held reading at or above `--session-at` needs a swap on the reading itself, so it is labelled `reason=threshold`, not `reason=projected`. `reason=threshold` means the target is below both `--session-at` and `--week-at`; `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap), onto a target that has room but is at or above one of them. A `swap` line reports an `unconfirmed` suffix when blocked-login recovery used a recent reading; see [Rotate confirmation](#rotate-confirmation). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |

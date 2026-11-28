@@ -177,19 +177,16 @@ fn recovery_settles_the_journal_without_claude_on_path() {
         .output()
         .unwrap();
     assert_no_secrets(&out);
-    assert!(
-        text(&out.stdout).contains("recovery: rolled back an interrupted swap work->spare"),
-        "{}\n{}",
-        text(&out.stdout),
-        text(&out.stderr)
-    );
     // Issue #1844: with no `claude` to fall back on, each reading fails on
     // its own; the cycle still runs and records nothing as measured.
-    assert!(
-        text(&out.stdout).contains(":failed"),
-        "{}",
-        text(&out.stdout)
-    );
+    let history = fs::read_to_string(f.root.join(".auto-switch.d/usage-history.jsonl")).unwrap();
+    let entry: serde_json::Value = serde_json::from_str(history.lines().last().unwrap()).unwrap();
+    assert!(entry["profiles"].as_object().unwrap().is_empty());
+    let unknown = entry["unknown"].as_array().unwrap();
+    assert_eq!(unknown.len(), PROFILES.len());
+    for profile in PROFILES {
+        assert!(unknown.iter().any(|name| name.as_str() == Some(profile)));
+    }
     assert!(!f.rotate_dir().join("journal.json").exists());
     assert_eq!(ino(&f.home_login()), Some(f.live_ino));
     assert_eq!(ino(&f.slot("spare")), Some(f.spare_ino));

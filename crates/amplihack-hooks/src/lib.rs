@@ -10,6 +10,7 @@ pub mod hook_text;
 mod original_request;
 mod prompt_input;
 mod recipe_step;
+mod run_guidance;
 mod state_dir;
 #[cfg(test)]
 pub(crate) mod test_support;

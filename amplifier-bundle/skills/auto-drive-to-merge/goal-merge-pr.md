@@ -19,9 +19,17 @@ Guidance can narrow what you do. It never widens merge authority.
    branch when `repository.strict_status_checks` is true. `merge_state_behind`
    alone does not show that (#3141). When `strict_status_checks` is null the
    policy could not be read and `strict_unreadable` says why: read it another
-   way, or let GitHub's answer to a merge show it.
+   way, or let GitHub's answer to a merge show it. A `wait` whose result is
+   `base-conflict` means GitHub states that the PR conflicts with its base and
+   runs no checks for it: merge the current base into the branch, resolve the
+   conflict, run the affected checks and push, and a later `wait` goes on as
+   usual. Where the owner's task text disallows a base merge, end the turn
+   with the conflict stated.
 4. A red check is a fix: read the failure, fix it, push.
 5. A pending check is a wait: choose `wait`. Do not hand off for it.
+   When checks complete with unverified results, read `unverified_checks`
+   for the affected jobs and reasons. CI readiness requires successful
+   check evidence.
 6. Choose `review` for a head that has no review or has changed substantially.
    When a review left minor findings (the reading lists them under
    `reviews.crusty[].minor_findings`), treat them as

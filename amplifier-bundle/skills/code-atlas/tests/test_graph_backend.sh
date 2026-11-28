@@ -222,11 +222,6 @@ assert_file_contains \
     "$SKILL_MD"
 
 assert_file_contains \
-    "SKILL.md marks code-visualizer as a Python-only optional adapter" \
-    "Python repos ONLY|Python repos only|optional adapter" \
-    "$SKILL_MD"
-
-assert_file_contains \
     "API-CONTRACTS.md documents analyzer_mode label" \
     "analyzer_mode" \
     "$API_MD"

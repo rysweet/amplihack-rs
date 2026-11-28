@@ -55,7 +55,7 @@ under [Azure DevOps builds](#azure-devops-builds). The build steps run when
 | `workflow-prep` | The existing recipe, unchanged. Chooses the tracking issue and runs the claim check as information. |
 | `workflow-worktree` | The existing recipe. Step 04 creates the worktree and, for a new branch, links host inputs into it. |
 | `build-goal-setup` | Runs `autodrive_build_run.sh setup`. Creates the state folder, records the run's branch and worktree, and links host inputs into the worktree, which also covers a run on an existing branch. |
-| `build-loop` | Runs `autodrive_build_run.sh loop`, which calls the shared loop's driver, `tools/autodrive_goal_loop.sh`, the way the `autodrive-goal-loop` recipe's own step calls it, with `autodrive_build_goal.sh` as the goal tool and `skills/default-workflow/goal-build-pr.md` as the goal text. Each turn is then one `amplihack recipe run autodrive-goal-turn` from this step's depth, as under `auto-drive-to-merge`. Output: `build_loop_result`, the loop's end line from `loop-end.json`. A nested run of the loop recipe would put each turn's agent past the session-depth ceiling, and a sub-recipe step would merge the loop's context, `autodrive_state_dir` included, back into the run and its callers. |
+| `build-loop` | Runs `autodrive_build_run.sh loop`, which calls the shared loop's driver, `tools/autodrive_goal_loop.sh`, the way the `autodrive-goal-loop` recipe's own step calls it, with `autodrive_build_goal.sh` as the goal tool and `skills/default-workflow/goal-build-pr.md` as the goal text. Before the driver starts, a missing recorded worktree may be adopted only after the continuation head and one clean, exactly listed branch worktree are verified. Each turn is then one `amplihack recipe run autodrive-goal-turn` from this step's depth, as under `auto-drive-to-merge`. Output: `build_loop_result`, the loop's end line from `loop-end.json`. A nested run of the loop recipe would put each turn's agent past the session-depth ceiling, and a sub-recipe step would merge the loop's context, `autodrive_state_dir` included, back into the run and its callers. |
 | `build-report` | Runs `autodrive_build_run.sh report`. Non-fatal, and it runs once, after the loop's last action. Writes `workflow_result` from the loop's end, the pull request's live state and the outcome ledger. The run makes no file outside its state folder, so there is nothing else to remove. |
 
 The agent in each turn works on the branch the run created. The worktree and
@@ -85,6 +85,7 @@ below does not list.
 | `base_branch` | The base for `open-pr` and `merge-base` |
 | `existing_branch`, `allow_existing_pr`, `pr_number` | Shown in the reading and used to find the run's own pull request |
 | `issue_number`, `closing_reference` | Shown in the reading and allowed in pull request text |
+| `checks_watch_interval` | Seconds between CI reads during `wait`. Defaults to 120. See [CI check interval](./autodrive-goal-loop.md#ci-check-interval). |
 | `strict_delivery`, `allow_no_op` | Passed through |
 | `no_merge`, `finalization_handoff` | Accepted and ignored. A build never merges, and the run always ends with the pull request open (see [Behaviour changes](#behaviour-changes)). |
 
@@ -132,7 +133,7 @@ Each invocation of `default-workflow` gets a fresh private folder made with
 
 A parent that is relative, contains `..`, is a symlink, belongs to another user
 or is world-writable without the sticky bit is skipped. The folder holds
-`identity.json` (branch, worktree and where they came from), `pr.json`,
+`identity.json` (branch, worktree, recorded commit and where they came from), `pr.json`,
 `pr-text/` (the latest intended title and body), `checks.json` and the turn
 records. State files are a cache. They are never an authority for a write to
 GitHub, which always checks live state first.
@@ -211,7 +212,7 @@ contract: exit 2 for a bad call, 75 and 79 passed up unchanged.
 | `open-pr` | pushed branch | Creates the pull request with the title and body from `args.title` and `args.body`, byte for byte, against the base from the context, then the identity, then the repository default. If an open pull request already exists on the branch, records its number. Reads the text back and corrects it at most once | `opened`, `already-open`, `text-differs`, `not-pushed`, `refused`, `invalid-args`, `refused-secret`, `failed` |
 | `mark-ready` | pull request | Runs `gh pr ready <n>` and reads back `isDraft`. Refuses a cross-repository pull request | `marked-ready`, `already-ready`, `still-draft`, `not-open`, `refused`, `refused-cross-repo`, `guidance-unknown`, `no-pr`, `failed` |
 | `review` | pull request | Runs one review round at the pushed head through the shared review entry point | the verdict, `no-pr`, `failed` |
-| `wait` | pull request | Waits for the pull request's checks to complete or for guidance to arrive, with no timer | Returns when the checks complete or guidance arrives, or reports a failure |
+| `wait` | pull request | Uses the [shared conditional REST wait](./autodrive-goal-loop.md#waiting) at the configured interval | `checks-complete` with `checks_state` of `passed`, `failed`, or `unverified`, `head-changed`, `guidance-arrived`, `wait-error` |
 | `prepare-worktree` | recorded branch | Restores a missing worktree, or adopts one, and links host inputs. Never uses `-f`, never resets | Reports whether the worktree is usable and which host inputs were linked |
 
 How the agent commits and pushes: it runs `git commit` and `git push` in the
@@ -219,7 +220,13 @@ worktree like any developer, through the repository's hooks and never with
 `--no-verify` or force. A hook failure is the command's output. The next turn
 reads it as evidence and chooses what to do, for example installing a missing
 host input and committing again. No fixed step runs hook repair on the loop
-path.
+path. After a full check fails, whether the pre-push hook, a local full test
+run or a CI job, the agent reruns only the part that failed, in the same
+environment, until it passes, and then runs the full check once; for a push,
+that is the pre-push hook. It records the part that failed, the narrow command
+and its result in `why`. A failure the narrow rerun cannot reproduce is
+reported, not fixed blind, and a failure only CI shows is read from the CI job
+log first.
 
 Every action accepts an `args.checks` field, which `act` ignores. The agent records [checks already passed](#checks-already-passed) in `checks.json`.
 
@@ -240,6 +247,17 @@ exported as `GH_REPO` for every `gh` call, including the delegated ones. No
 call passes `--repo`. A write is refused when the context `pr_repository` differs from the
 origin repository. When the origin cannot be parsed, reads record an error in
 the reading and writes report `failed`.
+
+### Continuation worktree recovery
+
+At the start of `build-loop`, a missing recorded worktree is recoverable only
+when Git lists exactly one worktree for the run branch and the identity records
+the commit it held. The candidate must be clean, including untracked and
+submodule changes, and its current commit must equal that recorded head. The
+loop persists the adopted path in `identity.json` before the first turn. A
+missing recorded commit, an invalid, dirty or differently headed candidate, or
+multiple candidates is a startup refusal with no agent turn. If Git lists no
+candidate, the existing missing-worktree reading remains in effect.
 
 ### Adoption
 
@@ -672,8 +690,8 @@ contain the agent. Branch protection is the enforcing control.
 
 The build goal runs a whole goal that starts with no pull request: no
 `guidance_target`, `publish` exiting 1, and `final` printing nothing. The shared
-loop files are not edited by this change. What the build side relies on, as
-read in PR 1's code:
+loop keeps the build turn at constant depth and applies pairwise recovery to
+marked failures before an agent decision. What the build side relies on:
 
 - The driver reads guidance at the start of each turn, before the agent step,
   and again after the decision, before the action. Guidance comes only from
@@ -682,6 +700,10 @@ read in PR 1's code:
   it. It is never read from pull request comments, so no author filter is
   needed for it.
 - Only `wait` (and the shared `wait-owner`) is woken when guidance arrives.
+- Two consecutive marked failures with the same structured class and detail,
+  before `decide` completes or `decision.json` exists, publish one hand-off and
+  arm `wait-owner`. Guidance, pull-request, worktree and owner-stop events wake
+  that wait. A missing or malformed marker clears the comparison.
 - Guidance text never reaches the turn folder or any JSON, by design. The goal
   tool reads the guidance folders itself, at each `open-pr`, with
   `amplihack recipe guidance show --operator-only`; see

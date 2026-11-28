@@ -132,7 +132,7 @@ amplihack copilot
 
 - Uses GitHub Copilot models (switch with `/model` command)
 - Adaptive hooks enable preference injection and context loading
-- All 38 bundled agents available via `--agent <name>` flag
+- All 37 bundled agents available via `--agent <name>` flag
 - See [GitHub Copilot CLI](COPILOT_CLI.md) for complete guide
 - See [How to Use amplihack with a Non-Claude Agent](howto/use-non-claude-agent.md) for `AMPLIHACK_AGENT_BINARY` propagation and nested Copilot compatibility details
 - Follow the [Copilot parity control-plane tutorial](tutorials/copilot-parity-control-plane.md) for step-by-step setup and validation

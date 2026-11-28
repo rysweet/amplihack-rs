@@ -295,6 +295,7 @@ REPO_SLUG=""
 ALLOW_EXISTING=""
 SLUG_FROM_ORIGIN=""
 JSON_OUT=""
+GOAL_READING=false
 
 # usage <reason>: a malformed call, which is the caller's error and not a
 # verdict about the issue. Exit 2, nothing on stdout. Control characters are
@@ -318,6 +319,7 @@ while [ "$#" -gt 0 ]; do
       shift 2 ;;
     --allow-existing-pr) ALLOW_EXISTING="true"; shift ;;
     --json) JSON_OUT="true"; shift ;;
+    --goal-reading) GOAL_READING=true; shift ;;
     -h|--help) sed -n '1,/^#   2  a usage error: an unknown argument, a missing value, or a malformed --head or --repo$/p' "$0" >&2; exit 0 ;;
     *) usage "unknown argument '$1'" ;;
   esac
@@ -431,6 +433,10 @@ case "$ISSUE" in
   *[!0-9]*) skip "issue-reference-not-numeric:${ISSUE}" ;;
 esac
 
+if [ "$GOAL_READING" = true ]; then
+  tools="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" || unknown "goal-library-unavailable"
+  GH_READ_DIR=""
+fi
 cd "$REPO_ARG" 2>/dev/null || unknown "repo-path-unreadable"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || skip "not-a-git-repository"
 
@@ -480,15 +486,45 @@ command -v jq >/dev/null 2>&1 || unknown "jq-not-installed"
 FIELDS="number,url,title,state,mergedAt,headRefName,isCrossRepository,closingIssuesReferences,baseRefName,body"
 ERRFILE="$(mktemp "${TMPDIR:-/tmp}/issue-claim-check.XXXXXX")" || unknown "cannot-create-tempfile"
 # shellcheck disable=SC2329  # invoked by the EXIT trap below.
-cleanup() { rm -f "$ERRFILE"; }
+cleanup() {
+  if [ "$GOAL_READING" = true ] && [ -n "${GH_READ_DIR:-}" ]; then
+    gh_goal_cancel
+    rm -rf -- "$GH_READ_DIR"
+  fi
+  rm -f "$ERRFILE"
+}
 trap cleanup EXIT
 
-gh_list() { # gh_list <state> <limit> -> JSON array on stdout, rc from gh
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$TIMEOUT_S" gh pr list --repo "$REPO_SLUG" --state "$1" --limit "$2" --json "$FIELDS" 2>>"$ERRFILE"
+if [ "$GOAL_READING" = true ]; then
+  # shellcheck source=autodrive_goal_lib.sh
+  . "$tools/autodrive_goal_lib.sh" || unknown "goal-library-unavailable"
+  # shellcheck source=workflow_gh_retry.sh
+  . "$tools/workflow_gh_retry.sh" || unknown "github-read-helper-unavailable"
+  GH_READ_DIR="$(mktemp -d "${ERRFILE}.reading.XXXXXX")" || unknown "cannot-create-tempdir"
+  GUIDANCE_SINCE="${AUTODRIVE_GUIDANCE_MARK:-}"
+  goal_is_entry "$GUIDANCE_SINCE" || GUIDANCE_SINCE=""
+  GUIDANCE_TARGET="${AUTODRIVE_GUIDANCE_TARGET:-}"
+  goal_github_pr_repo "$GUIDANCE_TARGET" "${GUIDANCE_TARGET##*/}" >/dev/null || GUIDANCE_TARGET=""
+  gh_rate_limit_guidance() { goal_read_guidance; }
+  trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+fi
+
+# Use the goal's in-turn read only when called by the build reading.
+claim_gh() { # claim_gh <error file> <gh args...>; sets CLAIM_GH_RESULT
+  local errors="$1" rc=0
+  shift
+  CLAIM_GH_RESULT=""
+  if [ "$GOAL_READING" = true ]; then
+    gh_goal_read graphql trace "$@" || rc=$?
+    case "$rc" in 75|79) exit "$rc" ;; esac
+    if [ "$rc" -eq 0 ]; then CLAIM_GH_RESULT="$(<"$GH_READ_BODY")"
+    else printf '%s\n' "$GH_READ_ERROR" >> "$errors"; fi
+  elif command -v timeout >/dev/null 2>&1; then
+    CLAIM_GH_RESULT="$(timeout "$TIMEOUT_S" gh "$@" 2>>"$errors")" || rc=$?
   else
-    gh pr list --repo "$REPO_SLUG" --state "$1" --limit "$2" --json "$FIELDS" 2>>"$ERRFILE"
+    CLAIM_GH_RESULT="$(gh "$@" 2>>"$errors")" || rc=$?
   fi
+  return "$rc"
 }
 
 # classify_failure <rc> — never returns; every path is `unknown`.
@@ -516,12 +552,10 @@ classify_failure() {
   unknown "unrecognised-api-error: ${errtext}"
 }
 
-RC=0
-OPEN_JSON="$(gh_list open "$OPEN_LIMIT")" || RC=$?
-[ "$RC" -eq 0 ] || classify_failure "$RC"
-RC=0
-MERGED_JSON="$(gh_list merged "$MERGED_LIMIT")" || RC=$?
-[ "$RC" -eq 0 ] || classify_failure "$RC"
+claim_gh "$ERRFILE" pr list --repo "$REPO_SLUG" --state open --limit "$OPEN_LIMIT" --json "$FIELDS" || classify_failure "$?"
+OPEN_JSON="$CLAIM_GH_RESULT"
+claim_gh "$ERRFILE" pr list --repo "$REPO_SLUG" --state merged --limit "$MERGED_LIMIT" --json "$FIELDS" || classify_failure "$?"
+MERGED_JSON="$CLAIM_GH_RESULT"
 
 # An empty answer reads as no pull requests. The test is a regex, not
 # `${VAR//[[:space:]]/}`: with PR bodies included the listings run to hundreds
@@ -541,10 +575,8 @@ if [ "$SLUG_FROM_ORIGIN" = "true" ]; then
   DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
 fi
 if [ -z "$DEFAULT_BRANCH" ]; then
-  if command -v timeout >/dev/null 2>&1; then
-    DEFAULT_BRANCH="$(timeout "$TIMEOUT_S" gh repo view "$REPO_SLUG" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)" || DEFAULT_BRANCH=""
-  else
-    DEFAULT_BRANCH="$(gh repo view "$REPO_SLUG" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)" || DEFAULT_BRANCH=""
+  if claim_gh /dev/null repo view "$REPO_SLUG" --json defaultBranchRef --jq '.defaultBranchRef.name'; then
+    DEFAULT_BRANCH="$CLAIM_GH_RESULT"
   fi
 fi
 # First line only, then no whitespace, by parameter expansion: a pipeline
@@ -664,8 +696,7 @@ fi
 #
 # Reached only when a merged claim survived section 3, so the ordinary run —
 # no claims, or open ones only — makes no additional API call and behaves
-# exactly as it did before. The call is made once here, never per claim and
-# never in a loop, and it is not retried.
+# exactly as it did before. The lookup is made here once for all merged claims.
 
 MERGED_CLAIMS="$(printf '%s' "$CLAIMS" | jq '
   [(.ours // []), (.others // [])] | add
@@ -677,10 +708,8 @@ if [ "$MERGED_CLAIMS" -gt 0 ]; then
   # stderr to /dev/null, not to $ERRFILE: routing provider text from this call
   # into the shared error file would let it surface through the unrecognised-
   # api-error message, which is an outcome this filter must never reach.
-  if command -v timeout >/dev/null 2>&1; then
-    ISSUE_STATE="$(timeout "$TIMEOUT_S" gh issue view "$ISSUE" --repo "$REPO_SLUG" --json state --jq '.state' 2>/dev/null)" || ISSUE_STATE=""
-  else
-    ISSUE_STATE="$(gh issue view "$ISSUE" --repo "$REPO_SLUG" --json state --jq '.state' 2>/dev/null)" || ISSUE_STATE=""
+  if claim_gh /dev/null issue view "$ISSUE" --repo "$REPO_SLUG" --json state --jq '.state'; then
+    ISSUE_STATE="$CLAIM_GH_RESULT"
   fi
   # Bounded first, then first line, then stripped, then allow-listed. The
   # three normalising steps are parameter expansions, because a pipeline

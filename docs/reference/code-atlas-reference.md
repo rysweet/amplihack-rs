@@ -251,7 +251,7 @@ Only `a`, `b`, or `c` are accepted (SEC-14). Selecting `c` emits `DENSITY_THRESH
 | ---------- | ------- | ------- | ------- | ------- | ------------------------------------------ |
 | Go         | 90%     | 95%     | 80%     | 85%     | `handler*.go` and `model*.go` covered      |
 | TypeScript | 90%     | 90%     | 85%     | 90%     | NestJS decorators require extra patterns   |
-| Python     | 90%     | 90%     | 80%     | 80%     | Delegates to `code-visualizer` for Layer 2 |
+| Python     | 90%     | 90%     | 80%     | 80%     | `python-ast` reads `import` and `from … import` statements for Layer 2 |
 | .NET (C#)  | 85%     | 85%     | 75%     | 80%     | Controllers + minimal API both covered     |
 | Rust       | 85%     | 80%     | 70%     | 70%     | axum + actix-web patterns covered          |
 | Java       | 60%     | 65%     | 60%     | 60%     | Spring Boot basic patterns                 |

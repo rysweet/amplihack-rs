@@ -46,8 +46,8 @@ operator sets and sees.
 | `task_description` | The task text. Later guidance governs over it where they differ. |
 | `no_merge` | `true` turns merging off. Defaults to `false` for this recipe. |
 | `merge_method` | `merge`, `squash` or `rebase`; empty takes the first of squash, merge commit and rebase the repository allows. A method the repository does not allow is never used. |
-| `checks_watch_interval` | CI check refresh interval in seconds. Pass `-c checks_watch_interval=120` when you start auto-drive or a build. Use a decimal integer from 1 through 9223372036 with no leading zero. Empty uses gh's default. Other values produce a warning and use the same default. |
 | `autodrive_dry_run` | `true` reads and decides but never merges or writes to GitHub. |
+| `checks_watch_interval` | Seconds between CI reads during `wait`. Defaults to 120. See [CI check interval](./autodrive-goal-loop.md#ci-check-interval). |
 | `autodrive_budget_*` | Accepted and ignored. See [Retired inputs](#retired-inputs). |
 
 ## Merge authority

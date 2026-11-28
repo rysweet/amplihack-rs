@@ -18,7 +18,15 @@ do. It never widens what a build may do.
    choose `continue`. Commit through the repository's hooks and push with plain
    `git push`. Never use `--no-verify`, `--force`, rebase, amend or squash. A
    hook that fails is evidence: read its output, fix the cause, and commit
-   again.
+   again. After a full check fails (the pre-push hook, a local full test run
+   or a CI job), rerun only the part that failed until it passes: the named
+   failing tests or the one failing test binary or script, in the same
+   environment (the run's private HOME, with `AMPLIHACK_HOME` and
+   `CODEX_HOME` unset). The narrow rerun is diagnosis, not a recorded check
+   under item 8. Then run the full check once; for a push, that is the
+   pre-push hook run by plain `git push`. Write the part that failed, the
+   narrow command and its result in `why`. A failure the narrow rerun cannot
+   reproduce is reported as such and is not fixed blind.
 3. Where guidance and the task text differ, the later guidance governs. Read
    new guidance again with `amplihack recipe guidance show` before the full
    test suite, before a `review` round and before a `wait` for CI.
@@ -65,11 +73,15 @@ do. It never widens what a build may do.
    or for an owner's stated reason. Use `git fetch` and
    `git merge --no-ff --no-edit origin/<base>` in the worktree, resolve any
    conflict, commit and push. Never rebase or force-push. A branch that is only
-   behind needs no base merge.
+   behind needs no base merge. A `wait` whose result is `base-conflict` is a
+   conflict GitHub states: GitHub runs no checks for the pull request until
+   the base is merged.
 10. The quality bar: tests for every change in behaviour, the repository's own
     checks, QA scenarios where the change is visible to users (write them when
     they do not exist), and a `review` round at the pushed head before
-    `mark-ready`. A red check is a fix; a pending check is a `wait`.
+    `mark-ready`. A red check is a fix; a pending check is a `wait`. Before
+    you fix a red CI check, read the failed job's log; a failure only CI
+    shows, such as a tool missing on the runner, is fixed from that log.
 11. Hand off only for a decision that belongs to a named owner, naming the
     owner and the decision. Your own concern about the hooks, the QA runner or
     the environment is work to do, not a hand-off.
