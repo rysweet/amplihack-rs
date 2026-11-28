@@ -220,7 +220,13 @@ worktree like any developer, through the repository's hooks and never with
 `--no-verify` or force. A hook failure is the command's output. The next turn
 reads it as evidence and chooses what to do, for example installing a missing
 host input and committing again. No fixed step runs hook repair on the loop
-path.
+path. After a full check fails, whether the pre-push hook, a local full test
+run or a CI job, the agent reruns only the part that failed, in the same
+environment, until it passes, and then runs the full check once; for a push,
+that is the pre-push hook. It records the part that failed, the narrow command
+and its result in `why`. A failure the narrow rerun cannot reproduce is
+reported, not fixed blind, and a failure only CI shows is read from the CI job
+log first.
 
 Every action accepts an `args.checks` field, which `act` ignores. The agent records [checks already passed](#checks-already-passed) in `checks.json`.
 

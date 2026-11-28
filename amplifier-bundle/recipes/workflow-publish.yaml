@@ -391,7 +391,7 @@ steps:
           rb="$(bash "${GIT_IDENTITY_HELPER%/*}/workflow_remote_branch.sh" .)" || exit 1; [ "$rb" != "$(git branch --show-current)" ] || rb=""; workflow_pull_merge && git push ${rb:+origin "HEAD:$rb"}  # #2994: merge, never rebase; #2839: autostash keeps the report
           ```
           If the merge conflicts, the branch is left as it was: run `git merge --no-edit @{u}`, resolve the conflicted files, `git add` them, run `git commit` (hooks on) and push. Never rebase.
-       6. If failures persist after 3 iterations, document them honestly.
+       6. If failures persist after 3 iterations, document them honestly. After a full check fails (the pre-push hook, a local full test run or a CI job), rerun only the failing tests, binary or script in the same environment until it passes, then the full check once (for a push, the pre-push hook through plain `git push`); write the failed part, the narrow command and its result in your output; report a failure the narrow rerun cannot reproduce instead of fixing it blind, and read a CI-only failure from the CI job log first.
 
        Update the PR description with a "Step 16b: Outside-In Testing Results"
        section listing detected toolchains, chosen strategy, each scenario,
