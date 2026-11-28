@@ -289,13 +289,14 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     // by three. #3365 removes four skills and the `collaboration` folder,
     // which the package copied, so the floor is the count measured after
     // that, five lower. #3380 removes five more skills. #3384 removes one
-    // skill and one agent-derived entry. The floor is 154 entries in a fresh
-    // isolated full-list package.
+    // skill and one agent-derived entry. #3385 folds knowledge extraction into
+    // session-learning and removes one more. The floor is the count measured
+    // by staging the merged tree with `all` into a fresh isolated home.
     let names = fs::read_dir(skills)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    assert!(names.len() >= 154, "{} packaged skills", names.len());
+    assert!(names.len() >= 153, "{} packaged skills", names.len());
     assert!(
         names
             .iter()

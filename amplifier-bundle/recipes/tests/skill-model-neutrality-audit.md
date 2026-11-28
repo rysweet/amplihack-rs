@@ -190,7 +190,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | indigenous-leader-analyst | Pass | Yes |
 | investigation-workflow | Pass | Yes |
 | journalist-analyst | Pass | Yes |
-| knowledge-extractor | Pass | Yes |
 | lawyer-analyst | Pass | Yes |
 | learning-path-builder | Pass | Yes |
 | lsp-setup | Pass | No |
