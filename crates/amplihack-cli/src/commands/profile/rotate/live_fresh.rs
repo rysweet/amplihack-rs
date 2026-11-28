@@ -53,6 +53,15 @@
 //! reading keeps its own reading time, so the usage history records it by
 //! its age and the log says how old it is (`log::Shown::cached`).
 //!
+//! Issue #3458: the held reading is not a fallback for a failed re-read. A
+//! re-read that was made and failed ([`Reread::Failed`]) keeps the login live
+//! for the cycle (`fresh_msg::kept_live`) and returns before the held reading
+//! is consulted. The held reading stands in only when no re-read could be made
+//! ([`Reread::Skipped`]: no hook, or `rotate stop`); the lane tests in
+//! `tests_issue_2889_cycle` pass no hook for that reason. A persistent re-read
+//! failure is recorded in the log only (the `kept_live` line each cycle), not
+//! in the advisory file: the cycle is a stay, not an ALERT.
+//!
 //! The live re-read runs after the measurement and is dated then, but it
 //! never makes the cycle's own target readings stale: the target gate caps
 //! the live reading time at the measurement's start (`fresh::settle`).
