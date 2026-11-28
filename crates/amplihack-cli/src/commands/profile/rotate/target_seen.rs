@@ -30,6 +30,8 @@ use std::path::Path;
 /// The cycle's extra inputs to the decision.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Extra {
+    /// The label of the live probe, for the cycle log.
+    pub live_label: Option<ProbeLabel>,
     /// Targets directly confirmed in this cycle, also used during the
     /// locked revalidation, which cannot probe another target.
     pub confirmed: BTreeSet<ProfileName>,

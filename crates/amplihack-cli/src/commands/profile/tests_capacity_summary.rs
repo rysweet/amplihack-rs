@@ -39,6 +39,7 @@ fn pt(s: Option<u8>, w: u8) -> Point {
         w,
         w_reset: None,
         s_reset: None,
+        observed_at: None,
         no_session_limit: false,
         passive: false,
     }
@@ -50,6 +51,7 @@ fn pt_r(s: Option<u8>, w: u8, w_reset: Option<i64>, s_reset: Option<i64>) -> Poi
         w,
         w_reset,
         s_reset,
+        observed_at: None,
         no_session_limit: false,
         passive: false,
     }

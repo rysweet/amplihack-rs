@@ -59,8 +59,161 @@ fn row(name: &str, rep: UsageReport) -> Row {
         raw: None,
         source: None,
         direct_failure: None,
+        retry_until_ms: None,
+        cached: None,
         spend: Spend::NotApplicable,
         extra_shape: None,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn declined_usage_omits_unattributed_passive_figures() {
+    use super::rotate::fresh::MAX_READING_AGE_SECS;
+    use super::store::ProfileStore;
+    use super::usage_direct::reason::HTTP_429;
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let state = dir.join(".auto-switch.d");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let usage = state.join("usage.json");
+    std::fs::write(
+        &usage,
+        serde_json::json!({
+            "version": 1,
+            "accounts": {
+                "example": {
+                    "five_hour": {"used_percentage": 51.0, "resets_at": NOW + HOUR},
+                    "seven_day": {"used_percentage": 80.0, "resets_at": NOW + DAY},
+                    "observed_at": NOW,
+                    "source": "statusline"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::set_permissions(usage, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let reader = cache_reader(ProfileStore::new(dir));
+    write_cache_test_creds(reader.store.root());
+    let mut failed = row("example", UsageReport::empty(UsageState::Error));
+    failed.error = Some(ErrorReason::Direct(HTTP_429));
+    failed.direct_failure = Some(HTTP_429);
+    let mut rows = [failed];
+    reader.show_cached_usage(&mut rows, NOW + MAX_READING_AGE_SECS, None);
+    let shown: serde_json::Value = serde_json::from_str(&render_json(&rows)).unwrap();
+    assert!(shown[0].get("cached").is_none());
+    assert!(shown[0]["session"].is_null());
+    assert!(shown[0]["week_all"].is_null());
+    assert_eq!(rows[0].report.state, UsageState::Error);
+    assert_eq!(rows[0].report.observed_at, None);
+    assert!(observations(&rows).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn declined_usage_displays_bound_figures_with_their_original_age() {
+    use super::rotate::fresh::MAX_READING_AGE_SECS;
+    use super::store::ProfileStore;
+    use super::usage_direct::reason::HTTP_429;
+    use super::usage_history::{self, Writer};
+    use super::usage_retry::{Held, Key};
+    use std::os::unix::fs::DirBuilderExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let store = ProfileStore::new(tmp.path().canonicalize().unwrap());
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(store.root().join(usage_history::STATE_DIR))
+        .unwrap();
+    let reading = ok("example", Some((51.0, None)), Some((80.0, Some(NOW + DAY))));
+    let history = usage_history::from_rows(NOW, NOW, std::slice::from_ref(&reading), None).unwrap();
+    usage_history::append_with(store.root(), &history.entry(Writer::Usage), NOW, None).unwrap();
+
+    let mut failed = row("example", UsageReport::empty(UsageState::Error));
+    failed.error = Some(ErrorReason::Direct(HTTP_429));
+    failed.direct_failure = Some(HTTP_429);
+    let mut rows = [failed];
+    let edge = NOW + MAX_READING_AGE_SECS;
+    write_cache_test_creds(store.root());
+    let reader = cache_reader(store);
+    reader.show_cached_usage(&mut rows, edge, None);
+    assert!(
+        rows[0].cached.is_none(),
+        "legacy history has no login binding"
+    );
+
+    let root = reader.store.root();
+    let slot = Held::take(root, &Key::slot(CACHE_TEST_ENDPOINT, &root.join("example"))).unwrap();
+    let mut report = reading.report;
+    report.observed_at = Some(NOW);
+    slot.cache(&Key::new(CACHE_TEST_ENDPOINT, "fixture-access"), report)
+        .unwrap();
+    reader.show_cached_usage(&mut rows, edge, None);
+    let (report, age) = rows[0].cached.as_ref().unwrap();
+    assert_eq!(report.observed_at, Some(NOW));
+    assert_eq!(*age, MAX_READING_AGE_SECS as u64);
+    assert_eq!(report.session.as_ref().unwrap().used_percentage, 51.0);
+    assert_eq!(report.week_all.as_ref().unwrap().used_percentage, 80.0);
+    assert_eq!(rows[0].report.state, UsageState::Error);
+    assert!(observations(&rows).is_empty());
+
+    reader.show_cached_usage(&mut rows, edge + 1, None);
+    assert!(rows[0].cached.is_none());
+    let expired: serde_json::Value = serde_json::from_str(&render_json(&rows)).unwrap();
+    assert!(expired[0]["failure_label"].is_string());
+}
+
+#[cfg(unix)]
+const CACHE_TEST_ENDPOINT: &str = "http://127.0.0.1:12345";
+
+#[cfg(unix)]
+fn write_cache_test_creds(root: &std::path::Path) {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let dir = root.join("example");
+    std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    amplihack_utils::secure_files::write_private_atomic(
+        &dir,
+        ".credentials.json",
+        br#"{"claudeAiOauth":{"accessToken":"fixture-access"}}"#,
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+fn cache_reader(store: super::store::ProfileStore) -> super::usage_cmd::RowReader {
+    use super::probe_limits::ProbeMode;
+    use super::usage_cmd::RowReader;
+    use super::usage_direct::Endpoints;
+    use super::usage_source::{ClaudeGate, LazyBinary, SourceEnv};
+
+    let (endpoints, warnings) = Endpoints::resolve(
+        Some(CACHE_TEST_ENDPOINT.as_ref()),
+        Some("http://127.0.0.1:12345/oauth/token".as_ref()),
+    );
+    assert!(warnings.is_empty());
+    RowReader {
+        store,
+        env: SourceEnv {
+            mode: ProbeMode::Direct,
+            passive_max_age: 0,
+            endpoints,
+            timeout: std::time::Duration::from_secs(5),
+        },
+        binary: LazyBinary::claude(),
+        gate: ClaudeGate::new(1),
+        home: None,
+        no_refresh: None,
+        overflow: Vec::new(),
+        excluded: Some(Vec::new()),
+        now: NOW,
+        keep_raw: false,
+        record_usage: false,
     }
 }
 
@@ -1795,6 +1948,27 @@ mod request {
             assert_eq!(s.matches(NO_PERSIST).count(), 1, "{s:?} has the flag once");
         }
         assert_eq!(starts, [req(), TEXT.to_string(), TEXT.to_string()]);
+    }
+
+    #[test]
+    fn control_only_preserves_figures_and_never_starts_the_text_probe() {
+        let text = "printf '%s\\n' 'You are currently using your subscription to power your Claude Code usage'";
+        let available = Fake::new(ANSWER, text).answer(&accepted());
+        let p = available.probe(ProbeMode::ControlOnly, 20, false);
+        assert_eq!(p.report.state, UsageState::Ok);
+        assert_eq!(session(&p), 20.0);
+        assert_eq!(available.starts(), [req()]);
+
+        let unavailable = Fake::new(ANSWER, text).answer(&error_answer());
+        let p = unavailable.probe(ProbeMode::ControlOnly, 20, false);
+        assert_eq!(p.report.state, UsageState::Unparsed);
+        assert!(p.report.session.is_none());
+        assert!(p.report.week_all.is_none());
+        assert_eq!(unavailable.starts(), [req()]);
+
+        let p = unavailable.probe(ProbeMode::Auto, 20, false);
+        assert_eq!(p.report.state, UsageState::Unparsed);
+        assert_eq!(unavailable.starts(), [req(), req(), TEXT.to_string()]);
     }
 
     #[test]

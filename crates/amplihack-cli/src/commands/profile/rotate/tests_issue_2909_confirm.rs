@@ -197,6 +197,7 @@ fn a_kept_reading_is_never_replaced_by_a_last_good_reading() {
                     week: Some(40.0),
                 },
                 at: now - 600,
+                observed_at: None,
             },
         )])),
         ..Extra::default()

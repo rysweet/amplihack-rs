@@ -125,7 +125,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     // Issue #2889: as in a real cycle, the line reports the live figures the
     // preview decided on, after the live step and before the target gate.
     let name = live_name(&snap.live);
-    let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded, (ctx.now)());
+    let (live_shown, others_shown) = super::log::cycle_shown(ctx, &snap, &m, (ctx.now)());
     out.emit(
         0,
         &msg::cycle(name, &live_shown, &others_shown, snap.shown_platform()),

@@ -591,10 +591,7 @@ fn ac7_a_login_that_answered_429_is_rejected_at_confirmation_when_the_live_login
     assert_eq!(out, CycleOutcome::Alerted, "{log}");
     assert!(f.live_is("work"), "{log}");
     // The probe's own error is in the log, beside the login it was for.
-    assert!(
-        log.contains("login-al:unknown, HTTP 429, last s=78%,w=92% 30m ago"),
-        "{log}"
-    );
+    assert!(log.contains("login-al:unknown, HTTP 429"), "{log}");
     assert!(log.contains("login-ar:unknown, HTTP 429"), "{log}");
     assert!(
         log.contains("reject: login-al reading unknown (HTTP 429)"),
@@ -674,10 +671,78 @@ fn ac7_a_failed_login_is_shown_as_failed_and_an_unknown_one_as_unknown() {
     let log = f.log();
     // A credential failure gets no last good reading, so it is never a target.
     assert!(log.contains("aa:failed"), "{log}");
-    assert!(
-        log.contains("bb:unknown, transport, last s=10%,w=10% 10m ago"),
-        "{log}"
+    assert!(log.contains("bb:unknown, transport"), "{log}");
+}
+
+#[test]
+fn cycle_displays_dated_history_through_each_logins_age_limit() {
+    use super::Extra;
+    use crate::commands::profile::auto_switch::kit::State;
+    use crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS;
+    use crate::commands::profile::rotate::fresh::MAX_READING_AGE_SECS;
+    use crate::commands::profile::rotate::{log, observe};
+
+    let f = fleet(&["example"], &[]);
+    let fresh = clock();
+    f.history("work", MAX_READING_AGE_SECS, 51, 80);
+    f.history_observed(
+        "example",
+        MAX_READING_AGE_SECS - 60,
+        MAX_READING_AGE_SECS,
+        12,
+        34,
     );
+    let ctx = crate::commands::profile::rotate::tests_revalidate_cause::ctx_with(
+        &f.e,
+        super::tests_issue_2910_fixture::stub,
+    );
+    let state = State::new(ctx.store.root()).unwrap();
+    let snap = observe::snapshot(&ctx, &state).unwrap();
+    let label = ProbeLabel::Http429;
+    let other = name("example");
+    let mut extra = Extra::for_cycle(
+        ctx.store.root(),
+        vec![(other.clone(), label)],
+        Vec::new(),
+        &[],
+        snap.measured_live(),
+        fresh,
+    );
+    extra.live_label = Some(label);
+    let failed = unread();
+    let measurement = observe::decide_with(
+        &ctx,
+        &snap,
+        failed.clone(),
+        vec![(other, failed.clone())],
+        fresh,
+        &extra,
+    )
+    .unwrap();
+
+    for (age, live_visible, candidate_visible) in [
+        (MAX_READING_AGE_SECS, true, true),
+        (MAX_READING_AGE_SECS + 1, false, true),
+        (1800, false, true),
+        (LAST_GOOD_MAX_AGE_SECS, false, true),
+        (LAST_GOOD_MAX_AGE_SECS + 1, false, false),
+    ] {
+        let now = fresh + age - MAX_READING_AGE_SECS;
+        let (live, others) = log::cycle_shown(&ctx, &snap, &measurement, now);
+        for (shown, visible, session, week) in [
+            (&live, live_visible, 51.0, 80.0),
+            (&others[0].1, candidate_visible, 12.0, 34.0),
+        ] {
+            assert_eq!(shown.label, Some(label.as_str()));
+            assert_eq!(shown.cached, visible.then_some(age as u64));
+            assert_eq!(shown.session, visible.then_some(session));
+            assert_eq!(shown.week, visible.then_some(week));
+            assert!(shown.note.is_none());
+        }
+    }
+    let (live, others) = measurement.probed.unwrap();
+    assert_eq!(live, failed);
+    assert_eq!(others[0].1, failed);
 }
 
 // --- The cycle line gives each login's reason (D11) -----------------------------------------------------

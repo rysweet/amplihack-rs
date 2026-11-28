@@ -50,7 +50,8 @@ pub fn give_logins(home: &Path, root: &Path, live: &str, stored: &[&str]) -> Log
     let login = |name: &str| {
         serde_json::json!({"claudeAiOauth": {
             "accessToken": format!("fake-default1753-{name}"),
-            "refreshToken": "fake-default1753-unused-refresh", "expiresAt": 4_102_444_800_000_i64
+            "refreshToken": format!("fake-default1753-{name}-refresh"),
+            "expiresAt": 4_102_444_800_000_i64
         }})
     };
     fs::set_permissions(home, fs::Permissions::from_mode(0o700)).unwrap();

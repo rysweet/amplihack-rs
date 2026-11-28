@@ -33,7 +33,7 @@ mod dry_run;
 #[cfg(unix)]
 mod exhausted;
 #[cfg(unix)]
-mod fresh;
+pub(super) mod fresh;
 #[cfg(unix)]
 mod fresh_msg;
 #[cfg(unix)]
@@ -73,7 +73,7 @@ mod login_identity;
 #[cfg(unix)]
 mod lost;
 #[cfg(unix)]
-mod measure;
+pub(super) mod measure;
 #[cfg(unix)]
 mod observe;
 #[cfg(unix)]
