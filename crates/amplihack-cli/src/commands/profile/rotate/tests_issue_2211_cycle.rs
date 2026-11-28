@@ -25,10 +25,12 @@
 use super::super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::super::decide::Probed;
 use super::super::fresh::live::{Basis, FROZEN_CYCLES};
+use super::super::fresh_msg;
 use super::super::tests_issue_1870::{exh, rd};
 use super::super::tests_revalidate_cause::{ctx_with, log_of};
 use super::super::tests_swap::{Env, env, ino_at};
 use crate::commands::profile::auto_switch::kit::now;
+use crate::commands::profile::name::ProfileName;
 
 /// `--interval` in these tests, and the clock step between cycles.
 const INTERVAL: i64 = 120;
@@ -822,8 +824,12 @@ fn e2_an_old_reading_near_the_threshold_whose_reread_fails_swaps() {
     let got = step(&mut c, &le2::CLOCK);
     let log = log_of(&e);
     assert_eq!(le2::live_calls(), 1, "{log}");
-    assert_eq!(got, CycleOutcome::Swapped, "never a stay: {log}");
-    assert!(log.contains("reason=projected"), "{log}");
+    // Issue #3458: the live read failed, so the login is kept.
+    assert_eq!(got, CycleOutcome::Stayed, "{log}");
+    assert!(
+        log.contains(&fresh_msg::kept_live(&ProfileName::parse("work").unwrap())),
+        "{log}"
+    );
     let (stale, failed) = (log.find(STALE), log.find(FAILED));
     assert!(failed.is_some() && stale < failed, "failure logged:\n{log}");
 }
@@ -891,13 +897,13 @@ fn e2b_a_stale_reading_after_95_percent_is_decided_on_95_not_the_threshold() {
     let log = log_of(&e);
     let cycle2 = &log[cycle1..];
     assert_eq!(lsf::live_calls(), 1, "{log}");
-    assert_eq!(got, CycleOutcome::Swapped, "decided on 95, not 70: {log}");
+    // Issue #3458: the live read failed, so the login is kept.
+    assert_eq!(got, CycleOutcome::Stayed, "{log}");
     assert!(
-        cycle2.contains(
-            "swap work->spare live s=95% w=41% cached=240s target s=68% w=40% reason=threshold"
-        ),
+        cycle2.contains(&fresh_msg::kept_live(&ProfileName::parse("work").unwrap())),
         "{log}"
     );
+    assert_eq!(swaps(cycle2), 0, "{log}");
     assert!(!cycle2.contains("ALERT: no profile has capacity"), "{log}");
     let (stale, failed) = (log.find(STALE), log.find(FAILED));
     assert!(
@@ -1564,9 +1570,10 @@ fn a_frozen_66_with_a_moving_cache_time_whose_reread_fails_swaps() {
     assert_eq!(lfm::live_calls(), 1, "the third identical reading: {log}");
     let (stale, failed) = (log.find(STALE), log.find(FAILED));
     assert!(failed.is_some() && stale < failed, "failure logged:\n{log}");
-    assert_eq!(got, CycleOutcome::Swapped, "never a stay on 66%: {log}");
+    // Issue #3458: the live read failed, so the login is kept.
+    assert_eq!(got, CycleOutcome::Stayed, "{log}");
     assert!(
-        log.contains("swap work->spare live s=66% w=41%") && log.contains("reason=projected"),
+        log.contains(&fresh_msg::kept_live(&ProfileName::parse("work").unwrap())),
         "{log}"
     );
 }
@@ -1592,13 +1599,14 @@ fn a_frozen_66_with_a_moving_cache_time_whose_reread_fails_alerts_and_is_read_ag
     let got = step(&mut c, &lfa::CLOCK);
     let log = log_of(&e);
     assert_eq!(lfa::live_calls(), 1, "{log}");
-    assert_eq!(basis(&c), Some(Basis::Substituted), "decided on 70%: {log}");
+    // Issue #3458: a failed live re-read keeps the live login and decides
+    // nothing on the unread side.
+    assert_eq!(basis(&c), None, "no decision on an unread live side: {log}");
     assert!(
-        log.contains("ALERT: no profile has capacity live=work s=66% w=41%"),
-        "never a stay on 66%: {log}"
+        log.contains(&fresh_msg::kept_live(&ProfileName::parse("work").unwrap())),
+        "{log}"
     );
-    assert_eq!(got, CycleOutcome::Stayed, "an advisory ALERT: {log}");
-    assert!(advisory(&e).is_some(), "the ALERT is recorded: {log}");
+    assert_eq!(got, CycleOutcome::Stayed, "{log}");
     assert!(
         c.live_series.unchanged() >= FROZEN_CYCLES,
         "the failed re-read kept the frozen count: {}",
@@ -1609,8 +1617,7 @@ fn a_frozen_66_with_a_moving_cache_time_whose_reread_fails_alerts_and_is_read_ag
     let log = log_of(&e);
     assert_eq!(lfa::live_calls(), 2, "read again on cycle 4: {log}");
     assert_eq!(stale_lines(&log), 2, "{log}");
-    assert_eq!(basis(&c), Some(Basis::Substituted), "{log}");
-    assert!(advisory(&e).is_some(), "still the ALERT, not a stay: {log}");
+    assert_eq!(basis(&c), None, "{log}");
     assert_eq!(swaps(&log), 0, "{log}");
 }
 
@@ -1644,17 +1651,15 @@ fn a_frozen_66_with_a_fixed_cache_time_whose_reread_fails_alerts_and_is_read_aga
     step(&mut c, &lff::CLOCK);
     let log = log_of(&e);
     assert_eq!(lff::live_calls(), 1, "{log}");
-    assert_eq!(basis(&c), Some(Basis::Substituted), "{log}");
+    assert_eq!(basis(&c), None, "{log}");
     assert!(
-        log.contains("ALERT: no profile has capacity live=work s=66% w=41%"),
+        log.contains(&fresh_msg::kept_live(&ProfileName::parse("work").unwrap())),
         "{log}"
     );
-    assert!(advisory(&e).is_some(), "{log}");
     step(&mut c, &lff::CLOCK);
     let log = log_of(&e);
     assert_eq!(lff::live_calls(), 2, "{log}");
-    assert_eq!(basis(&c), Some(Basis::Substituted), "{log}");
-    assert!(advisory(&e).is_some(), "still the ALERT, not a stay: {log}");
+    assert_eq!(basis(&c), None, "{log}");
     assert_eq!(swaps(&log), 0, "{log}");
 }
 

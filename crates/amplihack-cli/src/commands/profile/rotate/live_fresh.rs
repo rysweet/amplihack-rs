@@ -53,6 +53,15 @@
 //! reading keeps its own reading time, so the usage history records it by
 //! its age and the log says how old it is (`log::Shown::cached`).
 //!
+//! Issue #3458: the held reading is not a fallback for a failed re-read. A
+//! re-read that was made and failed ([`Reread::Failed`]) keeps the login live
+//! for the cycle (`fresh_msg::kept_live`) and returns before the held reading
+//! is consulted. The held reading stands in only when no re-read could be made
+//! ([`Reread::Skipped`]: no hook, or `rotate stop`); the lane tests in
+//! `tests_issue_2889_cycle` pass no hook for that reason. A persistent re-read
+//! failure is recorded in the log only (the `kept_live` line each cycle), not
+//! in the advisory file: the cycle is a stay, not an ALERT.
+//!
 //! The live re-read runs after the measurement and is dated then, but it
 //! never makes the cycle's own target readings stale: the target gate caps
 //! the live reading time at the measurement's start (`fresh::settle`).
@@ -67,7 +76,7 @@
 //! See "Rotate live reading freshness" in docs/reference/profile-command.md.
 
 use super::super::cycle::Ctx;
-use super::super::decide::{Probed, Reading};
+use super::super::decide::{Decision, Probed, Reading};
 use super::super::fresh_msg;
 use super::super::measure;
 use super::super::observe::{Measurement, Snap, decide_with};
@@ -147,7 +156,7 @@ pub(in crate::commands::profile::rotate) fn step(
                 .is_some_and(|last| series::contradicts(&last, session, session_resets(&probe)));
         if frozen || old || behind || regressed || contradicted {
             match reread_live(ctx, &name, t, interval, &mut m) {
-                Some(p) => {
+                Reread::Fresh(p) => {
                     let figures = match p.reading {
                         Reading::Measured { session, week } => Some((session, week)),
                         _ => None,
@@ -155,7 +164,19 @@ pub(in crate::commands::profile::rotate) fn step(
                     ctx.live_series.after_reread((session, week), figures);
                     live = p;
                 }
-                None => {
+                // Issue #3458: the live login was read again and the read
+                // failed. A swap is never decided with the live side unread,
+                // on the stale cached figures or on a held reading, so the
+                // login stays live this cycle and the next cycle reads again.
+                Reread::Failed => {
+                    ctx.live_series.after_reread((session, week), None);
+                    m.fresh_lines.push(fresh_msg::kept_live(&name));
+                    m.decision = Decision::Stay;
+                    m.note = None;
+                    return Ok(m);
+                }
+                // No read could be made (no hook, or `rotate stop`).
+                Reread::Skipped => {
                     ctx.live_series.after_reread((session, week), None);
                     still_stale = true;
                 }
@@ -188,7 +209,12 @@ pub(in crate::commands::profile::rotate) fn step(
                 let resets = session_resets(&live);
                 // Issue #2889: only a reading the series accepted is held;
                 // one it refused as stale must never stand in later.
-                if ctx.live_series.note(&name, read, session, resets, t) {
+                // A re-read finishes after `t`, so the series is told the
+                // clock as it is after the read (issue #3458).
+                if ctx
+                    .live_series
+                    .note(&name, read, session, resets, (ctx.now)().max(t))
+                {
                     let week_resets = week_resets(&live);
                     ctx.live_series.hold(
                         &name,
@@ -281,40 +307,57 @@ fn held_live(cached: &Probed, h: &Held) -> Probed {
     p
 }
 
+/// The outcome of [`reread_live`].
+enum Reread {
+    /// No read may be made: no hook, or `rotate stop`.
+    Skipped,
+    /// A read was made and failed, or is older than the cycle may use.
+    Failed,
+    /// A fresh direct reading.
+    Fresh(Probed),
+}
+
 /// One direct re-read of the live login `name` in `~/.claude`, by
 /// `ctx.reread_live` (never the profile directory's copy, and never a token
-/// refresh), after the
-/// [`fresh_msg::STALE_LIVE`] line, timed at `t`. `None` when no read may be
-/// made (no hook, or `rotate stop`), or, after a [`fresh_msg::failed`] line,
-/// when the read failed or is still stale at `t`.
+/// refresh), after the [`fresh_msg::STALE_LIVE`] line, timed at `t`.
+/// [`Reread::Skipped`] when no read may be made, or, after a
+/// [`fresh_msg::failed`] line, [`Reread::Failed`] when the read failed or is
+/// too old.
+///
+/// Issue #3458: the read is dated when it completes, which is after `t`. The
+/// future bound is therefore the clock taken after the read, never `t`; the
+/// bound on a reading that is too old stays on `t`.
 fn reread_live(
     ctx: &Ctx,
     name: &ProfileName,
     t: i64,
     interval: i64,
     m: &mut Measurement,
-) -> Option<Probed> {
-    let reread = ctx.reread_live?;
+) -> Reread {
+    let Some(reread) = ctx.reread_live else {
+        return Reread::Skipped;
+    };
     if ctx.stopping() {
-        return None;
+        return Reread::Skipped;
     }
     m.fresh_lines.push(fresh_msg::STALE_LIVE.to_string());
     let (mut p, label) = reread(ctx, name, measure::timeout_quiet());
     m.seen.extra.live_label = label;
     let failed = p.reading == Reading::Failed || p.unknown || p.still_running || p.carried;
+    let after = (ctx.now)().max(t);
     // The re-read has just run, so a missing observation time means now.
-    let at = p.observed_at.unwrap_or(t);
+    let at = p.observed_at.unwrap_or(after);
     let older = ctx
         .live_series
         .last_for(name)
         .is_some_and(|last| at < last.at);
-    if failed || stale_at(at, t, interval) || older {
+    if failed || at < t.saturating_sub(interval) || at > after || older {
         m.fresh_lines.push(fresh_msg::failed(name));
-        return None;
+        return Reread::Failed;
     }
     // A re-read is a direct read made in this cycle.
     p.observed_at = Some(at);
     p.carried = false;
     p.passive = false;
-    Some(p)
+    Reread::Fresh(p)
 }

@@ -851,7 +851,12 @@ mod evidence {
                 .iter()
                 .any(|l| l.contains("failed; treated as unknown"))
         );
-        assert_eq!(c.live_outlook.as_ref().unwrap().basis, Basis::Substituted);
+        // Issue #3458: a failed live re-read keeps the login; no decision
+        // is made on the unread side.
+        assert_eq!(m.decision, Decision::Stay);
+        assert!(m.fresh_lines.contains(&super::super::fresh_msg::kept_live(
+            &ProfileName::parse("work").unwrap()
+        )));
         // The failed reread left the frozen count and the lag mark as they
         // were. This changed cache value is still older than the accepted
         // direct reading.
@@ -964,7 +969,12 @@ mod evidence {
         establish_lag(&mut c, &snap, t);
         script([rd(1.0, 20.0, Some(t + 19)), rd(71.0, 20.0, Some(t + 40))]);
         let m = live(&mut c, &snap, t + 30, cached(65.0, t + 19));
-        assert_eq!(c.live_outlook.as_ref().unwrap().basis, Basis::Substituted);
+        // Issue #3458: a failed live re-read keeps the login; no decision
+        // is made on the unread side.
+        assert_eq!(m.decision, Decision::Stay);
+        assert!(m.fresh_lines.contains(&super::super::fresh_msg::kept_live(
+            &ProfileName::parse("work").unwrap()
+        )));
         assert!(
             m.fresh_lines
                 .iter()

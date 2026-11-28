@@ -159,7 +159,7 @@ fn a_fresh_probe_then_an_older_cached_reading_decides_on_the_fresh_one() {
     set(&l1::LIVE, &[Live::Direct(58.0, 100.0), cached(5.0, 95.0)]);
     set(&l1::OTHERS, &spare_full());
     set(&l1::REREAD, &[]);
-    let mut c = ctx(&e, l1::clock, l1::measure, Some(l1::reread));
+    let mut c = ctx(&e, l1::clock, l1::measure, None);
     step(&mut c, &l1::CLOCK);
     step(&mut c, &l1::CLOCK);
     let got = entries(&e);
@@ -170,7 +170,11 @@ fn a_fresh_probe_then_an_older_cached_reading_decides_on_the_fresh_one() {
         "decided on the held fresh reading, 120 s old: {log}"
     );
     assert_eq!(live_room(&e), Some(false), "the fresh week is full: {log}");
-    assert_eq!(stale_lines(&log), 1, "the failure stays loud: {log}");
+    assert_eq!(
+        stale_lines(&log),
+        0,
+        "no re-read hook, so no re-read line: {log}"
+    );
 }
 
 lane!(l2);
@@ -213,7 +217,7 @@ fn the_live_figures_do_not_alternate_back_to_the_stale_pair() {
     );
     set(&l3::OTHERS, &spare_full());
     set(&l3::REREAD, &[]);
-    let mut c = ctx(&e, l3::clock, l3::measure, Some(l3::reread));
+    let mut c = ctx(&e, l3::clock, l3::measure, None);
     for i in 1..=4 {
         step(&mut c, &l3::CLOCK);
         assert_eq!(live_room(&e), Some(false), "cycle {i}: no room recorded");
@@ -243,7 +247,7 @@ fn a_held_reading_is_not_replaced_by_the_stale_one_it_stood_in_for() {
     set(&l4::LIVE, &[Live::Direct(58.0, 100.0), cached(5.0, 95.0)]);
     set(&l4::OTHERS, &spare_full());
     set(&l4::REREAD, &[]);
-    let mut c = ctx(&e, l4::clock, l4::measure, Some(l4::reread));
+    let mut c = ctx(&e, l4::clock, l4::measure, None);
     for _ in 0..4 {
         step(&mut c, &l4::CLOCK);
     }
@@ -459,7 +463,7 @@ fn the_usage_history_does_not_record_a_held_reading_as_taken_this_cycle() {
     set(&l14::LIVE, &[Live::Direct(58.0, 100.0), cached(5.0, 95.0)]);
     set(&l14::OTHERS, &spare_full());
     set(&l14::REREAD, &[]);
-    let mut c = ctx(&e, l14::clock, l14::measure, Some(l14::reread));
+    let mut c = ctx(&e, l14::clock, l14::measure, None);
     step(&mut c, &l14::CLOCK);
     l14::CLOCK.fetch_add(400, Ordering::SeqCst);
     step(&mut c, &l14::CLOCK);
@@ -496,7 +500,7 @@ fn the_capacity_file_carries_the_held_figures_not_the_stale_ones() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let _toggle = EnvGuard::unset([crate::commands::profile::auto_switch::config::TOGGLE_ENV]);
     private(&e.root.join(".auto-switch"), "enabled=on\n");
-    let mut c = ctx(&e, l16::clock, l16::measure, Some(l16::reread));
+    let mut c = ctx(&e, l16::clock, l16::measure, None);
     step(&mut c, &l16::CLOCK);
     step(&mut c, &l16::CLOCK);
     let raw = fs::read_to_string(e.root.join(".auto-switch.d").join("capacity.json"))
