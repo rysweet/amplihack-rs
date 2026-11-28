@@ -1,21 +1,16 @@
 # Code Philosophy Audit — Reference Guide
 
-Detailed detection criteria, code examples, severity escalation rules, and
-report format specification for the code-philosophy audit skill.
-
 ## Recipe Architecture
 
-The code-philosophy skill is executed via the `code-philosophy-audit` recipe
-(`amplifier-bundle/recipes/code-philosophy-audit.yaml`). The recipe orchestrates
-five layers, each as a separate recipe step.
+The `code-philosophy-audit` recipe runs each of the five layers as a separate step.
 
 ### Layer Interactions
 
 ```
-Layer 1 (code-smell-detector)
+Layer 1 (anti-pattern detection)
   │ findings passed forward
   ▼
-Layer 2 (philosophy-compliance-workflow)
+Layer 2 (architecture alignment)
   │ receives L1 findings for dedup, adds architecture findings
   ▼
 Layer 3 (3-pass audit)
@@ -27,41 +22,35 @@ Layer 4 (consolidation)
 Layer 5 (re-assessment) ← conditional: only if fixes were applied
 ```
 
-Each layer receives the prior layers' findings as context and is responsible
-for de-duplicating against them. Layer 4 does a final cross-layer merge.
-
 ### Finding Deduplication Logic
 
-Findings are deduplicated by matching on `file + line (±3 lines) + category`.
-When overlapping findings are detected across layers:
+Layers deduplicate prior findings by `file + line (±3 lines) + category`.
+Layer 4 merges known overlaps as follows.
 
 | Layer 1 Category | Overlapping Layer 3 Category | Resolution |
 |-----------------|------------------------------|------------|
 | over-abstraction | Pass 3: over-abstraction | Keep higher severity, merge descriptions |
 | large-function | Pass 1: function-loc | Keep higher severity, note both sources |
 | inheritance | Pass 1: inheritance | Keep higher severity, note both sources |
-
-| Layer 2 Category | Overlapping Layer 3 Category | Resolution |
-|-----------------|------------------------------|------------|
+| **Layer 2 category** | **Overlapping Layer 3 category** | **Resolution** |
 | ruthless-simplicity | Pass 3: ruthless-simplicity | Keep higher severity, merge descriptions |
 | brick-modularity | Pass 3: brick-modularity | Keep higher severity, note both sources |
 
 Non-overlapping findings pass through to consolidation unchanged.
 
-### Running Individual Layers vs Full Audit
+### Running the Full Audit
 
 | Mode | Command |
 |------|---------|
-| Full audit (all 5 layers) | `amplihack recipe run code-philosophy-audit -c target_path="src/" -c task_description="Full audit" -c repo_path=.` |
-| Layer 1 only | `Skill(skill="code-smell-detector")` |
-| Layer 2 only | `Skill(skill="philosophy-compliance-workflow")` |
-| Layer 3 only | `Skill(skill="code-philosophy")` — launches full recipe if runtime supports `recipe:` frontmatter |
+| Full audit via CLI | `amplihack recipe run code-philosophy-audit -c target_path="src/" -c task_description="Full audit" -c repo_path=.` |
+| Full audit via skill | `Skill(skill="code-philosophy")` when the runtime supports `recipe:` front matter |
 
 Audit scope is controlled by `target_path`: a file, directory, or empty for full repo.
+To run an individual layer, apply its criteria in this guide directly to the target.
 
 ## Configuration Reference
 
-All context variables passed via `-c key=value` to the recipe:
+Pass context variables with `-c key=value`.
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -73,8 +62,8 @@ All context variables passed via `-c key=value` to the recipe:
 
 | Variable | Set By | Description |
 |----------|--------|-------------|
-| `layer_1_findings` | Layer 1 | JSON findings from code-smell-detector |
-| `layer_2_findings` | Layer 2 | JSON findings from philosophy-compliance-workflow |
+| `layer_1_findings` | Layer 1 | JSON findings from anti-pattern detection |
+| `layer_2_findings` | Layer 2 | JSON findings from architecture alignment |
 | `layer_3_findings` | Layer 3 | JSON findings from 3-pass audit |
 | `consolidation_report` | Layer 4 | Unified deduplicated report with verdict |
 | `fix_results` | External | Set externally by user/dev-orchestrator after fixes are applied. The recipe does NOT invoke dev-orchestrator itself — fix delegation is a manual step between Layer 4 output and Layer 5 re-assessment. |
@@ -149,6 +138,7 @@ the consolidated report as a review comment.
 | Problem | Cause | Fix |
 |---------|-------|-----|
 | "agent not found" | `amplihack:core:reviewer` not registered | Run `amplihack install` to stage bundled agents |
+| `INCOMPLETE` verdict | A layer output is missing or invalid, or the layer could not load its criteria | See `verdict_reason` for the affected layers. If criteria are missing, run `amplihack install` to restore the skill files, then rerun the full audit |
 | Layer 5 never runs | `fix_results` not set externally | Set `fix_results` after dev-orchestrator applies fixes; skipped by design in standalone audits |
 | Duplicate findings | Different categories or line numbers >3 apart | Check `dedup_stats` in Layer 4 output |
 | Audit too slow | Full repo scan on large codebase | Use `target_path` to scope; for >10K files, audit per-directory |
@@ -237,12 +227,34 @@ prompts. For large codebases, this can consume significant tokens. Strategies:
 
 | Condition | Optimization |
 |-----------|-------------|
-| Phase 0 finds 0 files | Skip all passes, emit PASS |
+| Phase 0 finds 0 files after loading criteria | Skip all passes, report zero findings |
 | Pass 1 flags file for rewrite (>3 critical) | Skip Pass 2/3 on that file |
-| All three layers report 0 findings | Layer 4 short-circuits to PASS |
+| All three layers confirm criteria loaded and report 0 findings | Layer 4 short-circuits to PASS |
 | Layer 5 changed-file list is empty | Skip re-assessment |
 
 ---
+
+## Criteria for Layers 1 and 2
+
+### Layer 1 Anti-Pattern Detection
+
+- **Over-abstraction** follows §3.4. Also review abstractions with two implementations when they serve no meaningful interface. Use the implementations directly when the abstraction adds no value.
+- **Inheritance** follows §1.4.
+- **Large function** follows §1.2. Exclude Python docstrings from the body line count. Flag nesting deeper than three levels and extract focused helpers.
+- **Tight coupling** includes concrete dependencies constructed inside functions or methods, deep access into another object's internals, hardcoded implementation names in conditionals, wildcard imports, and circular dependencies. Pass dependencies through the constructor for classes or as arguments for functions.
+- **Missing exports** covers Python modules, including `__init__.py`, with missing or incomplete `__all__`. List the intended public exports explicitly in `__all__`.
+
+### Layer 2 Architecture Alignment
+
+Use §3.1 for ruthless simplicity and Zen minimalism, §3.3 for brick modularity, §3.6 for future-proofing, and §1.4 for composition.
+
+Ask five questions about each component.
+
+1. Do we need this for a problem we have today?
+2. What is the simplest way to solve that problem?
+3. Can this be a self-contained brick with one responsibility and clear connection points?
+4. Can an agent rebuild it from a specification with a clear contract and well-defined dependencies?
+5. Does the complexity add proportional value, and what would break if we simplified it?
 
 ## Pass 1: BRICK RULE Compliance — Detection Criteria
 
@@ -753,15 +765,18 @@ at most.
 
 ## Output Schema Reference
 
-Each layer produces structured JSON output. The schemas below define the
-contract between layers and with downstream consumers.
+Layers 1–3 resolve the exact `code-philosophy` skill through `amplihack directory find`.
+They fall back to the bundled and staged skill directories under `AMPLIHACK_HOME` and `~/.amplihack`.
+Each reports `criteria_status: loaded` after applying its criteria, or `unavailable` with a
+`criteria_error`, empty findings, and zero counts when it cannot load them.
 
 ### Layer 1/2 Finding Schema
 
 ```json
 {
   "layer": 1,
-  "source": "code-smell-detector",
+  "source": "anti-patterns",
+  "criteria_status": "loaded",
   "findings": [{
     "id": "L1-001",
     "category": "over-abstraction|inheritance|large-function|tight-coupling|missing-exports",
@@ -784,6 +799,7 @@ Layer 3 adds `pass` and `classification` fields:
 {
   "layer": 3,
   "source": "code-philosophy-3-pass",
+  "criteria_status": "loaded",
   "classification": {
     "total_files": 47,
     "by_language": {"rust": 32, "python": 10, "shell": 5},
@@ -875,6 +891,10 @@ Layer 3 adds `pass` and `classification` fields:
 
 | Condition | Verdict |
 |-----------|---------|
+| A layer output is missing or invalid, or any layer lacks `criteria_status: loaded` | `INCOMPLETE` |
 | Any `critical` finding present | `FAIL` |
 | No `critical`, but `high` or `medium` present | `PASS-WITH-WARNINGS` |
 | Only `low` findings or no findings | `PASS` |
+
+Apply the first matching rule. An `INCOMPLETE` report keeps verified findings and names
+affected layers in `verdict_reason`. Rerun the full audit to resolve it.

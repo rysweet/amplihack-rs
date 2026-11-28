@@ -624,7 +624,7 @@ head -20 .github/skills/my-skill/SKILL.md
 /skills list
 # Shows all amplihack skills available
 
-> Use the code-smell-detector skill on @src/
+> Use the code-philosophy skill on @src/
 ```
 
 ### Follow amplihack Workflows

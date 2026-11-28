@@ -25,11 +25,9 @@ token_budget: 3000
 
 ## Purpose
 
-An orchestrated multi-layer philosophy audit that composes three complementary
-analysis tools — code-smell-detector, philosophy-compliance-workflow, and its
-own 3-pass structured audit — into a unified compliance pipeline. The skill
-acts as the activation trigger and argument parser; the actual work is executed
-by the `code-philosophy-audit` recipe.
+The `code-philosophy-audit` recipe runs five layers of the philosophy audit.
+Layers 1 and 2 use the criteria in `reference.md`. This skill starts the audit
+and parses its arguments.
 
 The skill is an **auditor, not a fixer** — it identifies violations, assigns
 severity, and delegates any remediation to dev-orchestrator with a formulated
@@ -37,9 +35,8 @@ fix description.
 
 ## Orchestrated Architecture
 
-This skill orchestrates existing skills via the `code-philosophy-audit` recipe
-(`amplifier-bundle/recipes/code-philosophy-audit.yaml`). The recipe executes
-five sequential layers:
+The `code-philosophy-audit` recipe
+(`amplifier-bundle/recipes/code-philosophy-audit.yaml`) executes five sequential layers.
 
 ```mermaid
 flowchart TD
@@ -47,14 +44,14 @@ flowchart TD
     ARGS --> L1
 
     subgraph "Layer 1: Anti-Pattern Detection"
-        L1[code-smell-detector skill]
+        L1[Anti-pattern criteria<br/>reference.md]
         L1 --> L1R[Over-abstraction<br/>Large functions<br/>Tight coupling<br/>Complex inheritance<br/>Missing exports]
     end
 
     L1R --> L2
 
     subgraph "Layer 2: Architecture Alignment"
-        L2[philosophy-compliance-workflow skill]
+        L2[Architecture criteria<br/>reference.md]
         L2 --> L2R[Ruthless simplicity<br/>Brick philosophy<br/>Zen minimalism<br/>Future-proofing<br/>Composition vs inheritance]
     end
 
@@ -77,6 +74,7 @@ flowchart TD
     end
 
     VERDICT -->|PASS| DONE([Report: PASS])
+    VERDICT -->|INCOMPLETE| RETRY([Restore criteria and rerun the full audit])
     VERDICT -->|PASS-WITH-WARNINGS| DELEGATE
     VERDICT -->|FAIL| DELEGATE
 
@@ -203,12 +201,11 @@ amplihack recipe run code-philosophy-audit \
 
 | Skill | Role in Audit | Layer |
 |-------|--------------|-------|
-| code-smell-detector | Anti-pattern detection | Layer 1 |
-| philosophy-compliance-workflow | Architecture alignment | Layer 2 |
 | **code-philosophy** (this skill) | 3-pass structured audit + orchestration | Layer 3 + trigger |
 
 Each layer receives prior layer findings and deduplicates. Layer 4 merges
-all findings into a unified severity-sorted report.
+all findings into a unified severity-sorted report. If a layer could not apply
+its criteria or its output is missing or invalid, the verdict is `INCOMPLETE`.
 
 ## When to Use
 
@@ -231,7 +228,7 @@ skill stays current with any philosophy updates.
 ## Layer 3: Three-Pass Structured Audit
 
 This section defines the 3-pass audit that forms Layer 3 of the orchestrated
-recipe. Layers 1 and 2 (code-smell-detector and philosophy-compliance-workflow)
+recipe. Layers 1 and 2 (anti-pattern detection and architecture alignment)
 run before this pass, so Layer 3 receives their findings and deduplicates.
 
 ```
@@ -366,7 +363,7 @@ Each audit produces a report with the following structure:
 **Header:**
 - **Target**: files/directory/diff audited
 - **Mode**: file | directory | git-diff | pr-diff
-- **Verdict**: PASS | FAIL | PASS-WITH-WARNINGS
+- **Verdict**: PASS | FAIL | PASS-WITH-WARNINGS | INCOMPLETE
 
 **Findings Table:**
 

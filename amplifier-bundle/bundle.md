@@ -57,7 +57,7 @@ skills:
   sociologist-analyst: { path: skills/sociologist-analyst/SKILL.md }
   urban-planner-analyst: { path: skills/urban-planner-analyst/SKILL.md }
 
-  # Workflow skills (9)
+  # Workflow skills (8)
   cascade-workflow: { path: skills/cascade-workflow/SKILL.md }
   consensus-voting: { path: skills/consensus-voting/SKILL.md }
   debate-workflow: { path: skills/debate-workflow/SKILL.md }
@@ -65,14 +65,12 @@ skills:
   eval-recipes-runner: { path: skills/eval-recipes-runner/SKILL.md }
   investigation-workflow: { path: skills/investigation-workflow/SKILL.md }
   n-version-workflow: { path: skills/n-version-workflow/SKILL.md }
-  philosophy-compliance-workflow: { path: skills/philosophy-compliance-workflow/SKILL.md }
   quality-audit-workflow: { path: skills/quality-audit-workflow/SKILL.md }
 
-  # Technical skills (19)
+  # Technical skills (18)
   agent-sdk: { path: skills/claude-agent-sdk/SKILL.md }
   azure-admin: { path: skills/azure-admin/SKILL.md }
   azure-devops: { path: skills/azure-devops/SKILL.md }
-  code-smell-detector: { path: skills/code-smell-detector/SKILL.md }
   context-management: { path: skills/context-management/SKILL.md }
   design-patterns-expert: { path: skills/design-patterns-expert/SKILL.md }
   documentation-writing: { path: skills/documentation-writing/SKILL.md }
@@ -259,15 +257,16 @@ agents:
         Run auto-workflow with task: "Implement user authentication"
         ```
 
-        ### Skills Library (65 total)
+        ### Skills Library (63 total)
 
         | Category | Count | Examples |
         |----------|-------|----------|
         | Domain Analysts | 23 | economist, historian, psychologist |
-        | Workflow Skills | 9 | default-workflow, debate, consensus |
-        | Technical Skills | 19 | design-patterns, debugging, testing |
+        | Workflow Skills | 8 | default-workflow, debate, consensus |
+        | Technical Skills | 18 | design-patterns, debugging, testing |
         | Document Processing | 4 | PDF, DOCX, XLSX, PPTX |
         | Meta Skills | 6 | backlog, roadmaps, delegation |
+        | Nested Skills | 4 | setting up projects, analyzing deeply, reviewing code, researching topics |
 
         ### Hook System (9 hooks)
 
@@ -287,7 +286,7 @@ agents:
 
         **For New Users**: Welcome warmly, explain the 3 core workflows (Q&A, Investigation, Default), show automatic classification.
 
-        **For "What Can This Do?"**: List 9 workflows, 31 agents, 65 skills, 9 hooks, lock mode.
+        **For "What Can This Do?"**: List 9 workflows, 31 agents, 63 skills, 9 hooks, lock mode.
 
         **For "How Do I Do X?"**: Identify the right workflow, show exact invocation, explain what happens.
 
@@ -440,12 +439,12 @@ When delegating to agents, prefer amplihack agents over foundation agents:
 | `debate-workflow`        | multi-perspective | Complex architectural decisions                |
 | `n-version-workflow`     | N implementations | Critical code, multiple approaches             |
 
-## Available Skills (65 total)
+## Available Skills (63 total)
 
 Use `load_skill` to access domain expertise:
 
 - **Workflow skills**: default-workflow, investigation-workflow
-- **Technical skills**: code-smell-detector, dynamic-debugger, test-gap-analyzer
+- **Technical skills**: dynamic-debugger, test-gap-analyzer
 - **Domain analysts**: 23 specialized analyst perspectives (economist, security, etc.)
 - **Document processing**: docx, pdf, pptx, xlsx handlers
 

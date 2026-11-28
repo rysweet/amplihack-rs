@@ -107,20 +107,6 @@ for trigger in "${REQUIRED_TRIGGERS[@]}"; do
   fi
 done
 
-# Must NOT overlap with philosophy-compliance-workflow triggers
-OVERLAP_TRIGGERS=("philosophy review" "check philosophy" "zen review")
-EXISTING_SKILL="$REPO_ROOT/amplifier-bundle/skills/philosophy-compliance-workflow/SKILL.md"
-for trigger in "${OVERLAP_TRIGGERS[@]}"; do
-  if [[ -f "$EXISTING_SKILL" ]] && grep -qi "$trigger" "$EXISTING_SKILL"; then
-    # This trigger belongs to the existing skill — ours must NOT have it
-    if grep -qi "auto_activates" "$SKILL_FILE" && sed -n '/auto_activates/,/^[a-z]/p' "$SKILL_FILE" | grep -qi "$trigger"; then
-      fail "trigger overlap with philosophy-compliance-workflow: '$trigger'"
-    else
-      pass "no overlap for existing trigger: '$trigger'"
-    fi
-  fi
-done
-
 # ─── Test 4: Three distinct passes documented ───────────────────────────────
 
 echo ""

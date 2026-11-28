@@ -1,7 +1,7 @@
 //! code-philosophy-audit recipe structural tests.
 //!
 //! Validates the `code-philosophy-audit.yaml` recipe that orchestrates
-//! code-smell-detector, philosophy-compliance-workflow, and the 3-pass
+//! anti-pattern detection, architecture alignment, and the 3-pass
 //! structured audit into a 5-layer pipeline.
 //!
 //! Contracts tested:
@@ -315,36 +315,6 @@ fn recipe_under_brick_limit() {
 }
 
 #[test]
-fn layer_1_prompt_references_code_smell_detector() {
-    let recipe = load_recipe();
-    let l1 = recipe
-        .steps
-        .iter()
-        .find(|s| s.id == "layer-1-anti-patterns")
-        .expect("layer-1 step must exist");
-    let prompt = l1.prompt.as_deref().unwrap_or("");
-    assert!(
-        prompt.contains("code-smell-detector"),
-        "layer-1 prompt must reference code-smell-detector skill"
-    );
-}
-
-#[test]
-fn layer_2_prompt_references_philosophy_compliance_workflow() {
-    let recipe = load_recipe();
-    let l2 = recipe
-        .steps
-        .iter()
-        .find(|s| s.id == "layer-2-architecture")
-        .expect("layer-2 step must exist");
-    let prompt = l2.prompt.as_deref().unwrap_or("");
-    assert!(
-        prompt.contains("philosophy-compliance-workflow"),
-        "layer-2 prompt must reference philosophy-compliance-workflow skill"
-    );
-}
-
-#[test]
 fn layer_2_receives_layer_1_findings() {
     let recipe = load_recipe();
     let l2 = recipe
@@ -531,19 +501,6 @@ fn skill_md_references_recipe() {
 }
 
 #[test]
-fn skill_md_references_composed_skills() {
-    let text = skill_md();
-    assert!(
-        text.contains("code-smell-detector"),
-        "SKILL.md must reference code-smell-detector"
-    );
-    assert!(
-        text.contains("philosophy-compliance-workflow"),
-        "SKILL.md must reference philosophy-compliance-workflow"
-    );
-}
-
-#[test]
 fn skill_md_documents_read_only_enforcement() {
     let lower = skill_md().to_lowercase();
     assert!(
@@ -618,34 +575,6 @@ fn reference_md_documents_context_variables() {
         assert!(
             text.contains(var),
             "reference.md must document context variable '{var}'"
-        );
-    }
-}
-
-// ─── Composed skills not modified ───────────────────────────────────────────
-
-#[test]
-fn code_smell_detector_not_modified() {
-    let path = skills_dir().join("code-smell-detector").join("SKILL.md");
-    if path.exists() {
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !text.contains("code-philosophy-audit"),
-            "code-smell-detector SKILL.md should NOT reference code-philosophy-audit (compose, don't modify)"
-        );
-    }
-}
-
-#[test]
-fn philosophy_compliance_workflow_not_modified() {
-    let path = skills_dir()
-        .join("philosophy-compliance-workflow")
-        .join("SKILL.md");
-    if path.exists() {
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !text.contains("code-philosophy-audit"),
-            "philosophy-compliance-workflow SKILL.md should NOT reference code-philosophy-audit"
         );
     }
 }

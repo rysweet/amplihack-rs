@@ -336,7 +336,7 @@ gh copilot suggest --context .github/agents/amplihack/core/builder.md \
 #### Development Skills
 
 - **agent-sdk**: Agent SDK architecture and patterns
-- **code-smell-detector**: Anti-pattern detection
+- **code-philosophy**: Code philosophy audit and anti-pattern detection
 - **design-patterns-expert**: GoF design patterns
 - **documentation-writing**: Clear documentation
 - **module-spec-generator**: Module specification generation
@@ -370,7 +370,7 @@ gh copilot suggest --context .github/agents/amplihack/core/builder.md \
 
 ```bash
 # Use a skill in your query
-gh copilot suggest --context .github/agents/skills/code-smell-detector/ \
+gh copilot suggest --context .github/agents/skills/code-philosophy/ \
   "review this code for anti-patterns"
 
 # Reference multiple skills
@@ -758,7 +758,7 @@ gh copilot suggest -a .github/agents/amplihack/core/builder.md \
 ### Development Skills (20+)
 
 - **agent-sdk**: Comprehensive Agent SDK knowledge
-- **code-smell-detector**: Identifies anti-patterns
+- **code-philosophy**: Audits code for anti-patterns and architecture alignment
 - **design-patterns-expert**: GoF design patterns
 - **documentation-writing**: Clear documentation following Eight Rules
 - **module-spec-generator**: Generates module specifications

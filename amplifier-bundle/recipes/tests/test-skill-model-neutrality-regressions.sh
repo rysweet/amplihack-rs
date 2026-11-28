@@ -21,7 +21,7 @@ reject() {
     fi
 }
 (cd "$TMPDIR" && bash "$guard") >"$output" 2>&1
-grep -Fq '131 skills;' "$output"
+grep -Fq '114 skills;' "$output"
 for tree in amplifier-bundle/skills docs/claude/skills; do
     path="$fixture/$tree/poet-analyst/regression.md"
     printf 'Haiku is a poetic form.\nmodel: sonnet\n' >"$path"
@@ -32,7 +32,7 @@ path="$fixture/amplifier-bundle/skills/regression/SKILL.md"
 mkdir -p "$(dirname "$path")"
 printf '%s\n' '---' 'name: regression' 'model: runtime-default' '---' >"$path"
 reject 'execution model override in frontmatter'
-grep -Fq 'Expected 131 skills; scanned 132' "$output"
+grep -Fq 'Expected 114 skills; scanned 115' "$output"
 rm -r "$(dirname "$path")"
 path="$fixture/amplifier-bundle/skills/poet-analyst/regression.md"
 for line in 'Recommended model: Claude' 'default_model = "GPT"' \

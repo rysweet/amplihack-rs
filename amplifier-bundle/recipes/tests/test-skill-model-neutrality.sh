@@ -130,13 +130,13 @@ for root in (repo / 'amplifier-bundle/skills', repo / 'docs/claude/skills'):
 # Check identities as well as count: replacing a reviewed skill must fail.
 audit = repo / 'amplifier-bundle/recipes/tests/skill-model-neutrality-audit.md'
 reviewed = set(re.findall(r'^\| ([^|]+) \| Pass \| (?:Yes|No) \|$', audit.read_text(), re.MULTILINE))
-if len(reviewed) != 131:
-    failures.append('Audit must enumerate exactly 131 distinct reviewed skills.')
+if len(reviewed) != 114:
+    failures.append('Audit must enumerate exactly 114 distinct reviewed skills.')
 if skill_paths != reviewed:
     failures.append('Reviewed skill inventory changed: missing=' + ', '.join(sorted(reviewed - skill_paths))
                     + '; added=' + ', '.join(sorted(skill_paths - reviewed)))
-if skills != 131:
-    failures.append(f'Expected 131 skills; scanned {skills}. Review inventory before updating this guard.')
+if skills != 114:
+    failures.append(f'Expected 114 skills; scanned {skills}. Review inventory before updating this guard.')
 if failures:
     print('\n'.join(failures), file=sys.stderr)
     sys.exit(1)
