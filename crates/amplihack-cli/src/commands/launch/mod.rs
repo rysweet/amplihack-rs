@@ -665,6 +665,7 @@ fn run_launch_core(
             // WS1: AMPLIHACK_AGENT_BINARY, still tagged if it was a guess (#1481)
             .with_launched_agent_binary(tool)
             .with_amplihack_home() // WS3: AMPLIHACK_HOME
+            .with_extra_hooks_file()
             .with_asset_resolver(); // Rust-native bundle asset resolver
         env_builder = env_builder.with_project_graph_db(&execution_dir)?;
         let env_builder = augment_claude_launch_env(env_builder, tool, Some(binary.path.as_path()))
@@ -705,6 +706,9 @@ fn run_launch_core(
             hook_settings::Inject::Skip(reason) => {
                 tracing::debug!("no hooks --settings file: {reason}");
                 None
+            }
+            hook_settings::Inject::Error(error) => {
+                anyhow::bail!("{error}");
             }
         };
         // Issue #3435: a step with a hook is given new guidance at its next

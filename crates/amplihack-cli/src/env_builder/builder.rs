@@ -89,6 +89,17 @@ impl EnvBuilder {
             .set("AMPLIHACK_DEPTH", depth)
     }
 
+    /// Propagate the optional caller hooks settings file to nested launches.
+    pub fn with_extra_hooks_file(self) -> Self {
+        match env::var_os(crate::commands::launch::hook_settings::EXTRA_HOOKS_FILE_ENV) {
+            Some(path) => self.set(
+                crate::commands::launch::hook_settings::EXTRA_HOOKS_FILE_ENV,
+                path.to_string_lossy(),
+            ),
+            None => self,
+        }
+    }
+
     /// Issue #1811: when this process holds a capacity governor slot, tell
     /// children its tree id, so their own starts run nested under it rather
     /// than asking for a second slot. When this process is an admitted

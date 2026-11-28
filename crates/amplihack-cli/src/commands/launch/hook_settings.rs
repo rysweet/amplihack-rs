@@ -11,7 +11,12 @@
 //! commands are byte-identical.
 
 use crate::commands::install::hook_block::{HookTarget, block, hook_target, reason};
+use serde_json::{Map, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// The environment setting naming an optional Claude hooks settings file.
+pub(crate) const EXTRA_HOOKS_FILE_ENV: &str = "AMPLIHACK_EXTRA_HOOKS_FILE";
 
 /// The launch file, relative to the amplihack home.
 pub(crate) const LAUNCH_FILE: &str = "runtime/launch-hooks-settings.json";
@@ -33,6 +38,14 @@ pub(super) enum Inject {
     /// the user can fix, so the launch warns about it.
     NotPrivate,
     Skip(&'static str),
+    Error(String),
+}
+
+/// Validated hooks from the optional caller settings file.
+#[derive(Debug, Clone)]
+pub(crate) struct ExtraHooks {
+    hooks: Value,
+    ignored_keys: Vec<String>,
 }
 
 /// Everything [`prepare_with`] decides on.
@@ -46,6 +59,7 @@ pub(super) struct Inputs<'a> {
     pub newer_stamp: bool,
     pub target: Option<&'a HookTarget>,
     pub amplihack_home: &'a Path,
+    pub extra_hooks: Option<&'a ExtraHooks>,
 }
 
 /// Whether the user passed `--settings` (either form) before a literal `--`.
@@ -58,7 +72,25 @@ pub(super) fn user_passed_settings(extra_args: &[String]) -> bool {
 
 /// The production [`prepare_with`], with its inputs read from this process.
 pub(super) fn prepare(binary_name: &str, extra_args: &[String]) -> Inject {
+    let extra_hooks = match std::env::var_os(EXTRA_HOOKS_FILE_ENV) {
+        None => None,
+        Some(path) if path.is_empty() => {
+            return Inject::Error(format!("{EXTRA_HOOKS_FILE_ENV} names an empty file path"));
+        }
+        Some(path) => match load_extra_hooks(Path::new(&path)) {
+            Ok(extra) => Some(extra),
+            Err(error) => return Inject::Error(error),
+        },
+    };
     if binary_name != "claude" {
+        if binary_name == "codex"
+            && extra_hooks.is_some()
+            && super::codex_agent_step::exec_subcommand_index(extra_args).is_some()
+        {
+            eprintln!(
+                "amplihack: codex step launched without extra hooks; this launch form has no per-launch hook configuration"
+            );
+        }
         return Inject::Skip("not claude");
     }
     let Ok(amplihack_home) = super::contract_file::contract_home() else {
@@ -82,6 +114,7 @@ pub(super) fn prepare(binary_name: &str, extra_args: &[String]) -> Inject {
         newer_stamp,
         target: target.as_ref(),
         amplihack_home: &amplihack_home,
+        extra_hooks: extra_hooks.as_ref(),
     })
 }
 
@@ -108,11 +141,16 @@ pub(super) fn prepare_with(i: &Inputs<'_>) -> Inject {
     let Some(target) = i.target else {
         return Inject::Skip("no hooks binary");
     };
+    if let Some(extra) = i.extra_hooks {
+        for key in &extra.ignored_keys {
+            eprintln!("amplihack: ignored settings key {key} from extra hooks file");
+        }
+    }
     if !home_is_private(i.amplihack_home) {
         return Inject::NotPrivate;
     }
     let path = i.amplihack_home.join(LAUNCH_FILE);
-    match write_if_changed(&path, target) {
+    match write_if_changed(&path, target, i.extra_hooks) {
         Ok(()) => Inject::Path(path),
         Err(WriteError::NotPrivate) => Inject::NotPrivate,
         Err(WriteError::Io(reason)) => {
@@ -166,11 +204,16 @@ fn private_runtime_dir(dir: &Path) -> Result<(), WriteError> {
 }
 
 #[cfg(unix)]
-fn write_if_changed(path: &Path, target: &HookTarget) -> Result<(), WriteError> {
+fn write_if_changed(
+    path: &Path,
+    target: &HookTarget,
+    extra: Option<&ExtraHooks>,
+) -> Result<(), WriteError> {
     use amplihack_utils::secure_files::{read_bounded_nofollow, write_private_atomic};
     let dir = path.parent().ok_or(WriteError::NotPrivate)?;
     private_runtime_dir(dir)?;
-    let mut bytes = serde_json::to_vec_pretty(&serde_json::json!({ "hooks": block(target) }))
+    let hooks = merged_hooks(target, extra);
+    let mut bytes = serde_json::to_vec_pretty(&serde_json::json!({ "hooks": hooks }))
         .map_err(|e| WriteError::Io(format!("serialise: {:?}", e.classify())))?;
     bytes.push(b'\n');
     let limit = bytes.len() as u64 + 1;
@@ -187,6 +230,181 @@ fn write_if_changed(path: &Path, target: &HookTarget) -> Result<(), WriteError> 
 }
 
 #[cfg(not(unix))]
-fn write_if_changed(_path: &Path, _target: &HookTarget) -> Result<(), WriteError> {
+fn write_if_changed(
+    _path: &Path,
+    _target: &HookTarget,
+    _extra: Option<&ExtraHooks>,
+) -> Result<(), WriteError> {
     Err(WriteError::NotPrivate)
+}
+
+/// Read, validate, and retain only the hooks member of a caller settings file.
+pub(super) fn load_extra_hooks(path: &Path) -> Result<ExtraHooks, String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("extra hooks file {}: {}", path.display(), error.kind()))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "extra hooks file {} is not a regular file",
+            path.display()
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != amplihack_utils::secure_files::euid() {
+            return Err(format!(
+                "extra hooks file {} is owned by another user",
+                path.display()
+            ));
+        }
+        if metadata.mode() & 0o022 != 0 {
+            return Err(format!(
+                "extra hooks file {} is writable by group or other users",
+                path.display()
+            ));
+        }
+        if metadata.mode() & 0o400 == 0 {
+            return Err(format!(
+                "extra hooks file {} is not readable",
+                path.display()
+            ));
+        }
+    }
+    let bytes = std::fs::read(path).map_err(|error| {
+        format!(
+            "extra hooks file {} is unreadable: {}",
+            path.display(),
+            error
+        )
+    })?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "extra hooks file {} has invalid JSON: {error}",
+            path.display()
+        )
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        format!(
+            "extra hooks file {} must contain a JSON object",
+            path.display()
+        )
+    })?;
+    let ignored_keys = object
+        .keys()
+        .filter(|key| key.as_str() != "hooks")
+        .cloned()
+        .collect();
+    let hooks = match object.get("hooks") {
+        None => Value::Object(Map::new()),
+        Some(hooks) => validate_hooks(hooks, path)?,
+    };
+    Ok(ExtraHooks {
+        hooks,
+        ignored_keys,
+    })
+}
+
+fn validate_hooks(value: &Value, path: &Path) -> Result<Value, String> {
+    let Some(events) = value.as_object() else {
+        return Err(format!(
+            "extra hooks file {} has an invalid hooks schema",
+            path.display()
+        ));
+    };
+    for groups in events.values() {
+        let Some(groups) = groups.as_array() else {
+            return Err(format!(
+                "extra hooks file {} has an invalid hooks schema",
+                path.display()
+            ));
+        };
+        for group in groups {
+            let Some(group) = group.as_object() else {
+                return Err(format!(
+                    "extra hooks file {} has an invalid hooks schema",
+                    path.display()
+                ));
+            };
+            let Some(handlers) = group.get("hooks").and_then(Value::as_array) else {
+                return Err(format!(
+                    "extra hooks file {} has an invalid hooks schema",
+                    path.display()
+                ));
+            };
+            for handler in handlers {
+                let Some(handler) = handler.as_object() else {
+                    return Err(format!(
+                        "extra hooks file {} has an invalid hooks schema",
+                        path.display()
+                    ));
+                };
+                if handler.get("type").and_then(Value::as_str) != Some("command")
+                    || handler
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                {
+                    return Err(format!(
+                        "extra hooks file {} has an invalid hooks schema",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(value.clone())
+}
+
+fn merged_hooks(target: &HookTarget, extra: Option<&ExtraHooks>) -> Value {
+    let Some(extra) = extra else {
+        return block(target);
+    };
+    let mut hooks = block(target);
+    let Value::Object(extra_events) = &extra.hooks else {
+        unreachable!("validated hooks are an object")
+    };
+    let Value::Object(own_events) = &mut hooks else {
+        unreachable!("amplihack hooks are an object")
+    };
+    for (event, groups) in extra_events {
+        let slot = own_events
+            .entry(event.clone())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let existing_commands = commands_in(slot);
+        let mut seen = existing_commands;
+        let Some(groups) = groups.as_array() else {
+            continue;
+        };
+        let destination = slot.as_array_mut().expect("hook event is an array");
+        for group in groups {
+            let mut group = group.clone();
+            let Some(handlers) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            handlers.retain(|handler| {
+                let Some(command) = handler.get("command").and_then(Value::as_str) else {
+                    return false;
+                };
+                seen.insert(command.to_string())
+            });
+            if !handlers.is_empty() {
+                destination.push(group);
+            }
+        }
+    }
+    hooks
+}
+
+fn commands_in(value: &Value) -> HashSet<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flat_map(|groups| groups.iter())
+        .filter_map(|group| group.get("hooks"))
+        .filter_map(Value::as_array)
+        .flat_map(|handlers| handlers.iter())
+        .filter_map(|handler| handler.get("command"))
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
