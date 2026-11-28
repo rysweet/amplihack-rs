@@ -19,6 +19,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::issue_3129_goal_loop::ci_wait::{fake_sleep, sleeps};
 use crate::issue_3129_goal_loop::support::{Harness, PR_BRANCH, describe, git};
 use crate::support::exec_stub::write_executable;
 use serde_json::{Value, json};
@@ -251,16 +252,18 @@ fn worktree_of(run: &Run) -> PathBuf {
 fn checks_watch_interval_reaches_the_build_loop_from_startup_context() {
     let h = prepare("https://github.com/o/r.git");
     h.policy(&format!("{WAIT_POLICY}\n{POLICY}"));
-    // The check watch reads one line and completes without blocking.
-    let release = h.gh.join("release.fifo");
-    fs::remove_file(&release).unwrap();
-    fs::write(&release, "\n").unwrap();
+    h.set_checks("build\tpending\t0\n");
+    fake_sleep(
+        &h,
+        r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
+printf 'build\tpass\t0\n' > "$GH_STATE/checks""#,
+    );
 
-    let run = workflow(h, &["checks_watch_interval=120"]);
+    let run = workflow(h, &["checks_watch_interval=37"]);
     assert!(run.out.status.success(), "{}", describe(&run.out));
     assert_eq!(run.unexpected(), "", "{}", describe(&run.out));
     assert_eq!(run.status("build-loop"), "completed", "{}", run.result);
-    assert_eq!(run.h.watch_calls(), ["pr checks 7 --watch --interval 120"]);
+    assert_eq!(sleeps(&run.h), [37]);
 }
 
 #[test]

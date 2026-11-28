@@ -289,7 +289,7 @@ just parallel workstream spawning.
 | `default-workflow`        | Called by this orchestrator for single dev tasks     |
 | `investigation-workflow`  | Called by this orchestrator for research tasks       |
 | `multitask`               | Called by this orchestrator for parallel workstreams |
-| `work-delegator`          | Orthogonal — for backlog-driven delegation           |
+| `pm-architect`            | Orthogonal — for backlog-driven delegation           |
 
 ## Entry Points
 

@@ -5,6 +5,7 @@
 #![cfg(target_os = "linux")]
 
 use super::tools::{World, git, text};
+use crate::support::exec_stub::write_executable;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -159,6 +160,132 @@ fn the_reading_names_the_issue_and_how_it_was_found() {
     assert_eq!(g["schema"], 1);
     assert_eq!(g["issue"]["number"], 463);
     assert_eq!(g["issue"]["source"], "marked-reference");
+}
+
+#[test]
+fn the_build_reading_retries_the_initial_pr_list_at_its_secondary_limit_deadline() {
+    let s = setup();
+    let branch = "feat/widget";
+    let local_origin = format!("url.file://{}.insteadOf", s.w.repo.display());
+    git(
+        &s.w.repo,
+        &["config", &local_origin, "git@github.com:o/r.git"],
+    );
+    git(&s.w.repo, &["branch", branch]);
+    s.w.prs(&json!([{
+        "number": 7, "headRefName": branch, "state": "OPEN", "isCrossRepository": true
+    }]));
+    fs::rename(s.w.bin.join("gh"), s.w.bin.join("fixture-gh")).unwrap();
+    write_executable(
+        &s.w.bin.join("gh"),
+        r#"#!/bin/bash
+case "$*" in
+  'pr list --head '*)
+    if [ ! -e "$GH_STATE/declined" ]; then
+      printf '%s\n' "$*" >> "$GH_STATE/calls.log"
+      touch "$GH_STATE/declined"
+      if [ "${GH_DEBUG:-}" = api ]; then
+        cat >&2 <<'TRACE'
+* Request to https://api.github.com/graphql
+< HTTP/2.0 403 Forbidden
+< Retry-After: 17
+< X-Ratelimit-Remaining: 10
+
+* Request took 1ms
+TRACE
+      fi
+      echo 'HTTP 403: secondary rate limit (https://api.github.com/graphql)' >&2
+      exit 1
+    fi ;;
+  'api rate_limit')
+    printf '%s\n' "$*" >> "$GH_STATE/calls.log"
+    echo '{"resources":{"graphql":{"remaining":10}}}'
+    exit 0 ;;
+esac
+exec fixture-gh "$@"
+"#,
+        0o755,
+    );
+    write_executable(&s.w.bin.join("mkfifo"), "#!/bin/bash\nexit 1\n", 0o755);
+    write_executable(
+        &s.w.bin.join("sleep"),
+        "#!/bin/bash\nprintf '%s\\n' \"$1\" >> \"$GH_STATE/sleeps\"\n",
+        0o755,
+    );
+
+    let out = cmd(&s, &["read", s.turn.to_str().unwrap()])
+        .env("RECIPE_VAR_existing_branch", branch)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    let reading: Value =
+        serde_json::from_slice(&fs::read(s.turn.join("goal.json")).unwrap()).unwrap();
+    assert_eq!(reading["prs"]["error"], Value::Null, "{reading}");
+    assert_eq!(reading["prs"]["cross_repository_on_branch"], 7);
+    let calls = s.w.calls();
+    assert!(calls[0].starts_with("pr list --head "));
+    assert_eq!(calls[1], "api rate_limit");
+    assert_eq!(calls[2], calls[0]);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.starts_with("pr list --head "))
+            .count(),
+        2
+    );
+    let sleeps = fs::read_to_string(s.w.gh.join("sleeps")).unwrap();
+    let delay: u32 = sleeps.trim_end().parse().unwrap();
+    assert!((13..=17).contains(&delay), "{delay}");
+}
+
+#[test]
+fn the_build_reading_retries_only_the_declined_issue_claim_read() {
+    let s = setup();
+    s.w.prs(&json!([]));
+    fs::rename(s.w.bin.join("gh"), s.w.bin.join("fixture-gh")).unwrap();
+    write_executable(
+        &s.w.bin.join("gh"),
+        r#"#!/bin/bash
+case "$*" in
+  'pr list --repo o/r --state merged '*)
+    if [ ! -e "$GH_STATE/declined" ]; then
+      printf '%s\n' "$*" >> "$GH_STATE/calls.log"
+      touch "$GH_STATE/declined"
+      echo 'GraphQL: API rate limit already exceeded' >&2
+      exit 1
+    fi ;;
+  'api rate_limit')
+    printf '%s\n' "$*" >> "$GH_STATE/calls.log"
+    jq -n --argjson reset "$(( $(date +%s) + 60 ))" \
+      '{resources:{graphql:{remaining:0, reset:$reset}}}'
+    exit $? ;;
+esac
+exec fixture-gh "$@"
+"#,
+        0o755,
+    );
+    write_executable(
+        &s.w.bin.join("sleep"),
+        "#!/bin/bash\nprintf '%s\\n' \"$1\" >> \"$GH_STATE/sleeps\"\n",
+        0o755,
+    );
+
+    let out = cmd(&s, &["read", s.turn.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    let reading: Value =
+        serde_json::from_slice(&fs::read(s.turn.join("goal.json")).unwrap()).unwrap();
+    assert_eq!(reading["issue"]["error"], Value::Null);
+    let calls = s.w.calls();
+    assert_eq!(calls.len(), 5, "{calls:?}");
+    assert!(calls[0].starts_with("pr list --repo o/r --state open "));
+    assert!(calls[1].starts_with("pr list --repo o/r --state merged "));
+    assert_eq!(calls[2], "api rate_limit");
+    assert_eq!(calls[3], calls[1]);
+    let sleeps = fs::read_to_string(s.w.gh.join("sleeps")).unwrap();
+    let delay: u32 = sleeps.trim_end().parse().unwrap();
+    assert!((50..=60).contains(&delay), "{delay}");
 }
 
 #[test]

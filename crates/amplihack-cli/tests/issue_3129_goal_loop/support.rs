@@ -25,8 +25,9 @@
 //! it was piped as `merge-subject` and `merge-body` ([`Harness::merge_message`]).
 //! `mss` overrides the merge state GitHub reports, `protection.json` is
 //! what classic branch protection's required status checks return, and
-//! `policy403` makes both policy endpoints refuse with a 403. `pr checks --watch` blocks reading
-//! `$GH_STATE/release.fifo`; a test releases it (`fifo_release`), and if the
+//! `policy403` makes all policy endpoints refuse with a 403. Tests that
+//! pause a CI wait block the stand-in sleep on `$GH_STATE/release.fifo`.
+//! A test releases it (`fifo_release`), and if the
 //! run exits early the harness's watcher opens the FIFO itself, so nothing
 //! sleeps and nothing times out.
 //!
@@ -73,6 +74,7 @@ G="$GH_STATE"; O="$GH_ORIGIN"; BR="$GH_PR_BRANCH"; BASE=main
 printf '%s\n' "$*" >> "$G/calls.log"
 gitO() { git --git-dir="$O" "$@"; }
 head() { gitO rev-parse "refs/heads/$BR"; }
+base_head() { gitO rev-parse "refs/heads/$BASE"; }
 state() { if [ -e "$G/merged" ]; then echo MERGED; elif [ -e "$G/closed" ]; then echo CLOSED; else echo OPEN; fi; }
 mergeable() { if gitO merge-tree --write-tree "refs/heads/$BASE" "refs/heads/$BR" >/dev/null 2>&1; then echo MERGEABLE; else echo CONFLICTING; fi; }
 behind() { [ "$(gitO rev-list --count "refs/heads/$BR..refs/heads/$BASE")" != 0 ]; }
@@ -88,18 +90,75 @@ mss() {
 settings() { if [ -e "$G/repo.json" ]; then cat "$G/repo.json"; else echo '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":false,"default_branch":"main"}'; fi; }
 filter() { local f=""; while [ $# -gt 0 ]; do case "$1" in --jq|-q) f="$2"; shift 2 ;; *) shift ;; esac; done
   if [ -n "$f" ]; then jq -r "$f"; else cat; fi; }
+http() {
+  local code="$1" body="$2" etag=""
+  shift 2
+  if [ "${include:-false}" = true ]; then
+    if [ "$code" = 200 ] && [ "${conditional:-false}" = true ]; then
+      etag="\"$(printf '%s\n%s' "$body" "${link:-}" | git hash-object --stdin)\""
+      [ "$etag" != "$validator" ] || code=304
+    fi
+    printf '%s %s\n' "$code" "$endpoint" >> "$G/responses.log"
+    printf 'HTTP/2.0 %s\r\n' "$code"
+    [ -z "$etag" ] || printf 'ETag: %s\r\n' "$etag"
+    if [ "$code" = 200 ] && [ -n "${link:-}" ]; then printf 'Link: %s\r\n' "$link"; fi
+    printf '\r\n'
+  fi
+  if [ "$code" = 304 ]; then exit 1; fi
+  if [ "$code" = 200 ]; then printf '%s\n' "$body" | filter "$@"; else
+    printf 'gh: %s (HTTP %s)\n' "$body" "$code" >&2
+    exit 1
+  fi
+}
+decline() {
+  local resource="$1" counter="$G/decline-$1${2:+-$2}" count
+  [ -f "$counter" ] || return 0
+  count="$(cat "$counter")"
+  [ "$count" -gt 0 ] || return 0
+  printf '%s\n' "$((count - 1))" > "$counter"
+  printf '%s\n' "$resource" > "$G/declined"
+  if [ "$resource" = core ]; then
+    printf 'HTTP/2.0 429\r\n'
+    [ -e "$G/no-retry-after" ] || printf 'Retry-After: 25\r\n'
+    printf 'X-RateLimit-Remaining: 10\r\n\r\n'
+    echo 'gh: secondary rate limit (HTTP 429)' >&2
+  elif [ -e "$G/graphql-secondary" ]; then
+    if [ "${GH_DEBUG:-}" = api ]; then
+      cat >&2 <<'TRACE'
+* Request to https://api.github.com/graphql
+> POST /graphql HTTP/1.1
+
+< HTTP/2.0 200 OK
+< X-Ratelimit-Remaining: 0
+< X-Ratelimit-Reset: 9999999999
+
+* Request took 1ms
+* Request to https://api.github.com/graphql
+> POST /graphql HTTP/1.1
+
+< HTTP/2.0 403 Forbidden
+< Retry-After: 17
+< X-Ratelimit-Remaining: 10
+
+* Request took 1ms
+TRACE
+    fi
+    echo 'HTTP 403: secondary rate limit (https://api.github.com/graphql)' >&2
+  else
+    echo 'GraphQL: API rate limit already exceeded' >&2
+  fi
+  exit 1
+}
 case "${1:-} ${2:-}" in
   "pr view")
+    case "$*" in *mergeStateStatus,isDraft*) decline graphql ;; esac
     jq -cn --arg h "$(head)" --arg s "$(state)" --arg m "$(mergeable)" --arg ms "$(mss)" --arg b "$BR" --arg x "$([ -e "$G/cross" ] && echo true || echo false)" \
-      --arg bn "$(cat "$G/basename" 2>/dev/null || echo main)" \
-      '{number:7,state:$s,headRefOid:$h,headRefName:$b,baseRefName:$bn,mergeable:$m,mergeStateStatus:$ms,
+      --arg bn "$(cat "$G/basename" 2>/dev/null || echo main)" --arg base "$(base_head)" \
+      '{number:7,state:$s,headRefOid:$h,headRefName:$b,baseRefName:$bn,baseRefOid:$base,mergeable:$m,mergeStateStatus:$ms,
         isDraft:false,isCrossRepository:($x=="true"),title:"Fixture",body:"Fixture body",url:"https://github.com/o/r/pull/7",
         reviews:[],reviewDecision:"",headRepository:{name:"r"},headRepositoryOwner:{login:"o"},
         author:{login:"alice"},files:[{path:"widget.txt"}]}' | filter "$@" ;;
   "pr checks")
-    watch=0; for a in "$@"; do [ "$a" = --watch ] && watch=1; done
-    [ -e "$G/watch79" ] && exit 79
-    if [ "$watch" = 1 ]; then read -r _ < "$G/release.fifo"; fi
     cat "$G/checks" 2>/dev/null
     if pending; then exit 8; elif failing; then exit 1; fi; exit 0 ;;
   "pr merge")
@@ -146,16 +205,113 @@ case "${1:-} ${2:-}" in
   "repo view") echo '{"nameWithOwner":"o/r","defaultBranchRef":{"name":"main"}}' | filter "$@" ;;
   "auth status") exit 0 ;;
   api*)
-    case "$*" in
-      *rules/branches*) if [ -e "$G/policy403" ]; then echo "HTTP 403: Resource not accessible by integration" >&2; exit 1
+    shift
+    include=false; validator=""; endpoint=""; link=""
+    args=("$@")
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --include|-i) include=true; shift ;;
+        -H) validator="${2#If-None-Match: }"; shift 2 ;;
+        --jq|-q|-X|--method|--raw-field|-f|--field|-F) shift 2 ;;
+        -*) shift ;;
+        *) endpoint="$1"; shift ;;
+      esac
+    done
+    case "$endpoint" in
+      rate_limit)
+        if [ -e "$G/hold-rate-limit" ]; then
+          read -r _ < "$G/release.fifo"
+          rm -f -- "$G/hold-rate-limit" "$G/no-retry-after"
+        fi
+        resource="$(cat "$G/declined")"
+        remaining=10
+        if [ "$resource" = graphql ] && [ ! -e "$G/graphql-secondary" ]; then remaining=0; fi
+        jq -cn --arg resource "$resource" --argjson remaining "$remaining" --argjson reset "$(( $(date +%s) + 30 ))" \
+          '{resources:{($resource):{remaining:$remaining, reset:$reset}}}' ;;
+      repos/o/r/pulls/7)
+        [ ! -e "$G/wait79" ] || exit 79
+        decline core
+        conditional=true
+        api_head="$(cat "$G/moved-head" 2>/dev/null || head)"
+        api_base="$(cat "$G/moved-base" 2>/dev/null || cat "$G/basename" 2>/dev/null || echo main)"
+        api_base_sha="$(cat "$G/moved-base-sha" 2>/dev/null || base_head)"
+        http 200 "$(jq -cn --arg head "$api_head" --arg branch "$BR" --arg base "$api_base" --arg tip "$api_base_sha" \
+          '{state:"open",head:{sha:$head,ref:$branch,repo:{full_name:"o/r"}},base:{ref:$base,sha:$tip}}')" ;;
+      repos/o/r/commits/*/check-runs\?*)
+        decline core check-runs
+        if [ -f "$G/decline-core-after-checks" ]; then
+          mv "$G/decline-core-after-checks" "$G/decline-core"
+        fi
+        conditional=true
+        if [[ "$endpoint" == *'&page=2' ]]; then
+          http 200 "$(cat "$G/checks-page-2.json")"
+          exit $?
+        fi
+        if [ -f "$G/checks-page-2.json" ]; then
+          link="<https://api.github.com/${endpoint%&page=1}&page=2>; rel=\"next\""
+        fi
+        if [ -f "$G/check-runs.json" ]; then
+          http 200 "$(cat "$G/check-runs.json")"
+          exit $?
+        fi
+        http 200 "$(jq -Rn '[inputs | split("\t") | {name:.[0], html_url:.[3], app:{id:((.[4] | tonumber?) // null)},
+          status:(if .[1] == "pending" then "in_progress" else "completed" end),
+          conclusion:(if .[1] == "pending" then null elif .[1] == "pass" then "success"
+            elif .[1] == "skipping" then "skipped" elif .[1] == "neutral" then "neutral"
+            else "failure" end)}] | {check_runs:.}' < "$G/checks")" ;;
+      repos/o/r/commits/*/status\?*)
+        decline core status
+        conditional=true
+        for file in moved-head moved-base; do
+          if [ -f "$G/$file-during-status" ]; then
+            mv "$G/$file-during-status" "$G/$file"
+          fi
+        done
+        http 200 "$(cat "$G/statuses.json" 2>/dev/null || echo '{"statuses":[]}')" ;;
+      repos/o/r/actions/runs\?head_sha=*)
+        conditional=true
+        if [ "$(grep -Fc '/actions/runs?head_sha=' "$G/calls.log")" -eq 2 ]; then
+          for file in moved-head moved-base-sha workflow-runs.json; do
+            if [ -f "$G/$file-during-actions" ]; then
+              mv "$G/$file-during-actions" "$G/$file"
+            fi
+          done
+        fi
+        if [ -f "$G/actions403" ]; then http 403 "$(cat "$G/actions403")"; fi
+        http 200 "$(cat "$G/workflow-runs.json" 2>/dev/null || echo '{"workflow_runs":[]}')" ;;
+      repos/o/r/actions/runs/*/attempts/*/jobs\?*)
+        conditional=true
+        jobs="$(cat "$G/attempt-jobs.json" 2>/dev/null || echo '{"jobs":[]}')"
+        if [ -f "$G/rerun-during-jobs.json" ]; then
+          mv "$G/rerun-during-jobs.json" "$G/workflow-runs.json"
+        fi
+        http 200 "$jobs" ;;
+      *rules/branches*) conditional=true
+        if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
+        elif [[ "$endpoint" == *'&page=2' ]]; then http 200 "$(cat "$G/rules-page-2.json")" "${args[@]}"
+        elif [ -f "$G/rules.json" ]; then
+          if [ -f "$G/rules-page-2.json" ]; then
+            link="<https://api.github.com/${endpoint%&page=1}&page=2>; rel=\"next\""
+          fi
+          http 200 "$(cat "$G/rules.json")" "${args[@]}"
         elif [ -e "$G/strict" ]; then
-          echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]'
-        else echo '[]'; fi ;;
-      *protection*) if [ -e "$G/policy403" ]; then echo "HTTP 403: Resource not accessible by integration" >&2; exit 1
-        elif [ -e "$G/protection.json" ]; then filter "$@" < "$G/protection.json"
-        else echo "HTTP 404: Branch not protected" >&2; exit 1; fi ;;
-      *repos/*) settings | filter "$@" ;;
-      *) echo "stand-in gh: unexpected api call: $*" >&2; exit 1 ;;
+          http 200 '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[]}}]' "${args[@]}"
+        else http 200 '[]' "${args[@]}"; fi ;;
+      *protection*) conditional=true
+        if [ -f "$G/rerun-during-policy.json" ] && grep -Fq '/actions/runs?head_sha=' "$G/calls.log"; then
+          mv "$G/rerun-during-policy.json" "$G/workflow-runs.json"
+        fi
+        if [ -e "$G/policy403" ] || [ -e "$G/classic403" ]; then http 403 "Resource not accessible by integration"
+        elif [ -e "$G/classic404" ]; then http 404 "Not Found"
+        elif [ -e "$G/protection.json" ]; then http 200 "$(cat "$G/protection.json")" "${args[@]}"
+        else http 404 "Branch not protected"; fi ;;
+      repos/o/r/branches/*)
+        conditional=true
+        if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
+        elif [ -e "$G/branch.json" ]; then http 200 "$(cat "$G/branch.json")"
+        else http 404 "Not Found"; fi ;;
+      repos/*) http 200 "$(settings)" "${args[@]}" ;;
+      *) echo "stand-in gh: unexpected api call: ${args[*]}" >&2; exit 1 ;;
     esac ;;
   *) echo "stand-in gh: unexpected call: $*" >&2; exit 1 ;;
 esac
@@ -401,9 +557,9 @@ impl Harness {
         fs::write(self.gh.join("basename"), name).unwrap();
     }
 
-    /// Makes `gh pr checks` exit 79, as `gh` does when the login is gone.
-    pub fn checks_exit_79(&self) {
-        fs::write(self.gh.join("watch79"), "").unwrap();
+    /// Makes the wait's pull request REST call exit 79.
+    pub fn ci_wait_exit_79(&self) {
+        fs::write(self.gh.join("wait79"), "").unwrap();
     }
 
     pub fn result(&self, turn: &str) -> serde_json::Value {
@@ -426,7 +582,7 @@ impl Harness {
         fs::write(self.gh.join("protection.json"), v.to_string()).unwrap();
     }
 
-    /// Both policy endpoints (rules and classic protection) refuse with a 403.
+    /// Rules, classic protection, and the branch itself refuse with a 403.
     pub fn policy_unreadable(&self) {
         fs::write(self.gh.join("policy403"), "").unwrap();
     }
@@ -471,31 +627,16 @@ impl Harness {
 
     /// The run's own `amplihack` command, ready to spawn.
     pub fn command(&self, args: &[&str]) -> Command {
-        let mut command = self.fixture_command(&amplihack_bin());
-        command.args(args);
-        command
-    }
-
-    pub fn tool_command(&self, name: &str) -> Command {
-        let mut command = self.fixture_command(Path::new("bash"));
-        command.arg(self.bundle_root.join("amplifier-bundle/tools").join(name));
-        command
-    }
-
-    fn fixture_command(&self, program: &Path) -> Command {
         let path = format!("{}:/usr/bin:/bin", self.bin.display());
-        let mut c = crate::isolated_amplihack::isolated(program);
-        c.current_dir(&self.repo)
+        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
+        c.args(args)
+            .current_dir(&self.repo)
             .env("HOME", &self.home)
             .env("TMPDIR", &self.base)
             .env("PATH", path)
             .env("AMPLIHACK_HOME", &self.bundle_root)
             .env("AMPLIHACK_STATE_DIR", &self.state_root)
             .env("AMPLIHACK_WORK_ROOT", &self.work)
-            .env(
-                "RECIPE_RUNNER_RS_PATH",
-                crate::issue_2539_step_recovery_fixture::real_runner(),
-            )
             .env("AMPLIHACK_AGENT_BINARY", "claude")
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.bin.join("claude"))
             .env("GH_STATE", &self.gh)
@@ -517,6 +658,12 @@ impl Harness {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if args.starts_with(&["recipe", "run"]) {
+            c.env(
+                "RECIPE_RUNNER_RS_PATH",
+                crate::issue_2539_step_recovery_fixture::real_runner(),
+            );
+        }
         c
     }
 
@@ -579,13 +726,6 @@ impl Harness {
             .unwrap_or_default()
             .lines()
             .map(str::to_owned)
-            .collect()
-    }
-
-    pub fn watch_calls(&self) -> Vec<String> {
-        self.calls()
-            .into_iter()
-            .filter(|call| call.starts_with(&format!("pr checks {PR} --watch")))
             .collect()
     }
 
