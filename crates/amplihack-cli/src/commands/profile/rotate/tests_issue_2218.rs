@@ -106,6 +106,7 @@ mod status_history {
             w,
             w_reset: None,
             s_reset: None,
+            observed_at: None,
             no_session_limit: false,
             passive: false,
         }

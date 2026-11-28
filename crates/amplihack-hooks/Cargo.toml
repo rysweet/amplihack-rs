@@ -22,17 +22,16 @@ shell-words = { workspace = true }
 regex = "1"
 sha2 = { workspace = true }
 amplihack-signal = { workspace = true, optional = true }
-libc = { version = "0.2", optional = true }
+libc = { workspace = true }
+chrono = { workspace = true }
 
 [features]
 # Off by default: pulls in the Signal onboarding integration (and its config
 # crate) only when explicitly enabled. With the feature off there is zero cost.
 default = []
-signal = ["dep:amplihack-signal", "amplihack-signal/signal", "dep:libc"]
+signal = ["dep:amplihack-signal", "amplihack-signal/signal"]
 
 [dev-dependencies]
-chrono = { workspace = true }
-libc = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
 toml = "0.8"

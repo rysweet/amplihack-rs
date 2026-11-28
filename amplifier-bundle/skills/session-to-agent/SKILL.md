@@ -18,7 +18,7 @@ auto-detection:
 invokes:
   - tools: [Read, Write, Glob, Grep, Bash]
   - commands: [amplihack new]
-  - skills: [goal-seeking-agent-pattern, knowledge-extractor]
+  - skills: [goal-seeking-agent-pattern, session-learning]
 allowed-tools: ["Read", "Write", "Glob", "Grep", "Bash"]
 target-agents: ["architect", "builder"]
 priority: medium
@@ -128,4 +128,4 @@ amplihack new --file prompt.md --enable-memory --sdk copilot
 | Full extraction algorithm and templates | [reference.md](reference.md)     |
 | Worked examples with real sessions      | [examples.md](examples.md)       |
 | Goal-seeking agent design guidance      | goal-seeking-agent-pattern skill |
-| Knowledge extraction from sessions      | knowledge-extractor skill        |
+| Knowledge extraction from sessions      | session-learning skill           |

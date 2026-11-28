@@ -305,10 +305,11 @@ worktree_for() {
 }
 
 write_identity() { # write_identity <branch> <worktree> <source> [previous json]
-  local prev="${4:-}"
+  local prev="${4:-}" head=""
   [ -n "$prev" ] || prev=null
-  jq -cn --arg b "$1" --arg w "$2" --arg s "$3" --arg base "$ID_BASE" --arg st "$ID_STARTED" --argjson p "$prev" \
-    '{schema_version:1, branch:$b, worktree:$w, source:$s, base:$base, started:$st} + (if $p == null then {} else {previous:$p} end)' \
+  head="$(git -C "$2" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null || true)"
+  jq -cn --arg b "$1" --arg w "$2" --arg s "$3" --arg base "$ID_BASE" --arg st "$ID_STARTED" --arg h "$head" --argjson p "$prev" \
+    '{schema_version:1, branch:$b, worktree:$w, source:$s, base:$base, started:$st} + (if $h == "" then {} else {head:$h} end) + (if $p == null then {} else {previous:$p} end)' \
     | goal_atomic_write "$STATE/identity.json"
 }
 

@@ -201,7 +201,7 @@ pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
         .filter(|(_, reason)| matches!(reason, Skip::NoAccount))
         .map(|(name, _)| name.clone())
         .collect();
-    let ((probe, mut probes, labels), line) = if ctx.event {
+    let ((probe, live_label, mut probes, labels), line) = if ctx.event {
         event_reads(ctx, live, &to_probe, measured_at)
     } else {
         let gathered = measure::measure_ordered(ctx, live, &to_probe, &unbound, measured_at);
@@ -214,7 +214,7 @@ pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
     // good readings of the candidates whose probe said nothing. Issue #3105:
     // with the times of the watch's kept readings, so no older reading is
     // decided on.
-    let extra = Extra::for_cycle(
+    let mut extra = Extra::for_cycle(
         ctx.store.root(),
         labels,
         ctx.stored.times(measured_at),
@@ -222,6 +222,7 @@ pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
         snap.measured_live(),
         measured_at,
     );
+    extra.live_label = live_label;
     let mut m = decide_with(ctx, snap, probe, probes, measured_at, &extra)?;
     // Written after the cycle line, before the freshness gate's lines.
     m.fresh_lines.extend(line);
@@ -245,11 +246,12 @@ fn event_reads(
     let own = usize::from(live.probed());
     let line =
         (!stored.is_empty()).then(|| wake_msg::stored(own + to_read.len(), own + candidates.len()));
-    let (probe, read, labels) = measure::measure_ordered(ctx, live, &to_read, &[], measured_at);
+    let (probe, live_label, read, labels) =
+        measure::measure_ordered(ctx, live, &to_read, &[], measured_at);
     let mut got: HashMap<ProfileName, Probed> = read.into_iter().chain(stored).collect();
     let others = candidates
         .iter()
         .filter_map(|c| got.remove(c).map(|p| (c.clone(), p)))
         .collect();
-    ((probe, others, labels), line)
+    ((probe, live_label, others, labels), line)
 }

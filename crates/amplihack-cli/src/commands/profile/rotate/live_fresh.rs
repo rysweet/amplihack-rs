@@ -146,7 +146,7 @@ pub(in crate::commands::profile::rotate) fn step(
                 .last_for(&name)
                 .is_some_and(|last| series::contradicts(&last, session, session_resets(&probe)));
         if frozen || old || behind || regressed || contradicted {
-            match reread_live(ctx, &name, t, interval, &mut m.fresh_lines) {
+            match reread_live(ctx, &name, t, interval, &mut m) {
                 Some(p) => {
                     let figures = match p.reading {
                         Reading::Measured { session, week } => Some((session, week)),
@@ -292,14 +292,15 @@ fn reread_live(
     name: &ProfileName,
     t: i64,
     interval: i64,
-    lines: &mut Vec<String>,
+    m: &mut Measurement,
 ) -> Option<Probed> {
     let reread = ctx.reread_live?;
     if ctx.stopping() {
         return None;
     }
-    lines.push(fresh_msg::STALE_LIVE.to_string());
-    let (mut p, _) = reread(ctx, name, measure::timeout_quiet());
+    m.fresh_lines.push(fresh_msg::STALE_LIVE.to_string());
+    let (mut p, label) = reread(ctx, name, measure::timeout_quiet());
+    m.seen.extra.live_label = label;
     let failed = p.reading == Reading::Failed || p.unknown || p.still_running || p.carried;
     // The re-read has just run, so a missing observation time means now.
     let at = p.observed_at.unwrap_or(t);
@@ -308,7 +309,7 @@ fn reread_live(
         .last_for(name)
         .is_some_and(|last| at < last.at);
     if failed || stale_at(at, t, interval) || older {
-        lines.push(fresh_msg::failed(name));
+        m.fresh_lines.push(fresh_msg::failed(name));
         return None;
     }
     // A re-read is a direct read made in this cycle.

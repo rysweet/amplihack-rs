@@ -193,7 +193,6 @@ nav:
       - PPTX: claude/skills/pptx/SKILL.md
       - XLSX: claude/skills/xlsx/SKILL.md
       - PDF: claude/skills/pdf/SKILL.md
-      - Code Visualizer: claude/skills/code-visualizer/SKILL.md
       - Gherkin Expert: claude/skills/gherkin-expert/SKILL.md
       - TLA+ Expert: claude/skills/tla-plus-expert/SKILL.md
       - Verus Expert: claude/skills/verus-expert/SKILL.md

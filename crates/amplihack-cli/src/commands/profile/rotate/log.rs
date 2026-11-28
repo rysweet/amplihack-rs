@@ -197,6 +197,7 @@ mod unreadable_msg;
 /// them itself, between cycles, and no cycle builds one.
 #[path = "wake_msg.rs"]
 pub mod wake_msg;
+pub(super) use shown::cycle_shown;
 pub use shown::{Shown, shown, shown_of};
 
 /// The message grammar of docs/reference/profile-command.md, Rotate log.

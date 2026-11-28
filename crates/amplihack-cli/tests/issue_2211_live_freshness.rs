@@ -162,7 +162,8 @@ impl Fixture {
             path,
             &json!({"claudeAiOauth":{
                 "accessToken":format!("synthetic-{name}-2211"),
-                "refreshToken":"synthetic-refresh-2211","expiresAt":4_102_444_800_000_i64
+                "refreshToken":format!("synthetic-refresh-{name}-2211"),
+                "expiresAt":4_102_444_800_000_i64
             }})
             .to_string(),
         );

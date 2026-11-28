@@ -2,11 +2,14 @@
 //! read, so an exhausted login keeps its weekly figure. Display only: no
 //! decision reads it.
 
+use super::super::cycle::Ctx;
+use super::super::decide::last_good::LAST_GOOD_MAX_AGE_SECS;
 use super::super::decide::target_msg::annotate;
 use super::super::decide::{Probed, Reading};
-use super::super::fresh::read_at;
-use super::super::observe::Measurement;
+use super::super::fresh::{MAX_READING_AGE_SECS, read_at};
+use super::super::observe::{Measurement, Snap, live_name};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::{usage_history, usage_passive};
 
 /// What the log shows for one login (issue #1844): the reading the
 /// decision used, and the session and weekly percentages as read. Display
@@ -22,11 +25,8 @@ pub struct Shown {
     pub still_running: bool,
     /// Issue #2218: the live login of an excluded profile, never probed.
     pub excluded: bool,
-    /// Issue #2889: how old, in whole seconds, the figures the cycle decided
-    /// on were when it decided, for the live login and only when they were
-    /// read before this cycle's measurement began. `None` for a direct
-    /// probe, for a re-read that succeeded, for a reading with no reading
-    /// time and for every candidate.
+    /// Age in whole seconds when the cycle shows figures from a prior
+    /// observation.
     pub cached: Option<u64>,
     /// Issue #2910 (D11): why the probe said nothing about the login's room,
     /// shown as `unknown, <label>` in place of the figures.
@@ -126,6 +126,143 @@ pub fn shown(m: &Measurement, live_excluded: bool, now: i64) -> (Shown, Vec<(Pro
     (live, others)
 }
 
+/// Adds the causes and last good figures shown on the cycle line.
+pub(in crate::commands::profile::rotate) fn cycle_shown(
+    ctx: &Ctx,
+    snap: &Snap,
+    m: &Measurement,
+    now: i64,
+) -> (Shown, Vec<(ProfileName, Shown)>) {
+    let (mut live, mut others) = shown(m, snap.live_excluded, now);
+    let root = ctx.store.root();
+    let mut history = None;
+    let mut cached_figures = |name: &ProfileName| {
+        let history = history.get_or_insert_with(|| usage_history::last_observations(root, now));
+        let report = usage_passive::last_good(root, name, now, history.get(name.as_str()))?;
+        let figures = Shown::of(&Probed::from_report(&report));
+        (figures.reading != Reading::Failed).then_some((report.observed_at?, figures))
+    };
+    if let Some(label) = m.seen.extra.live_label {
+        let previous = live_name(&snap.live).and_then(|name| {
+            let held = ctx
+                .live_series
+                .held(name, now)
+                .filter(|held| held.at <= now)
+                .map(|held| {
+                    let figures = Shown::from_reading(Reading::Measured {
+                        session: held.session,
+                        week: held.week,
+                    });
+                    (held.at, figures)
+                });
+            cached_figures(name)
+                .into_iter()
+                .chain(held)
+                .max_by_key(|(at, _)| *at)
+        });
+        let cached = m
+            .probed
+            .as_ref()
+            .and_then(|(probe, _)| probe.observed_at)
+            .filter(|&at| live.cached.is_some() && at <= now)
+            .map(|at| (at, live.clone()));
+        let previous = previous.into_iter().chain(cached).max_by_key(|(at, _)| *at);
+        annotate_failure(
+            &mut live,
+            label.as_str(),
+            previous,
+            now,
+            MAX_READING_AGE_SECS,
+        );
+    }
+    for (name, shown) in &mut others {
+        if shown.reading == Reading::Failed
+            && let Some(label) = m.seen.extra.labels.get(name)
+        {
+            // Use the same history and newer-reading check as candidate ranking.
+            let last_good = m
+                .seen
+                .extra
+                .last_good
+                .as_ref()
+                .and_then(|readings| readings.get(name))
+                .filter(|reading| m.seen.extra.older_by(name, reading.at).is_none())
+                .map(|reading| {
+                    (
+                        reading.observed_at.unwrap_or(reading.at),
+                        Shown::from_reading(reading.reading),
+                    )
+                });
+            let previous = cached_figures(name)
+                .into_iter()
+                .chain(last_good)
+                .max_by_key(|(at, _)| *at);
+            annotate_failure(shown, label.as_str(), previous, now, LAST_GOOD_MAX_AGE_SECS);
+        }
+    }
+    (live, others)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::profile::rotate::measure::ProbeLabel;
+
+    #[test]
+    fn labelled_failure_shows_prior_figures_through_the_freshness_limit() {
+        let at = 1_800_000_000;
+        let label = ProbeLabel::Http429.as_str();
+        let previous = Reading::Measured {
+            session: 51.0,
+            week: 80.0,
+        };
+        let failed = Probed::failed();
+        let mut shown = Shown::of(&failed);
+        annotate_failure(
+            &mut shown,
+            label,
+            Some((at, Shown::from_reading(previous))),
+            at + MAX_READING_AGE_SECS,
+            MAX_READING_AGE_SECS,
+        );
+        assert_eq!(shown.label, Some(label));
+        assert_eq!(shown.cached, Some(MAX_READING_AGE_SECS as u64));
+        assert_eq!((shown.session, shown.week), (Some(51.0), Some(80.0)));
+        assert_eq!(failed.reading, Reading::Failed);
+        assert_eq!(failed.observed_at, None);
+
+        annotate_failure(
+            &mut shown,
+            label,
+            Some((at, Shown::from_reading(previous))),
+            at + MAX_READING_AGE_SECS + 1,
+            MAX_READING_AGE_SECS,
+        );
+        assert_eq!(shown.label, Some(label));
+        assert_eq!(shown.cached, None);
+        assert_eq!((shown.session, shown.week), (None, None));
+    }
+}
+
+fn annotate_failure(
+    shown: &mut Shown,
+    label: &'static str,
+    previous: Option<(i64, Shown)>,
+    now: i64,
+    max_age: i64,
+) {
+    let cached = previous.and_then(|(at, mut figures)| {
+        let age = now.checked_sub(at)?;
+        if !(0..=max_age).contains(&age) {
+            return None;
+        }
+        figures.cached = Some(age as u64);
+        Some(figures)
+    });
+    *shown = cached.unwrap_or_else(|| Shown::from_reading(Reading::Failed));
+    shown.label = Some(label);
+}
+
 fn shown_all(m: &Measurement) -> (Shown, Vec<(ProfileName, Shown)>) {
     match &m.probed {
         Some((live, probes)) => (
@@ -178,6 +315,9 @@ pub(in crate::commands::profile::rotate) fn usage(r: &Shown, sep: &str) -> Strin
     // Issue #2910 (D11): an unknown reading with its label, and its last
     // good reading when one stood in for it.
     if let Some(label) = r.label {
+        if r.cached.is_some() {
+            return format!("unknown, {label}, last {}", usage_figures(r, sep));
+        }
         return match &r.note {
             Some(n) => format!("unknown, {label}, {n}"),
             None => format!("unknown, {label}"),
@@ -186,6 +326,10 @@ pub(in crate::commands::profile::rotate) fn usage(r: &Shown, sep: &str) -> Strin
     if r.still_running {
         return "unknown, still running".to_string();
     }
+    usage_figures(r, sep)
+}
+
+fn usage_figures(r: &Shown, sep: &str) -> String {
     let note = r
         .note
         .as_ref()

@@ -489,6 +489,7 @@ A good Mermaid diagram:
 
 ## Related Skills
 
+- [Plain-text diagrams](plain-text-diagrams.md) for places that do not render Mermaid
 - **module-spec-generator**: Generate specs that can be visualized as class diagrams
 - **Document-Driven Development**: Use diagrams in specification documents
 - **Investigation Workflow**: Create architecture diagrams from discovered systems

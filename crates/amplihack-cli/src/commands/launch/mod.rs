@@ -19,6 +19,8 @@ mod contract_file;
 pub(crate) mod hook_settings;
 // Issue #3162: where a launch puts operator guidance, and drop records.
 mod guidance_route;
+// Issue #3435: whether a Codex step has amplihack's guidance hooks.
+mod codex_hook_check;
 /// Issue #1619 — a recipe step declares a model tier and amplihack turns it
 /// into whatever the harness it launches actually has.
 pub(crate) mod model_tiers;
@@ -89,7 +91,8 @@ use command::{
 };
 use context::persist_launcher_context;
 use guidance_route::{
-    GuidanceRoute, agent_binary_for_tool, guidance_route, report_guidance_drop, step_label,
+    GuidanceRoute, agent_binary_for_tool, guidance_route, report_guidance_drop, settle_route,
+    step_has_hook, step_label,
 };
 
 // Test-visible re-imports from submodules. These become available to
@@ -447,9 +450,11 @@ fn run_launch_core(
     );
     // What a drop record names: never argv text (issue #3162).
     let guidance_label = step_label(tool, &extra_args);
-    if let GuidanceRoute::Undeliverable(reason) = guidance_route {
-        report_guidance_drop(&guidance, &guidance_label, reason);
-    }
+    // Issue #3435: inside a recipe run, every agent launch is a new step,
+    // named to its hooks so they can give it guidance appended while it
+    // runs. The drop of a launch form no prompt can take is settled once
+    // the launch knows whether the step has such a hook (below).
+    let guidance_step_id = crate::run_guidance::step::step_id_for_launch();
     let stdin_trailer = guidance_route == GuidanceRoute::StdinTrailer;
     // "\n\n" and the block, written after a prompt that arrives on stdin.
     let guidance_injected = matches!(
@@ -702,6 +707,23 @@ fn run_launch_core(
                 None
             }
         };
+        // Issue #3435: a step with a hook is given new guidance at its next
+        // prompt or tool call; one without is recorded, so `recipe guide`
+        // can tell the sender while the step runs. A hooked step is recorded
+        // too: the judgement is not proof, and until one of its hooks runs
+        // `recipe guide` names it as not yet confirmed.
+        let step_hooked = step_has_hook(
+            tool,
+            hook_settings.is_some(),
+            matches!(agent_binary_for_tool(tool), Some(AgentBinary::Codex))
+                && codex_hook_check::codex_step_has_hook(local_model.is_some(), &extra_args),
+        );
+        if let Some(step_id) = guidance_step_id.as_deref() {
+            crate::run_guidance::step::record_step_start(step_id, &guidance_label, step_hooked);
+        }
+        if let GuidanceRoute::Undeliverable(reason) = settle_route(guidance_route, step_hooked) {
+            report_guidance_drop(&guidance, &guidance_label, reason);
+        }
         let mut cmd = build_command_for_dir(
             &binary,
             resume,
@@ -739,6 +761,11 @@ fn run_launch_core(
         )?;
         // Issue #1569: only the supervising amplihack sees this marker.
         cmd.env_remove(crate::commands::profile::AUTO_SWITCH_SUPERVISED_ENV);
+        // Issue #3435: the step's own id, never one inherited from a parent.
+        match guidance_step_id.as_deref() {
+            Some(step_id) => cmd.env(crate::run_guidance::step::STEP_ID_ENV, step_id),
+            None => cmd.env_remove(crate::run_guidance::step::STEP_ID_ENV),
+        };
 
         // Spawn child in its own process group.
         //
@@ -777,7 +804,29 @@ fn run_launch_core(
             }
         };
 
+        // Issue #3435: when the block goes to the child's stdin, the writer
+        // records it as soon as every byte is written and before stdin is
+        // closed, so the step's own hooks, which run only after it has read
+        // its prompt, see the record and do not give the entries again.
+        let on_delivered = || -> amplihack_utils::payload_delivery::OnDelivered {
+            let guidance = guidance.clone();
+            let step_id = guidance_step_id.clone();
+            Box::new(move || report_guidance_injection(&guidance, step_id.as_deref()))
+        };
+        let mut recorded_by_writer = false;
         let stdin_writer = match (rewritten.stdin_payload.as_ref(), child.take_stdin()) {
+            (Some(payload), Some(stdin)) if forward_caller_stdin && guidance_injected => {
+                recorded_by_writer = true;
+                Some(
+                    amplihack_utils::payload_delivery::spawn_stdin_forwarder_with_trailer_then(
+                        stdin,
+                        prompt_then_piped_input_header(payload),
+                        Box::new(std::io::stdin()),
+                        guidance_tail,
+                        on_delivered(),
+                    ),
+                )
+            }
             (Some(payload), Some(stdin)) if forward_caller_stdin => Some(
                 amplihack_utils::payload_delivery::spawn_stdin_forwarder_with_trailer(
                     stdin,
@@ -786,32 +835,40 @@ fn run_launch_core(
                     guidance_tail,
                 ),
             ),
-            (Some(payload), Some(stdin)) => {
-                let bytes = match guidance_route {
-                    GuidanceRoute::Prompt => guidance.append_to(payload),
-                    _ => payload.clone(),
-                };
-                Some(amplihack_utils::payload_delivery::spawn_stdin_writer(
+            (Some(payload), Some(stdin)) if guidance_route == GuidanceRoute::Prompt => {
+                recorded_by_writer = true;
+                Some(amplihack_utils::payload_delivery::spawn_stdin_writer_then(
                     stdin,
-                    bytes.into_bytes(),
+                    guidance.append_to(payload).into_bytes(),
+                    on_delivered(),
                 ))
             }
-            (None, Some(stdin)) if stdin_trailer => Some(
-                amplihack_utils::payload_delivery::spawn_stdin_forwarder_with_trailer(
+            (Some(payload), Some(stdin)) => {
+                Some(amplihack_utils::payload_delivery::spawn_stdin_writer(
                     stdin,
-                    Vec::new(),
-                    Box::new(std::io::stdin()),
-                    guidance_tail,
-                ),
-            ),
+                    payload.clone().into_bytes(),
+                ))
+            }
+            (None, Some(stdin)) if stdin_trailer => {
+                recorded_by_writer = true;
+                Some(
+                    amplihack_utils::payload_delivery::spawn_stdin_forwarder_with_trailer_then(
+                        stdin,
+                        Vec::new(),
+                        Box::new(std::io::stdin()),
+                        guidance_tail,
+                        on_delivered(),
+                    ),
+                )
+            }
             _ => None,
         };
-        // Issue #2535: the agent has started with the block in its prompt;
-        // say so once (counts only) and record it in each guidance.log it
-        // came from. The stdin trailer goes after the caller's stdin, so it
-        // is only recorded below, once it is known to have been written.
-        if guidance_injected && !stdin_trailer {
-            report_guidance_injection(&guidance);
+        // Issue #2535: the agent has started with the block in its prompt
+        // (a prompt file); say so once (counts only) and record it in each
+        // guidance.log it came from. A block on stdin is recorded by its
+        // writer, once every byte is written.
+        if guidance_injected && !recorded_by_writer {
+            report_guidance_injection(&guidance, guidance_step_id.as_deref());
         }
 
         // Wait for child or signal
@@ -821,7 +878,8 @@ fn run_launch_core(
         // here. They are read before the writer is joined or detached.
         if stdin_trailer {
             match stdin_writer.as_ref() {
-                Some(writer) if writer.delivered() => report_guidance_injection(&guidance),
+                // Recorded by the writer when the last byte was written.
+                Some(writer) if writer.delivered() => {}
                 // PR #3190 review: the pipe gave no text, so there was no
                 // prompt to follow and the block was not written. Seen by
                 // reading the pipe, not guessed from its file type.
@@ -1270,9 +1328,17 @@ fn validate_launch_prompt_delivery(tool: &str) -> Result<()> {
 
 /// Issue #2535: prints the counts-only notice that guidance reached the
 /// agent and records `guidance_injected` in each guidance.log it came from.
-fn report_guidance_injection(guidance: &crate::run_guidance::GuidanceForLaunch) {
+/// Issue #3435: `step_id` names the step that was given it, so its hooks
+/// do not give the same entries again.
+fn report_guidance_injection(
+    guidance: &crate::run_guidance::GuidanceForLaunch,
+    step_id: Option<&str>,
+) {
     eprintln!("{}", guidance.notice());
-    guidance.record_injection(&std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_default());
+    guidance.record_injection(
+        &std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_default(),
+        step_id,
+    );
 }
 
 fn resolve_launch_node_options(_subprocess_safe: bool) -> Result<String> {

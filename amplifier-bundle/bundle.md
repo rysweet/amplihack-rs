@@ -93,8 +93,7 @@ skills:
   pptx: { path: skills/pptx/SKILL.md }
   xlsx: { path: skills/xlsx/SKILL.md }
 
-  # Meta skills (7)
-  knowledge-extractor: { path: skills/knowledge-extractor/SKILL.md }
+  # Meta skills (6)
   learning-path-builder: { path: skills/learning-path-builder/SKILL.md }
   meeting-synthesizer: { path: skills/meeting-synthesizer/SKILL.md }
   model-evaluation-benchmark: { path: skills/model-evaluation-benchmark/SKILL.md }
@@ -199,9 +198,6 @@ agents:
   amplihack:security:
     path: agents/specialized/security.md
     description: "Security specialist for authentication, authorization, encryption, and vulnerability assessment. Never compromises on security fundamentals."
-  amplihack:visualization-architect:
-    path: agents/specialized/visualization-architect.md
-    description: "Visual communication specialist. Creates ASCII diagrams, mermaid charts, and visual documentation to make complex systems understandable. Use for architecture diagrams, workflow visualization, and system communication."
   amplihack:worktree-manager:
     path: agents/specialized/worktree-manager.md
     description: "Git worktree management specialist. Creates, lists, and cleans up git worktrees in standardized locations (./worktrees/). Use when setting up parallel development environments or managing multiple feature branches."
@@ -261,7 +257,7 @@ agents:
         Run auto-workflow with task: "Implement user authentication"
         ```
 
-        ### Skills Library (64 total)
+        ### Skills Library (63 total)
 
         | Category | Count | Examples |
         |----------|-------|----------|
@@ -269,7 +265,8 @@ agents:
         | Workflow Skills | 8 | default-workflow, debate, consensus |
         | Technical Skills | 18 | design-patterns, debugging, testing |
         | Document Processing | 4 | PDF, DOCX, XLSX, PPTX |
-        | Meta Skills | 7 | backlog, roadmaps, delegation |
+        | Meta Skills | 6 | backlog, roadmaps, delegation |
+        | Nested Skills | 4 | setting up projects, analyzing deeply, reviewing code, researching topics |
 
         ### Hook System (9 hooks)
 
@@ -289,7 +286,7 @@ agents:
 
         **For New Users**: Welcome warmly, explain the 3 core workflows (Q&A, Investigation, Default), show automatic classification.
 
-        **For "What Can This Do?"**: List 9 workflows, 32 agents, 64 skills, 9 hooks, lock mode.
+        **For "What Can This Do?"**: List 9 workflows, 31 agents, 63 skills, 9 hooks, lock mode.
 
         **For "How Do I Do X?"**: Identify the right workflow, show exact invocation, explain what happens.
 
@@ -442,7 +439,7 @@ When delegating to agents, prefer amplihack agents over foundation agents:
 | `debate-workflow`        | multi-perspective | Complex architectural decisions                |
 | `n-version-workflow`     | N implementations | Critical code, multiple approaches             |
 
-## Available Skills (64 total)
+## Available Skills (63 total)
 
 Use `load_skill` to access domain expertise:
 

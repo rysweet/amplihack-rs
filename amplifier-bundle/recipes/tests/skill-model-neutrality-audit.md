@@ -129,10 +129,11 @@ Final review checks passed: neutrality guard from the root and an unrelated `/d0
 
 ## Complete skill inventory
 
-Every row was included in the canonical frontmatter/model-reference scan.
-All supporting files below each skill directory were scanned; shared/group-level
-supporting files were also covered by the full-tree traversal. “Mirror” records
-whether a corresponding SKILL.md exists, not byte parity of unrelated content.
+The current bundle has 114 skill definitions (110 top-level and
+4 nested). 64 have a corresponding documentation mirror.
+
+The neutrality guard checks every canonical skill below and scans its supporting
+files. The Mirror column records whether a corresponding SKILL.md exists.
 
 | Skill path | Audit | Mirror |
 | --- | --- | --- |
@@ -149,9 +150,9 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | cascade-workflow | Pass | Yes |
 | chemist-analyst | Pass | Yes |
 | claude-agent-sdk | Pass | Yes |
+| claude-profile-rotation | Pass | No |
 | code-atlas | Pass | No |
 | code-philosophy | Pass | No |
-| code-visualizer | Pass | Yes |
 | computer-scientist-analyst | Pass | Yes |
 | consensus-voting | Pass | Yes |
 | context-management | Pass | No |
@@ -190,7 +191,7 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | indigenous-leader-analyst | Pass | Yes |
 | investigation-workflow | Pass | Yes |
 | journalist-analyst | Pass | Yes |
-| knowledge-extractor | Pass | Yes |
+| journalistic-writing-style | Pass | No |
 | lawyer-analyst | Pass | Yes |
 | learning-path-builder | Pass | Yes |
 | lsp-setup | Pass | No |
@@ -241,6 +242,7 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | socratic-review | Pass | No |
 | statler-waldorf | Pass | No |
 | storytelling-synthesizer | Pass | Yes |
+| supervise-agent-sessions | Pass | No |
 | supply-chain-audit | Pass | No |
 | test-gap-analyzer | Pass | Yes |
 | tla-plus-expert | Pass | Yes |

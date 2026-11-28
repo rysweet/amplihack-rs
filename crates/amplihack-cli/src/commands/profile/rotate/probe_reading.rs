@@ -38,13 +38,23 @@ pub(super) fn reading_to(who: &str, p: &Probe, err: &mut dyn Write) -> Probed {
     }
     if p.error.is_some() || p.report.state == UsageState::Error {
         let why = p
-            .error
+            .direct_failure
+            .map(ErrorReason::Direct)
+            .or(p.error)
             .map_or_else(|| "unreadable /usage output".to_string(), |e| e.to_string());
         writeln!(err, "warning: rotate: probe of {who} failed: {why}").expect(ERR);
         return Probed::failed();
     }
     if p.report.state == UsageState::Timeout {
-        writeln!(err, "warning: rotate: probe of {who} timed out").expect(ERR);
+        if let Some(why) = p.direct_failure {
+            writeln!(
+                err,
+                "warning: rotate: probe of {who} timed out after direct read: {why}"
+            )
+            .expect(ERR);
+        } else {
+            writeln!(err, "warning: rotate: probe of {who} timed out").expect(ERR);
+        }
     }
     Probed::from_report(&p.report)
 }
@@ -69,6 +79,8 @@ pub enum ProbeLabel {
     /// Another failure of the probe itself that says nothing about the
     /// login: a server error, an unreadable answer, `claude` not starting.
     ProbeError,
+    RetryBusy,
+    RetryNotSaved,
 }
 
 impl ProbeLabel {
@@ -80,6 +92,8 @@ impl ProbeLabel {
             Self::Timeout => "timeout",
             Self::StillRunning => "still running",
             Self::ProbeError => "probe error",
+            Self::RetryBusy => "usage retry lock busy",
+            Self::RetryNotSaved => "HTTP 429 (usage retry deadline not saved)",
         }
     }
 }
@@ -95,11 +109,15 @@ impl ProbeLabel {
 fn direct_label(why: &str) -> Option<ProbeLabel> {
     match Reason::parse(why)? {
         Reason::Http429 => Some(ProbeLabel::Http429),
+        Reason::RetryBusy => Some(ProbeLabel::RetryBusy),
+        Reason::RetryNotSaved => Some(ProbeLabel::RetryNotSaved),
         Reason::Transport => Some(ProbeLabel::Transport),
         Reason::Timeout => Some(ProbeLabel::Timeout),
-        Reason::Http3xx | Reason::Http5xx | Reason::Unparseable | Reason::RefreshBusy => {
-            Some(ProbeLabel::ProbeError)
-        }
+        Reason::Http3xx
+        | Reason::Http5xx
+        | Reason::Unparseable
+        | Reason::RefreshBusy
+        | Reason::RetryState => Some(ProbeLabel::ProbeError),
         Reason::NoFile
         | Reason::Refused
         | Reason::NoToken
@@ -121,28 +139,34 @@ fn direct_label(why: &str) -> Option<ProbeLabel> {
 /// and for a failure that says something about the login's account (issue
 /// #2910, F7, S2).
 ///
-/// A direct read's reason decides, whether it is the probe's own error or
-/// the cause of a fallback (`direct_failure`) that then failed too: the
-/// fallback's own error (`claude not found`) hides the cause, and a cause
-/// about the login's account gives no label whatever followed it. A fallback
-/// that then timed out is a timeout. Without a direct reason, a probe that
-/// could not start, read or wait for `claude` is a probe error, and one that
-/// timed out is a timeout.
+/// A failed fallback keeps the direct read's cause. A cause about the
+/// account gives no label. A fallback timeout gives the timeout label when
+/// the direct cause is labelable and the endpoint did not answer HTTP 429.
+/// Without a direct cause, a failure to start, read or wait for `claude`
+/// gives the probe-error label, and a timeout gives the timeout label.
 pub fn label_of(p: &Probe) -> Option<ProbeLabel> {
-    let read = !matches!(p.report.state, UsageState::Error | UsageState::Timeout);
-    if read && p.error.is_none() {
+    label_for(p.report.state, p.error, p.direct_failure)
+}
+
+pub fn label_for(
+    state: UsageState,
+    error: Option<ErrorReason>,
+    direct_failure: Option<&'static str>,
+) -> Option<ProbeLabel> {
+    let read = !matches!(state, UsageState::Error | UsageState::Timeout);
+    if read && error.is_none() {
         return None;
     }
-    if let Some(why) = p.direct_failure {
+    if let Some(why) = direct_failure {
         let cause = direct_label(why)?;
-        let timed_out = p.error.is_none() && p.report.state == UsageState::Timeout;
-        return Some(if timed_out {
+        let timed_out = error.is_none() && state == UsageState::Timeout;
+        return Some(if timed_out && cause != ProbeLabel::Http429 {
             ProbeLabel::Timeout
         } else {
             cause
         });
     }
-    match p.error {
+    match error {
         Some(ErrorReason::Direct(why)) => direct_label(why),
         Some(
             ErrorReason::StartFailed
@@ -153,7 +177,7 @@ pub fn label_of(p: &Probe) -> Option<ProbeLabel> {
         Some(ErrorReason::NotSignedIn(_) | ErrorReason::Excluded | ErrorReason::ProfileRefused) => {
             None
         }
-        None if p.report.state == UsageState::Timeout => Some(ProbeLabel::Timeout),
+        None if state == UsageState::Timeout => Some(ProbeLabel::Timeout),
         None => None,
     }
 }

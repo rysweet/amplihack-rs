@@ -2,9 +2,9 @@
 //! measured cycle, read by the capacity summary for its rate and by `rotate
 //! status` for its `capacity:` line.
 //!
-//! A line holds the time, profile names, whole-number session and weekly
-//! percentages and the weekly reset time. Nothing else from a probe is kept:
-//! no identity, no plan, no error text and nothing Claude printed.
+//! A line holds the batch time, profile names, whole-number session and weekly
+//! percentages, observation times and weekly reset times. It excludes login
+//! identities, plans, error text and Claude output.
 //!
 //! [`entry_of`] is the one validity rule. Readers take the last 4 MiB and
 //! skip whatever they cannot trust; a history that exists but is refused
@@ -85,6 +85,9 @@ pub(super) struct Point {
     /// When the session resets, epoch seconds. Used by the summary of the
     /// current cycle only; never written to the history.
     pub(super) s_reset: Option<i64>,
+    /// The time of this observation, even when the line was written later.
+    /// Older lines contain only the time of the batch.
+    pub(super) observed_at: Option<i64>,
     /// Issue #1818: the reading showed no session window, so no session
     /// limit applies and the login is usable on its week alone. Only ever
     /// `true` with `s` `None`; a session that was simply not read is
@@ -241,6 +244,7 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
             w: pct_of(week)?,
             w_reset,
             s_reset,
+            observed_at: r.observed_at,
             no_session_limit,
             passive,
         }),
@@ -249,6 +253,7 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
             w: pct_of(week)?,
             w_reset,
             s_reset,
+            observed_at: r.observed_at,
             no_session_limit: false,
             passive,
         }),
@@ -257,6 +262,7 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
             w: 100,
             w_reset,
             s_reset,
+            observed_at: r.observed_at,
             no_session_limit,
             passive,
         }),
@@ -294,7 +300,8 @@ pub(super) fn from_rows(
         let moved = swapped.is_some_and(|s| s.as_str() == r.profile);
         let counted = !moved && recent_enough(r.report.observed_at, read_at);
         match entry_of(&r.report).filter(|_| counted) {
-            Some(p) => {
+            Some(mut p) => {
+                p.observed_at.get_or_insert(at);
                 points.insert(r.profile.clone(), p);
             }
             None => unknown.push(r.profile.clone()),
@@ -333,7 +340,10 @@ pub(super) fn from_probes(
         .chain(others.iter().map(|(n, p)| (n, p)));
     for (name, probe) in named.filter(|(n, _)| platform != Some(*n)) {
         match point_of_probe(probe).filter(|_| recent_enough(probe.observed_at, at)) {
-            Some(p) => {
+            Some(mut p) => {
+                if !probe.carried {
+                    p.observed_at.get_or_insert(at);
+                }
                 points.insert(name.as_str().to_string(), p);
             }
             None => unknown.push(name.as_str().to_string()),
@@ -379,6 +389,7 @@ fn point_of_probe(p: &super::rotate::decide::Probed) -> Option<Point> {
             w: whole_pct(used)?,
             w_reset,
             s_reset,
+            observed_at: p.observed_at,
             no_session_limit,
             passive,
         }),
@@ -388,6 +399,7 @@ fn point_of_probe(p: &super::rotate::decide::Probed) -> Option<Point> {
                 w: 100,
                 w_reset,
                 s_reset,
+                observed_at: p.observed_at,
                 no_session_limit,
                 passive,
             }),
@@ -396,6 +408,7 @@ fn point_of_probe(p: &super::rotate::decide::Probed) -> Option<Point> {
                 w,
                 w_reset,
                 s_reset,
+                observed_at: p.observed_at,
                 no_session_limit: false,
                 passive,
             }),
@@ -520,6 +533,8 @@ struct PointOut {
     session_limit: Option<bool>,
     w: u8,
     w_reset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observed_at: Option<String>,
 }
 
 /// One history line, without the newline. The session reset is not kept.
@@ -538,6 +553,7 @@ pub(super) fn to_line(e: &Entry) -> String {
                         session_limit: (p.no_session_limit && p.s.is_none()).then_some(false),
                         w: p.w,
                         w_reset: p.w_reset.map(utc_time),
+                        observed_at: p.observed_at.map(utc_time),
                     },
                 )
             })
@@ -582,6 +598,7 @@ fn point_in(v: &serde_json::Value, now: i64) -> Option<Point> {
         w: pct_in(o.get("w")?)?,
         w_reset,
         s_reset: None,
+        observed_at: o.get("observed_at").and_then(|v| time_of(v, now)),
         no_session_limit,
         // A line never says how a reading was taken.
         passive: false,
@@ -761,6 +778,33 @@ pub(super) fn read_recent(root: &Path, now: i64, window: i64) -> (Vec<Entry>, Op
         .filter(|e| e.at >= from && e.at < now)
         .collect();
     (recent, warning)
+}
+
+/// The newest dated readings eligible for display alongside a failed probe.
+/// A batch timestamp alone cannot date a point copied from an earlier line.
+#[cfg(unix)]
+pub(super) fn last_observations(root: &Path, now: i64) -> BTreeMap<String, Point> {
+    let (entries, warning) = read_all(root, now);
+    if let Some(w) = warning {
+        eprintln!("{w}");
+    }
+    let oldest = now.saturating_sub(super::rotate::fresh::MAX_READING_AGE_SECS);
+    let mut newest = BTreeMap::<String, Point>::new();
+    for entry in entries {
+        for (name, point) in entry.profiles {
+            if point
+                .observed_at
+                .is_some_and(|at| (oldest..=now).contains(&at))
+                && newest
+                    .get(&name)
+                    .is_none_or(|previous| point.observed_at >= previous.observed_at)
+            {
+                newest.insert(name, point);
+            }
+        }
+    }
+    newest.retain(|_, point| point.w_reset.is_none_or(|reset| now < reset));
+    newest
 }
 
 // ---------------------------------------------------------------------------

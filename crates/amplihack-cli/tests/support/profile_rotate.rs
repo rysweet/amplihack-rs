@@ -111,7 +111,8 @@ pub fn euid() -> u32 {
 /// a login file has (`claudeAiOauth` or not) to tell a subscription login
 /// from an API-key profile, so the file is a readable private JSON object.
 /// Its values are sentinels that must never be printed; its inode
-/// identifies it.
+/// identifies it. Use a distinct refresh token for each account so
+/// parallel probes exercise separate retry locks.
 pub fn login(path: &Path) -> u64 {
     assert!(path.starts_with(std::env::temp_dir()));
     let dir = path.parent().unwrap();
@@ -154,7 +155,8 @@ pub fn login(path: &Path) -> u64 {
     private_file(
         path,
         &serde_json::json!({"claudeAiOauth": {
-            "accessToken": format!("fake-rotation1753-{fake}"), "refreshToken": "SENTINEL-TOKEN",
+            "accessToken": format!("fake-rotation1753-{fake}"),
+            "refreshToken": format!("SENTINEL-TOKEN-{fake}"),
             "expiresAt": 4_102_444_800_000_i64
         }})
         .to_string(),
@@ -385,13 +387,32 @@ impl Fixture {
         .unwrap();
     }
 
+    pub fn usage_retry_after(&self, p: &str, value: Option<&str>) {
+        let path = self.canned.join(retry_after_file(&email(p)));
+        match value {
+            Some(value) => fs::write(path, value).unwrap(),
+            None => fs::remove_file(path).unwrap(),
+        }
+    }
+
+    pub fn direct_usage_requests(&self, p: &str) -> usize {
+        let email = email(p);
+        self.identity
+            .usage_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|seen| **seen == email)
+            .count()
+    }
+
     /// Issue #1818: a plan with no session limit. Claude prints only the
     /// all-models week line.
     pub fn usage_weekly_only(&self, p: &str, week: u32) {
         self.canned_usage(p, &format!("Current week (all models): {week}% used\n"));
     }
 
-    fn canned_usage(&self, p: &str, lines: &str) {
+    pub fn canned_usage(&self, p: &str, lines: &str) {
         fs::write(
             self.canned.join(format!("{}.out", email(p))),
             format!("{BANNER}\n\n{lines}"),
@@ -845,6 +866,10 @@ fn direct_usage_file(email: &str) -> String {
     format!("{email}.direct.json")
 }
 
+fn retry_after_file(email: &str) -> String {
+    format!("{email}.retry-after")
+}
+
 /// What [`Fixture::usage_direct`] set for the login in a token's `block`.
 fn direct_answer(canned: &Path, block: &serde_json::Value) -> Option<serde_json::Value> {
     let email = block["emailAddress"].as_str().unwrap_or("");
@@ -859,6 +884,7 @@ struct IdentityEndpoint {
     base: String,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
+    usage_requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 impl IdentityEndpoint {
     fn new(canned: PathBuf) -> Self {
@@ -868,12 +894,15 @@ impl IdentityEndpoint {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
+        let usage_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let requests = usage_requests.clone();
         let worker = std::thread::spawn(move || {
             while !stopping.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let canned = canned.clone();
-                        std::thread::spawn(move || serve_identity(stream, &canned));
+                        let requests = requests.clone();
+                        std::thread::spawn(move || serve_identity(stream, &canned, &requests));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -889,6 +918,7 @@ impl IdentityEndpoint {
             base,
             stop,
             worker: Some(worker),
+            usage_requests,
         }
     }
 }
@@ -896,7 +926,11 @@ impl IdentityEndpoint {
 /// Answers one request. A read error, a timeout or an early end of input
 /// ends this connection without an answer; a failed write is the client's
 /// concern. Request data is never echoed.
-fn serve_identity(stream: std::net::TcpStream, canned: &Path) {
+fn serve_identity(
+    stream: std::net::TcpStream,
+    canned: &Path,
+    requests: &std::sync::Mutex<Vec<String>>,
+) {
     use std::io::{BufRead, Write};
     if stream.set_nonblocking(false).is_err() || stream.set_read_timeout(Some(CEILING)).is_err() {
         return;
@@ -939,6 +973,14 @@ fn serve_identity(stream: std::net::TcpStream, canned: &Path) {
         .as_ref()
         .filter(|_| usage)
         .and_then(|b| direct_answer(canned, b));
+    let retry_after = block
+        .as_ref()
+        .filter(|_| usage)
+        .and_then(|b| b["emailAddress"].as_str())
+        .and_then(|email| {
+            requests.lock().unwrap().push(email.to_string());
+            fs::read_to_string(canned.join(retry_after_file(email))).ok()
+        });
     let (status, body) = match block {
         Some(b) if profile => (
             "200 OK",
@@ -946,6 +988,7 @@ fn serve_identity(stream: std::net::TcpStream, canned: &Path) {
                 "uuid": b["accountUuid"], "email": b["emailAddress"]
             }, "organization": {"uuid": b["organizationUuid"]}}),
         ),
+        Some(_) if retry_after.is_some() => ("429 Too Many Requests", serde_json::json!({})),
         // Issue #1962: a dry run has no `claude` fallback, so a test of its
         // decision sets the direct answer ([`Fixture::usage_direct`]).
         Some(_) if direct.is_some() => ("200 OK", direct.unwrap()),
@@ -959,8 +1002,10 @@ fn serve_identity(stream: std::net::TcpStream, canned: &Path) {
         _ => ("401 Unauthorized", serde_json::json!({"error":"fake-only"})),
     };
     let body = body.to_string();
+    let retry_header =
+        retry_after.map_or_else(String::new, |value| format!("Retry-After: {value}\r\n"));
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\n{retry_header}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let mut stream = stream;

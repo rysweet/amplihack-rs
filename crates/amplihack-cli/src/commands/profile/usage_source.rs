@@ -8,17 +8,18 @@
 //! | `auto` / `text` | fallback only | as named |
 //! | overflow, not `direct` | fallback only | `text` |
 //! | overflow, `direct` | none: error `direct read: overflow needs /usage` | - |
-//! | unset | passive, direct, fallback; no fallback when not signed in | `auto`; `text` when credits are on and no window is read |
+//! | unset | passive, direct, fallback | `auto`; `text` when credits are on and no window is read |
 //! | `direct` | passive, direct; a failure is an error row, or a not-signed-in row | - |
 //!
 //! Issue #2271: in `unset` and `direct`, a direct read that finds no login
 //! to use is final ([`not_signed_in`]): `no oauth token`, `no refresh token`,
 //! and on Linux `no credentials file`. The row is `not_logged_in` from the
 //! direct read, shown as `not signed in (<reason>)`, and no `claude` is
-//! looked up or started; `claude` would find the same empty login. Every
-//! other failure, `credentials refused` and `unreadable credentials` (a
-//! file that did not parse or held a rejected token) included, falls back
-//! as before.
+//! looked up or started; `claude` would find the same empty login. An HTTP 429
+//! skips `/usage`. Without a usable server deadline the ordered mode can
+//! still try the `get_usage` control request once. A future deadline from
+//! the server also suppresses that request for the same login, including in
+//! explicit fallback modes.
 //!
 //! Issue #1856: a direct read with usage credits on and a readable window
 //! is a `direct` row with the direct windows, the redacted `extra_usage`
@@ -186,6 +187,7 @@ fn journals(root: &Path) -> [PathBuf; 2] {
 /// Reads one row in the order the module documents. `fallback(mode)` runs
 /// the `claude` probe; it is called at most once, and only when the order
 /// needs it.
+#[cfg(test)]
 pub(super) fn read(
     env: &SourceEnv,
     plan: &Plan,
@@ -193,14 +195,38 @@ pub(super) fn read(
     now: i64,
     fallback: impl FnOnce(ProbeMode) -> Probe,
 ) -> Probe {
+    read_from(env, plan, root, root, now, fallback)
+}
+
+pub(super) fn read_from(
+    env: &SourceEnv,
+    plan: &Plan,
+    root: &Path,
+    retry_parent: &Path,
+    now: i64,
+    fallback: impl FnOnce(ProbeMode) -> Probe,
+) -> Probe {
     let fall = |mode: ProbeMode, failure: Option<&'static str>| {
         let mut p = fallback(mode);
         p.source = Some(Source::Fallback);
         p.direct_failure = failure;
+        if let Some(why) = failure
+            && (p.report.state == UsageState::Unparsed
+                || (mode == ProbeMode::ControlOnly
+                    && matches!(p.report.state, UsageState::Error | UsageState::Timeout)))
+            && p.report.session.is_none()
+            && p.report.week_all.is_none()
+            && p.report.week_models.is_empty()
+        {
+            p.report.state = UsageState::Error;
+            p.error = Some(ErrorReason::Direct(why));
+        }
         p
     };
     match env.mode {
-        ProbeMode::Auto | ProbeMode::Text => return fall(env.mode, None),
+        ProbeMode::Auto | ProbeMode::Text | ProbeMode::ControlOnly => {
+            return declined(env, plan, root, retry_parent).unwrap_or_else(|| fall(env.mode, None));
+        }
         ProbeMode::Ordered | ProbeMode::Direct => {}
     }
     let direct_only = env.mode == ProbeMode::Direct;
@@ -208,14 +234,21 @@ pub(super) fn read(
         if direct_only {
             return Probe::direct_error(OVERFLOW_NEEDS_TEXT);
         }
-        return fall(ProbeMode::Text, None);
+        return declined(env, plan, root, retry_parent)
+            .unwrap_or_else(|| fall(ProbeMode::Text, None));
     }
-    match read_without_claude(env, plan, root, now) {
+    match read_without_claude(env, plan, root, retry_parent, now) {
         Ok(p) => p,
-        Err(why) if not_signed_in(why, plan) => Probe::not_signed_in(why),
-        Err(why) if direct_only => Probe::direct_error(why),
-        Err(why) => {
-            let mode = if credits_on(why) {
+        Err((why, _)) if not_signed_in(why, plan) => Probe::not_signed_in(why),
+        Err((why, until)) if direct_only || until.is_some() || retry_state_failed(why) => {
+            let mut p = Probe::direct_error(why);
+            p.retry_until_ms = until;
+            p
+        }
+        Err((why, _)) => {
+            let mode = if rate_limited(why) {
+                ProbeMode::ControlOnly
+            } else if credits_on(why) {
                 ProbeMode::Text
             } else {
                 ProbeMode::Auto
@@ -223,6 +256,65 @@ pub(super) fn read(
             fall(mode, Some(why))
         }
     }
+}
+
+#[cfg(unix)]
+impl Plan {
+    pub(super) fn retry_slot(&self, root: &Path) -> PathBuf {
+        self.passive
+            .as_ref()
+            .map_or_else(|| self.creds_dir.clone(), |name| root.join(name.as_str()))
+    }
+}
+
+#[cfg(unix)]
+pub(super) fn declined(
+    env: &SourceEnv,
+    plan: &Plan,
+    root: &Path,
+    retry_parent: &Path,
+) -> Option<Probe> {
+    let location = super::usage_retry::Location {
+        parent: retry_parent,
+        slot: &plan.retry_slot(root),
+    };
+    match usage_direct::active_retry(&env.endpoints, &plan.creds_dir, location, || {
+        env.endpoints.usage_now_ms()
+    }) {
+        Ok(None) => None,
+        Ok(Some(until)) => {
+            let mut p = Probe::direct_error(usage_direct::reason::HTTP_429);
+            p.retry_until_ms = Some(until);
+            Some(p)
+        }
+        Err(why) => Some(Probe::direct_error(why)),
+    }
+}
+
+#[cfg(not(unix))]
+pub(super) fn declined(_: &SourceEnv, _: &Plan, _: &Path, _: &Path) -> Option<Probe> {
+    None
+}
+
+#[cfg(unix)]
+fn retry_state_failed(why: &str) -> bool {
+    use usage_direct::reason::{RETRY_BUSY, RETRY_NOT_SAVED, RETRY_STATE};
+    matches!(why, RETRY_BUSY | RETRY_NOT_SAVED | RETRY_STATE)
+}
+
+#[cfg(not(unix))]
+fn retry_state_failed(_why: &str) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn rate_limited(why: &str) -> bool {
+    why == usage_direct::reason::HTTP_429
+}
+
+#[cfg(not(unix))]
+fn rate_limited(_why: &str) -> bool {
+    false
 }
 
 /// SR-10: the direct read refreshed the token but could not save it; the
@@ -280,11 +372,15 @@ fn read_without_claude(
     env: &SourceEnv,
     plan: &Plan,
     root: &Path,
+    retry_parent: &Path,
     now: i64,
-) -> Result<Probe, &'static str> {
+) -> Result<Probe, (&'static str, Option<i64>)> {
     if let Some(name) = &plan.passive
         && let Some(report) = super::usage_passive::fresh(root, name, env.passive_max_age, now)
     {
+        if let Some(declined) = declined(env, plan, root, retry_parent) {
+            return Ok(declined);
+        }
         return Ok(Probe::read(report, Source::Passive));
     }
     let journals = journals(root);
@@ -294,9 +390,15 @@ fn read_without_claude(
         allow_refresh: plan.allow_refresh,
         cancel: &super::usage_cmd::PROBE_CANCEL,
         timeout: env.timeout,
-        now_ms: chrono::Utc::now().timestamp_millis(),
+        now_ms: env.endpoints.usage_now_ms(),
     };
-    usage_direct::read(&env.endpoints, &req).map(Probe::direct)
+    let location = super::usage_retry::Location {
+        parent: retry_parent,
+        slot: &plan.retry_slot(root),
+    };
+    usage_direct::read(&env.endpoints, &req, location)
+        .map(Probe::direct)
+        .map_err(|failure| (failure.why, failure.retry_until_ms))
 }
 
 /// No direct read off Unix: the credentials checks it needs are Unix-only.
@@ -305,9 +407,10 @@ fn read_without_claude(
     _env: &SourceEnv,
     _plan: &Plan,
     _root: &Path,
+    _retry_parent: &Path,
     _now: i64,
-) -> Result<Probe, &'static str> {
-    Err("unsupported platform")
+) -> Result<Probe, (&'static str, Option<i64>)> {
+    Err(("unsupported platform", None))
 }
 
 // ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ mod probe_reading;
 mod tests_issue_2271_measure;
 
 pub(super) use probe_reading::reading;
-pub use probe_reading::{ProbeLabel, label_of};
+pub use probe_reading::{ProbeLabel, label_for, label_of};
 
 /// Whose login is in `~/.claude`.
 pub enum Live<'a> {
@@ -306,7 +306,7 @@ pub fn measure_ordered(
         eprintln!("{}", usage_cmd::env_credential_warning(var));
     }
     let bound = match mode {
-        ProbeMode::Auto | ProbeMode::Text => claude_bound,
+        ProbeMode::Auto | ProbeMode::Text | ProbeMode::ControlOnly => claude_bound,
         ProbeMode::Ordered | ProbeMode::Direct => direct_bound,
     };
     let reader = Arc::new(reader(
@@ -347,10 +347,11 @@ pub fn measure_ordered(
             gather(&mut fl, &keys, make, Wait::Full)
         }
     };
-    let live = if live.probed() {
-        read.remove(0).1
+    let (live, live_label) = if live.probed() {
+        let (_, probe, label) = read.remove(0);
+        (probe, label)
     } else {
-        live.unprobed()
+        (live.unprobed(), None)
     };
     let mut labels = Vec::new();
     let others = candidates
@@ -367,13 +368,13 @@ pub fn measure_ordered(
             (name, p)
         })
         .collect();
-    (live, others, labels)
+    (live, live_label, others, labels)
 }
 
-/// What [`measure_ordered`] returns: the live probe, each candidate's, and
-/// the labels of the candidates whose probe said nothing about their room.
+/// The live probe and label, all candidate probes, and the unread candidate labels.
 pub type Gathered = (
     Probed,
+    Option<ProbeLabel>,
     Vec<(ProfileName, Probed)>,
     Vec<(ProfileName, ProbeLabel)>,
 );

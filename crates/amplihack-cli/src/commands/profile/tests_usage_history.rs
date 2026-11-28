@@ -72,6 +72,8 @@ fn row(name: &str, rep: UsageReport) -> Row {
         raw: None,
         source: None,
         direct_failure: None,
+        retry_until_ms: None,
+        cached: None,
         spend: super::usage_source::Spend::NotApplicable,
         extra_shape: None,
     }
@@ -83,6 +85,7 @@ fn p(s: Option<u8>, w: u8, w_reset: Option<i64>) -> Point {
         w,
         w_reset,
         s_reset: None,
+        observed_at: None,
         no_session_limit: false,
         passive: false,
     }
@@ -1460,6 +1463,31 @@ mod stale_file {
             unknown: unknown.iter().map(|n| n.to_string()).collect(),
             ..entry(at, points)
         }
+    }
+
+    #[test]
+    fn history_display_ages_a_copied_point_from_its_original_observation() {
+        use super::super::rotate::fresh::MAX_READING_AGE_SECS;
+        use super::super::usage_history::last_observations;
+
+        let r = Root::new();
+        let mut original = p(Some(51), 80, Some(WEEK));
+        original.observed_at = Some(T);
+        r.append(&entry(T, &[("example", original)]), T);
+
+        let mut stale = pp(75, Some(WEEK));
+        stale.observed_at = Some(T + 1);
+        let later = T + 50;
+        r.append(&entry(later, &[("example", stale)]), later);
+        assert_eq!(r.last(later).profiles["example"].observed_at, Some(T));
+
+        let edge = T + MAX_READING_AGE_SECS;
+        let shown = last_observations(&r.root, edge);
+        let point = &shown["example"];
+        assert_eq!(point.observed_at, Some(T));
+        assert_eq!(point.s, Some(51));
+        assert_eq!(point.w, 80);
+        assert!(last_observations(&r.root, edge + 1).is_empty());
     }
 
     #[test]

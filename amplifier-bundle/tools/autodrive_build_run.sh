@@ -101,7 +101,7 @@ own_parent() { # own_parent <dir>: makes <dir> (one level) private when missing
 }
 
 do_setup() {
-  local wt branch base rr cand kind dir src=worktree_setup fallback=false
+  local wt branch base rr cand kind dir src=worktree_setup fallback=false head=""
   wt="$(build_ws_field worktree_path)"; branch="$(build_ws_field branch_name)"; base="$(build_ws_field base_branch)"
   rr="$(build_ws_field runtime_root)"
   build_valid_branch "$branch" || branch=""
@@ -109,6 +109,9 @@ do_setup() {
   build_valid_branch "$base" || base="${RECIPE_VAR_base_branch:-}"
   build_valid_branch "$base" || base=""
   [ -n "$branch" ] && [ -n "$wt" ] || { src=none; branch=""; wt=""; }
+  if [ -n "$wt" ] && [ -d "$wt" ] && [ ! -L "$wt" ]; then
+    head="$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null || true)"
+  fi
   dir=""; kind=""
   for cand in "run-dir|${AMPLIHACK_RUN_DIR:+${AMPLIHACK_RUN_DIR%/}/build-goal}" "runtime-root|${rr:+${rr%/}/build-goal}" "tmpdir|${TMPDIR:-/tmp}"; do
     kind="${cand%%|*}"; cand="${cand#*|}"
@@ -125,8 +128,8 @@ do_setup() {
   [ -n "$dir" ] || { echo "ERROR: autodrive_build_run.sh setup: no usable parent for the state folder (AMPLIHACK_RUN_DIR, the runtime root, TMPDIR)" >&2; exit 1; }
   [ "$kind" = run-dir ] || fallback=true
   mkdir -m 700 -- "$dir/turns" "$dir/no-worktree" || { echo "ERROR: autodrive_build_run.sh setup: the state folder could not be filled" >&2; exit 1; }
-  jq -cn --arg b "$branch" --arg w "$wt" --arg s "$src" --arg base "$base" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{schema_version:1, branch:$b, worktree:$w, source:$s, base:$base, started:$t}' | goal_atomic_write "$dir/identity.json" \
+  jq -cn --arg b "$branch" --arg w "$wt" --arg s "$src" --arg base "$base" --arg h "$head" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{schema_version:1, branch:$b, worktree:$w, source:$s, base:$base, started:$t} + (if $h == "" then {} else {head:$h} end)' | goal_atomic_write "$dir/identity.json" \
     || { echo "ERROR: autodrive_build_run.sh setup: identity.json could not be written" >&2; exit 1; }
   echo "build goal: state folder ${dir} (${kind}); branch ${branch:-unknown}, worktree ${wt:-unknown}" >&2
   # #3102: step-04 links host inputs only when it creates a branch. Linking
@@ -142,6 +145,7 @@ do_setup() {
 
 do_loop() {
   local sd="${1%/}" driver repo scratch rc k
+  STATE="$sd"
   LOOP_SCRATCH=""
   case "$sd" in /*) ;; *) echo "usage: autodrive_build_run.sh loop <absolute state folder>" >&2; exit 2 ;; esac
   [ -d "$sd" ] && [ ! -L "$sd" ] && [ -O "$sd" ] \
@@ -153,6 +157,25 @@ do_loop() {
   . "$HERE/recipe_context_value.sh" || { echo "ERROR: autodrive_build_run.sh loop: recipe_context_value.sh is missing beside it" >&2; exit 2; }
   repo="${RECIPE_VAR_repo_path:-.}"
   repo="$(cd "$repo" 2>/dev/null && pwd -P)" || { echo "ERROR: autodrive_build_run.sh loop: repo_path cannot be entered" >&2; exit 2; }
+  # Older direct callers may provide a state folder without continuation
+  # identity. Preserve their existing loop entry point. Continuations created
+  # by build setup carry identity.json and use recovery when its path is gone.
+  if [ -e "$sd/identity.json" ] && [ ! -L "$sd/identity.json" ]; then
+    build_identity_load || { echo "ERROR: autodrive_build_run.sh loop: the continuation identity could not be read" >&2; exit 2; }
+    build_run_branch || { echo "ERROR: autodrive_build_run.sh loop: the run branch is not known from the continuation identity" >&2; exit 2; }
+    if [ -n "$ID_WORKTREE" ] && [ ! -d "$ID_WORKTREE" ]; then
+      build_worktree_recover "$repo" "$BUILD_BRANCH" "$ID_HEAD"
+      recover_rc=$?
+      case "$recover_rc" in
+        0)
+          jq -c --arg w "$BUILD_WT_PATH" '.worktree = $w | .source = "recovered"' "$sd/identity.json" | goal_atomic_write "$sd/identity.json" \
+            || { echo "ERROR: autodrive_build_run.sh loop: recovered worktree identity could not be written" >&2; exit 2; }
+          ;;
+        2) ;;
+        *) echo "ERROR: autodrive_build_run.sh loop: cannot recover the missing worktree: ${BUILD_WT_WHY}" >&2; exit 2 ;;
+      esac
+    fi
+  fi
   # The scratch folder lives in the private state folder, so the run makes no
   # file outside it.
   scratch="$(mktemp -d "$sd/.build-loop.XXXXXX")" || { echo "ERROR: autodrive_build_run.sh loop: no scratch folder in ${sd}" >&2; exit 1; }

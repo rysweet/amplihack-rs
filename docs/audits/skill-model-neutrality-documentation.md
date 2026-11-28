@@ -30,7 +30,7 @@ The 71-file statement described an earlier staged snapshot; it does not describe
 
 ## Scope and decisions
 
-Filesystem enumeration confirms 130 canonical skills (123 top-level, seven nested), 537 accessible canonical text paths, and 323 mirror text paths containing 81 mirrored skills. All paths were read to establish text coverage; this step does not claim a fresh semantic audit of all their contents. The inventory below identifies each canonical skill and mirror availability.
+The original filesystem enumeration found 130 canonical skills (123 top-level, seven nested), 537 accessible canonical text paths, and 323 mirror text paths containing 81 mirrored skills. All paths were read to establish text coverage. The inventory below reflects the current bundle and its documentation mirrors.
 
 The documentation specifies removal of execution selections, runtime inheritance where supported, explicit required provider configuration, distinct primary/fallback inputs, Azure deployment semantics, and the intended pre-client validation of absent, empty, whitespace-only, and unresolved placeholder values in all three C# examples. The examples and their mirrors reject absent, empty, whitespace-only, and angle-bracket placeholder values with `string.IsNullOrWhiteSpace` and delimiter checks before constructing clients. API parameter names and credentials remain provider-specific. Historical research, poetic forms, and reviewed API context remain allowed; exact exceptions require reasons and cannot cover whole files.
 
@@ -40,7 +40,7 @@ Directory links from `docx` and `pptx` point to canonical `common/ooxml`; `outsi
 
 Earlier statements about whitespace, links, fences, mirror checks, and caller-directory independence lacked revision, exit-code, and log attachments. They remain historical reports, not reproducible evidence for this branch. Parent frontmatter logs likewise omit a recorded tested revision; they are baseline evidence only. Baseline loader failure is retained at `/data/you/sunfixamp-model-neutrality/real-skill-loader-tests.log` (nine omitted identities).
 
-Current production-loader validation checks exactly 130 recursive files, exact name equality, resolved source-directory equality, and nonempty bodies. Unit tests cover optional description, extension round trips, typed metadata rejection, duplicate names, malformed delimiters, and empty bodies. Extension preservation does not add execution semantics.
+At the recorded revision, production-loader validation checked 130 recursive files, exact name equality, resolved source-directory equality, and nonempty bodies. Unit tests cover optional description, extension round trips, typed metadata rejection, duplicate names, malformed delimiters, and empty bodies. Extension preservation does not add execution semantics.
 
 At this historical revision, supporting-YAML, corpus structure/assets, and complete isolated installation coverage were still planned. The follow-up evidence below supersedes the YAML and installation limitations. SDK compilation and provider execution remain unverified; C# configuration rejection is already implemented in all three examples and mirrors, so it is not pending implementation.
 
@@ -73,6 +73,9 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 
 ## Canonical inventory
 
+The current bundle has 114 skill definitions (110 top-level and
+4 nested). 64 have a corresponding documentation mirror.
+
 “Enumerated” records filesystem coverage, not a semantic neutrality pass.
 
 | Canonical skill path | Coverage | Mirror |
@@ -90,9 +93,9 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | cascade-workflow | Enumerated | Yes |
 | chemist-analyst | Enumerated | Yes |
 | claude-agent-sdk | Enumerated | Yes |
+| claude-profile-rotation | Enumerated | No |
 | code-atlas | Enumerated | No |
 | code-philosophy | Enumerated | No |
-| code-visualizer | Enumerated | Yes |
 | computer-scientist-analyst | Enumerated | Yes |
 | consensus-voting | Enumerated | Yes |
 | context-management | Enumerated | No |
@@ -131,7 +134,7 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | indigenous-leader-analyst | Enumerated | Yes |
 | investigation-workflow | Enumerated | Yes |
 | journalist-analyst | Enumerated | Yes |
-| knowledge-extractor | Enumerated | Yes |
+| journalistic-writing-style | Enumerated | No |
 | lawyer-analyst | Enumerated | Yes |
 | learning-path-builder | Enumerated | Yes |
 | lsp-setup | Enumerated | No |
@@ -175,12 +178,14 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | signal | Enumerated | No |
 | signal-setup | Enumerated | No |
 | silent-degradation-audit | Enumerated | No |
+| skill-and-agents-directory | Enumerated | No |
 | skill-builder | Enumerated | Yes |
 | smart-test | Enumerated | No |
 | sociologist-analyst | Enumerated | Yes |
 | socratic-review | Enumerated | No |
 | statler-waldorf | Enumerated | No |
 | storytelling-synthesizer | Enumerated | Yes |
+| supervise-agent-sessions | Enumerated | No |
 | supply-chain-audit | Enumerated | No |
 | test-gap-analyzer | Enumerated | Yes |
 | tla-plus-expert | Enumerated | Yes |

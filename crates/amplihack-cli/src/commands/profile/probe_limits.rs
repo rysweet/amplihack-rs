@@ -58,6 +58,8 @@ pub(super) enum ProbeMode {
     Auto,
     /// `claude -p /usage` only.
     Text,
+    /// Only the `get_usage` control request, after a 429 with no deadline.
+    ControlOnly,
 }
 
 /// The probe method: `direct`, `auto` or `text`, matched exactly. Unset or

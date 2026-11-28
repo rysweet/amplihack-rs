@@ -789,6 +789,7 @@ fn taken_at_and_recent_date_the_reading_the_decision_used() {
     let lg = LastGood {
         reading: rd(10.0, 10.0, None).reading,
         at: t - 1800,
+        observed_at: None,
     };
     assert_eq!(fresh::taken_at(&unread(), t, Some(&lg)), Some(t - 1800));
     assert_eq!(fresh::taken_at(&unread(), t, None), None);

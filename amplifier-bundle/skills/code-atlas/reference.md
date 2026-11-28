@@ -196,7 +196,7 @@ ORDER BY t.step_order
 
 | Language Feature         | Coverage | Notes                                                               |
 | ------------------------ | -------- | ------------------------------------------------------------------- |
-| Python modules (AST)     | 95%      | `python-ast` analyzer via code-visualizer (Python repos only); dynamic imports missed |
+| Python modules (AST)     | 95%      | `python-ast` reads imports using the rules below |
 | Rust modules (cargo)     | 85%      | `rust-cargo-metadata` analyzer: `cargo metadata` + rust-analyzer/ripgrep; macro-heavy code harder |
 | TypeScript/JS routes     | 85%      | Static grep-based; decorated routes (NestJS) require extra patterns |
 | Go routes (chi/gin/echo) | 80%      | Most router patterns covered; generated routes may be missed        |
@@ -204,3 +204,24 @@ ORDER BY t.step_order
 | Rust (axum/actix-web)    | 70%      | Core patterns covered; macro-heavy code harder to parse             |
 | gRPC services            | 60%      | Proto files provide contract; service mesh requires runtime data    |
 | GraphQL APIs             | 40%      | Not a primary target; resolver mapping requires special handling    |
+
+### Reading import edges
+
+Read these forms for the compile-deps and service-components layers.
+
+| Language | Extensions | Import forms |
+| --- | --- | --- |
+| Python | `.py` | `import` and `from … import …` |
+| TypeScript and JavaScript | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs` | `import … from`, `require(...)`, and dynamic `import(...)` |
+| Rust | `.rs` | `use crate::…`, `use super::…`, and `mod …` |
+| Go | `.go` | Single and grouped `import` declarations |
+
+Skip `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `dist`, `build`,
+`target`, `.mypy_cache`, `.pytest_cache`, and `.tox`.
+
+Static pattern matching can miss multiline TypeScript type-only imports, nested
+Rust imports such as `use {a, b::c}`, and Go cgo blocks. Edges represent imports
+and module uses. Runtime calls and cross-language edges are outside this scan.
+Literal dynamic imports can reveal dependencies. Computed import targets are
+outside this scan. Show external imports as unresolved nodes.
+Skip shell scripts. Treat the result as an approximation.

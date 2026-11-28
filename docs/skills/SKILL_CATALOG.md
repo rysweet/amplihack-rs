@@ -11,8 +11,8 @@ to extend the lists or restore the full lists through a managed installation.
 
 ## Summary
 
-- **Unique bundled skill names:** 116
-- **Skill definition files:** 116
+- **Unique bundled skill names:** 114
+- **Skill definition files:** 114
 
 ## Bundled Skills
 
@@ -36,7 +36,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `claude-profile-rotation` | `claude-profile-rotation/SKILL.md` |
 | `code-atlas` | `code-atlas/SKILL.md` |
 | `code-philosophy` | `code-philosophy/SKILL.md` |
-| `code-visualizer` | `code-visualizer/SKILL.md` |
 | `computer-scientist-analyst` | `computer-scientist-analyst/SKILL.md` |
 | `consensus-voting` | `consensus-voting/SKILL.md` |
 | `context-management` | `context-management/SKILL.md` |
@@ -75,7 +74,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `investigation-workflow` | `investigation-workflow/SKILL.md` |
 | `journalist-analyst` | `journalist-analyst/SKILL.md` |
 | `journalistic-writing-style` | `journalistic-writing-style/SKILL.md` |
-| `knowledge-extractor` | `knowledge-extractor/SKILL.md` |
 | `lawyer-analyst` | `lawyer-analyst/SKILL.md` |
 | `learning-path-builder` | `learning-path-builder/SKILL.md` |
 | `lsp-setup` | `lsp-setup/SKILL.md` |

@@ -282,7 +282,7 @@ fn resolver_callers_do_not_fall_back_to_local_branch() {
             }
         }
     }
-    assert_eq!(calls.len(), 16, "resolver calls found: {calls:#?}");
+    assert_eq!(calls.len(), 17, "resolver calls found: {calls:#?}");
     for (path, found, fallback) in &calls {
         assert!(
             !found.contains("2>/dev/null"),

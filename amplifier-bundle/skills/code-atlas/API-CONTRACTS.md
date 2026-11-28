@@ -147,9 +147,9 @@ Override values are applied uniformly across all layers in that invocation.
 
 ---
 
-## 2. Inter-Skill Delegation Contracts
+## 2. Analyzer Modes and Delegation Contracts
 
-Code-atlas delegates to three components. Each contract defines what is passed IN and what is expected BACK.
+Code-atlas selects a dependency analysis mode and delegates diagram generation and investigation as described below.
 
 ---
 
@@ -161,44 +161,19 @@ emits a visible `analyzer_mode` label. **Python is never required for non-Python
 
 | `analyzer_mode`        | Trigger                | Adapter                                                  |
 | ---------------------- | ---------------------- | ------------------------------------------------------- |
-| `python-ast`           | `.py` files detected   | `code-visualizer` skill (optional; Python repos only)   |
+| `python-ast`           | `.py` files detected   | Direct import reading using [reference.md](reference.md#reading-import-edges) |
 | `rust-cargo-metadata`  | `Cargo.toml` detected  | `cargo metadata` + rust-analyzer/ripgrep approximation  |
 | `static-approximation` | any other / fallback   | `analyzer` agent + ripgrep static mapping               |
 
-#### `code-visualizer` adapter (`python-ast` mode only)
+#### `python-ast` mode
 
-**When invoked:** Layer 2 / Layer 7 build, only when `.py` files are detected in the codebase.
+For Layer 2 and Layer 7 builds, code-atlas reads Python `import` and `from … import`
+statements using the [import rules](reference.md#reading-import-edges). It uses the
+modules and import edges it finds to build the atlas layers.
 
-**Input (what code-atlas passes):**
-
-```yaml
-delegation_input:
-  skill: "code-visualizer"
-  task: "analyze-dependencies"
-  payload:
-    module_paths: array<string> # Python module paths to analyse
-    output_format: "mermaid" # code-atlas always requests mermaid from this skill
-    check_staleness: boolean # true if atlas already exists (incremental rebuild)
-```
-
-**Expected output:**
-
-```yaml
-delegation_output:
-  mermaid_source: string          # Valid flowchart TD mermaid syntax
-  modules_found: array<string>    # Canonical module names discovered
-  import_edges: array<Edge>       # [{from: "auth.models", to: "db.session"}]
-  stale_diagrams: array<string>   # Paths of diagrams that are now stale (if staleness checked)
-
-Edge:
-  from: string
-  to: string
-  type: "import" | "from-import" | "relative"
-```
-
-**Fallback:** If `code-visualizer` is unavailable or the repo is non-Python, code-atlas does NOT
-fail. It selects the `rust-cargo-metadata` adapter (Rust repos) or `static-approximation` via the
-`analyzer` agent (§2d), records the resulting `analyzer_mode`, and continues.
+In repositories without Python, code-atlas uses `rust-cargo-metadata` for Rust or
+`static-approximation` via the `analyzer` agent (§2d) and records the resulting
+`analyzer_mode`.
 
 ---
 
@@ -248,7 +223,7 @@ delegation_output:
 
 ---
 
-### 2c. `visualization-architect` Agent
+### 2c. `architect` Agent
 
 **When invoked:**
 
@@ -287,7 +262,7 @@ No markdown. No explanation. Just the DOT.
 
 ### 2d. `analyzer` Agent (conditional)
 
-**When invoked:** First run on an unfamiliar codebase, or when Layer 2 delegation to `code-visualizer` fails for non-Python files.
+**When invoked:** First run on an unfamiliar codebase, or when Layer 2 uses `static-approximation`.
 
 **Input:**
 
@@ -402,7 +377,7 @@ interface StaticSymbolReport {
   mode: "static-approximation"; // MUST be "static-approximation" — never hidden
   language: string;
   query_type: LSPQueryType;
-  symbols: SymbolEntry[]; // Best-effort from ripgrep + code-visualizer AST
+  symbols: SymbolEntry[]; // Best-effort from ripgrep and source inspection
   unreferenced_symbols: string[];
   interface_mismatches: Mismatch[];
   warning: string; // e.g. "Results are approximate. Install an LSP for verified analysis."
@@ -764,15 +739,6 @@ type ErrorCode =
   "message": "graphviz not installed (dot command not found).",
   "file": "docs/atlas/repo-surface/topology.dot",
   "fallback_taken": "Mermaid-only output produced. Install graphviz for SVG render."
-}
-```
-
-```json
-{
-  "layer": 2,
-  "code": "DELEGATION_FAILED",
-  "message": "code-visualizer returned non-mermaid output for Python analysis.",
-  "fallback_taken": "Delegated to analyzer agent instead."
 }
 ```
 

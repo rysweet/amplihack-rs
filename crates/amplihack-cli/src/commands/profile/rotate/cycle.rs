@@ -12,7 +12,7 @@ use super::history;
 use super::identify::LiveId;
 use super::identify::excluded_offline::{exclude_paused, unproven_live};
 use super::ledger::RotateLedger;
-use super::log::{msg, shown, shown_of};
+use super::log::{cycle_shown, msg, shown, shown_of};
 use super::observe::{Measurement, Snap, live_name, platform_block_reason};
 use super::overflow::Tag;
 use super::overflow_record::{
@@ -160,7 +160,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // before the target gate, so the candidate figures on it stay as
     // measured. The `fresh_lines` of both steps are emitted below, so the
     // stale-reading and re-read lines still follow this one.
-    let (live_shown, others_shown) = shown(&m, first.live_excluded, (ctx.now)());
+    let (live_shown, others_shown) = cycle_shown(ctx, &first, &m, (ctx.now)());
     let (name, platform) = (live_name(&first.live), first.shown_platform());
     out.emit(
         now(),

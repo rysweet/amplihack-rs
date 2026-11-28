@@ -45,6 +45,7 @@ fn errored(e: ErrorReason) -> Probe {
         raw: None,
         source: None,
         direct_failure: None,
+        retry_until_ms: None,
         spend: Spend::Unknown,
         extra_shape: None,
     }

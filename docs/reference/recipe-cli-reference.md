@@ -798,23 +798,26 @@ The launcher prints one line to stderr for each step that receives guidance:
 amplihack: operator guidance added to this step's prompt (2 entries, 231 bytes)
 ```
 
-**When guidance is read.** Only when an agent step starts. There are no
-timers and nothing watches the folder. An entry added while a step is running
-reaches the next agent step, not the running one. Bash steps never receive
-guidance.
+**When guidance is read.** When an agent step starts, and, for a step that
+is already running, at its next tool call or prompt through its hooks (see
+[Guidance for a running step](#guidance-for-a-running-step)). There are no
+timers and nothing watches the folder. A running step whose launch form has
+no such hook does not see the entry; the next agent step does, and
+`recipe guide` names the running step to the sender. Bash steps never
+receive guidance.
 
 **Agent CLIs.**
 
 | Agent CLI | Where the block goes |
 | --- | --- |
 | Claude Code, `launch`, RustyClawd, prompt in argv | End of the prompt sent on stdin, after the `-p` text. When input is also piped to `amplihack`, the block comes after that input. |
-| Claude Code in print mode (`-p` or `--print` with no prompt text), prompt already on stdin | The runner's own form, such as `amplihack claude -- --system-prompt-file <file> -p --add-dir .`. After the caller's stdin closes, the block is written to Claude's stdin, so it follows the step's prompt. The block is written only if the caller's stdin gave at least one byte that is not white space; see [Stdin that gives no text](#stdin-that-gives-no-text). The stderr line above and the `guidance_injected` record are written after Claude exits, and only if the block was written in full. |
+| Claude Code in print mode (`-p` or `--print` with no prompt text), prompt already on stdin | The runner's own form, such as `amplihack claude -- --system-prompt-file <file> -p --add-dir .`. After the caller's stdin closes, the block is written to Claude's stdin, so it follows the step's prompt. The block is written only if the caller's stdin gave at least one byte that is not white space; see [Stdin that gives no text](#stdin-that-gives-no-text). The stderr line above and the `guidance_injected` record are written once the block has been written in full, before Claude's stdin is closed, so the step's own hooks see the record. |
 | GitHub Copilot CLI, prompt in argv | End of the `-p <text>` prompt, before it is written to the private prompt file. |
 | GitHub Copilot CLI, no `-p` or `-i`, prompt piped on stdin | After the caller's stdin closes, as for Claude print mode. The help of the pinned Copilot CLI (1.0.114) names piped stdin as a prompt source beside `-i` and `-p`, and Copilot CLI 1.0.114 and 1.0.115 were seen to read a block after the piped prompt. That depends on Copilot, so it is checked by a test run by hand against the installed Copilot, not in CI; see [Checking Copilot's stdin](#checking-copilots-stdin). Delivery is reported only once the block was written in full, so for this route "read" means written in full to Copilot's stdin. If Copilot closed its stdin first, the launch is recorded as a `trailer_not_written` drop. With nothing on stdin it is a `no_prompt_on_stdin` drop. |
 | GitHub Copilot CLI, `-p` with a file reference (the runner's form) | The recipe runner starts every Copilot step as `-p "Read and follow the complete instructions in the file <path>. ..."`. The launcher reads that file, writes its text with the block after it to a private 0600 file, and points Copilot at the copy, granting its folder with `--add-dir` (or relying on path access under the external LiteLLM gateway). The runner's file is never written. If the file cannot be read or the copy cannot be written, the caller's reference is passed on unchanged and the launch is recorded as a `prompt_file_not_copied` drop. With no private file Copilot could open (the gateway without path access), it is a `launch_form_unsupported` drop. |
 | GitHub Copilot CLI, `-i` | No guidance; recorded as a `launch_form_unsupported` drop. |
 | Claude Code with `--input-format` other than `text` | No guidance; recorded as a `launch_form_unsupported` drop. With `stream-json` input (#3036), stdin is a stream of JSON lines, and plain text after it would corrupt the stream. |
-| Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written, if that stdin gave text. The stderr line above and the `guidance_injected` record are written after Codex exits, and only if the block was written and flushed to Codex's stdin in full. If Codex closed its stdin first, neither is written and the launch is recorded as a `trailer_not_written` drop. With nothing on stdin, it is a `no_prompt_on_stdin` drop. Other Codex forms receive no guidance and are recorded as drops. |
+| Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written, if that stdin gave text. The stderr line above and the `guidance_injected` record are written once the block has been written and flushed to Codex's stdin in full, before that stdin is closed. If Codex closed its stdin first, neither is written and the launch is recorded as a `trailer_not_written` drop. With nothing on stdin, it is a `no_prompt_on_stdin` drop. Other Codex forms take guidance through their hooks when they have amplihack's hooks, and are recorded as drops otherwise. |
 
 Every runner agent step therefore takes guidance, whether its prompt arrives in
 argv or already on stdin, and the block always comes after the step's own
@@ -868,6 +871,70 @@ written in full. Issue
 [#3225](https://github.com/rysweet/amplihack-rs/issues/3225) tracks the
 automated check.
 
+### Guidance for a running step
+
+An entry appended while an agent step runs reaches that step at its next
+tool call or prompt, once (issue #3435). Each agent launch inside a recipe
+run gets a new step id, which the launcher exports to the agent as
+[`AMPLIHACK_GUIDANCE_STEP_ID`](./environment-variables.md#amplihack_guidance_step_id).
+The step's PostToolUse and UserPromptSubmit hooks run the internal command
+`amplihack recipe guidance deliver`. It prints the block of the entries the
+step has not been given yet, in the form shown above, and records them in a
+`guidance_injected` record with the step's `step_id`. The hook adds the block
+to the context it returns, after any context it already adds and one blank
+line. Hook output with no new entries is unchanged.
+
+An entry is given to a step once: at launch, or by the first hook that runs
+after it was appended. The launcher records the entries it put in the prompt
+with the same `step_id`, so the hooks do not give them again. A step launched
+later has a new id and receives every entry at launch, as before. The hook
+takes an exclusive lock on each folder's `guidance.log`, in one fixed order,
+while it reads what the step was given and writes the record, so hooks of
+parallel tool calls give an entry once. The lock waits until it is free; there
+is no timeout, poll or retry. Outside a recipe run the hooks start no process.
+
+Which launch forms have such a hook:
+
+| Tool | Has a hook |
+| --- | --- |
+| Claude Code (interactive, `-p`, any input format) | When the launch passes amplihack's hooks settings file (`--settings <amplihack home>/runtime/launch-hooks-settings.json`). A launch that skips the file (the caller passed `--settings`, the LiteLLM proxy is in use, the binary is older than the install, no hooks binary, or the amplihack home is not private) counts as having none, even if `~/.claude/settings.json` may still run the hooks, because delivery cannot be counted on. |
+| Codex (`exec` with or without stdin, and interactive) | When `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) holds amplihack's PostToolUse and UserPromptSubmit handlers, `config.toml` does not set `[features] hooks = false`, and the arguments do not switch hooks off (`-c features.hooks=false`, `--disable hooks`). A local-model launch has none. |
+| GitHub Copilot CLI | None. |
+
+A launch form that no prompt can take (an interactive Claude launch, Claude
+with an `--input-format` other than `text`, a Codex form other than
+`exec … -`) is no longer a `launch_form_unsupported` drop when it has a hook:
+its first prompt or tool call gives it the entries. A hook that runs still
+gives guidance, whatever the launch recorded.
+
+The table above is the launch's judgement, read from settings files, not
+proof that a hook fires. The hooks binary may be missing, hooks may be
+switched off in a layer the launch does not read, or the harness may not
+fire the event in that form. So a step judged to have a hook is recorded at
+launch in a `guidance_step_hooked` record, and the first hook of that step
+that reaches `amplihack recipe guidance deliver` writes a
+`guidance_step_hook_seen` record. While a hooked step is running and no
+such record names it, `recipe guide` names it as not yet confirmed (see
+[Output and exit codes](#output-and-exit-codes)). This is reported from what
+the log shows; there is no timer.
+
+A step with no hook is recorded at launch in a `guidance_step_unhooked`
+record (see [The guidance log](#the-guidance-log)). While that step is still
+running, `recipe guide` names it after its status line (see
+[Output and exit codes](#output-and-exit-codes)), so the sender knows at once
+that the running step will not see the entry. The step is running while the
+launcher process the record names is alive with the same start time.
+
+If the hook cannot give the entries, the tool call or prompt goes on as
+before: the hook's output and exit status do not change. The failure is
+recorded as a `hook_delivery_failed` drop where the log can be written,
+which `recipe guide` and `recipe guidance show` report, and the hook writes
+one line on stderr. `deliver` records the drop itself when it runs and
+fails, and then exits 1. The hooks binary records it when it cannot find or
+start `amplihack`, or when `deliver` ends with any other status (for
+example an older `amplihack` without the command). A drop written by the
+hooks binary carries no `entries` field.
+
 ### When a step cannot take guidance
 
 When guidance exists for a step and the step cannot take it, the launcher does
@@ -892,7 +959,8 @@ step id is not exported to the agent process, so it is not named.
 | --- | --- |
 | `no_prompt_on_stdin` | A launch that reads its prompt from stdin (Claude print mode with no prompt text, Codex `exec … -`, Copilot with no prompt flag) whose stdin gave no text. When stdin is a terminal, `/dev/null` or an empty file, this is known at launch: no forwarder is started, so the launch does not wait. When stdin is a pipe or a file that gave nothing but white space, or no text before the agent exited, the drop is recorded after the agent exits; see [Stdin that gives no text](#stdin-that-gives-no-text). |
 | `trailer_not_written` | The block was to follow the prompt on stdin, but the tool closed its stdin before the whole block was written. |
-| `launch_form_unsupported` | The launch form has no place for the block, such as an interactive Claude launch, a Claude launch whose `--input-format` is not `text`, a Copilot `-i` launch, a Copilot `-p` file reference with no private file Copilot could open, or a Codex form other than `exec … -`. |
+| `launch_form_unsupported` | The launch form has no place for the block and the step has no hook that gives a running step guidance, such as a Copilot `-i` launch, a Copilot `-p` file reference with no private file Copilot could open, or an interactive Claude launch, a Claude launch whose `--input-format` is not `text`, or a Codex form other than `exec … -` without amplihack's hooks (see [Guidance for a running step](#guidance-for-a-running-step)). |
+| `hook_delivery_failed` | A hook of a running step could not give it new guidance, for example because a guidance log could not be locked or read, or the hook could not run `amplihack recipe guidance deliver`. The tool call or prompt went on without it. The `tool` is the step's tool and the `launch_form` is `hook of a running step`. |
 | `prompt_file_not_copied` | A Copilot `-p` file reference, the runner's form, whose file could not be read or whose private copy could not be written. The launch goes on with the caller's reference. |
 
 The `launch_form` labels of this release:
@@ -947,11 +1015,12 @@ An append writes:
 ```
 
 An agent step that received guidance writes to the log of each folder it
-read. When the block is part of a prompt given in argv, this happens once the
-agent process has started. When the block follows a prompt on stdin (Claude
-print mode, Codex `exec … -`, Copilot with no prompt flag), it happens after
-the agent exits, and only when the block was written to the agent's stdin in
-full; see [Agent CLIs](#what-the-agent-receives). A successful write means
+read. When the block is part of a prompt in a file (Copilot `-p`), this
+happens once the agent process has started. When the block goes to the
+agent's stdin (Claude `-p`, Codex `exec … -`, Copilot with no prompt flag), it
+happens once the block has been written to the agent's stdin in full, before
+that stdin is closed, so a step's hooks always see what its prompt held; see
+[Agent CLIs](#what-the-agent-receives). A successful write means
 the pipe accepted the bytes, not that the agent read them.
 
 ```json
@@ -972,6 +1041,37 @@ A step that could not take guidance writes:
 `agent` is left out when the command line gives none. `launch_form` is a fixed
 label and holds no command-line text. Readers from 1.2.215 skip the new field
 and the new event.
+
+A `guidance_injected` record may also carry `step_id`, the step given the
+entries (see [Guidance for a running step](#guidance-for-a-running-step)).
+The launcher writes it for the entries in a step's prompt, and the step's
+hooks write one for each later delivery, whose `entry_names` lists only the
+new entries. The entries a step has been given are the union of
+`entry_names` over the records with its `step_id`. `step_run_id` is still the
+run id.
+
+```json
+{"event":"guidance_injected","ts":"2026-11-28T00:18:41.104221830Z","step_run_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81","entries":1,"bytes":88,"entry_names":["20261127T234531.002114920Z-48390-0.md"],"step_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81-3f0c9a1e5b7d4e2a8c6b1d9f0e3a7c5b"}
+```
+
+A step whose launch form has no hook that gives a running step guidance
+writes, at launch, whether or not there is guidance yet:
+
+```json
+{"event":"guidance_step_unhooked","ts":"2026-11-28T00:18:40.001934112Z","step_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81-9d2e4b6a8c0f1e3d5b7a9c2e4f6a8b0d","step_run_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81","tool":"copilot","launch_form":"copilot -p <prompt file>","pid":48390,"start":9876543}
+```
+
+`pid` and `start` name the launcher process, which lives as long as the step.
+`start` is its start time in clock ticks since boot, left out where the
+system does not give it. Readers that do not know the event skip it.
+
+A step judged at launch to have such a hook writes a `guidance_step_hooked`
+record with the same fields. The first hook run of that step that reaches
+`amplihack recipe guidance deliver` writes, once per step and folder:
+
+```json
+{"event":"guidance_step_hook_seen","ts":"2026-11-28T00:18:52.330118204Z","step_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81-3f0c9a1e5b7d4e2a8c6b1d9f0e3a7c5b","step_run_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81"}
+```
 
 No record holds the guidance text. A refused append is reported on
 stderr only and is not logged. If the entry is written but the log line
@@ -1055,6 +1155,33 @@ CODE: DETAIL`. A drop earlier than a successful injection is not repeated.
 The drop concerns guidance that existed when the step started, which may be an
 earlier entry than the one just written; use `recipe guidance show` to see
 which.
+
+**Running steps that will not see the entry.** For each step that is still
+running and has no hook that gives a running step guidance (a
+`guidance_step_unhooked` record whose launcher is alive), one line follows
+the status line, once per step:
+
+```text
+not reachable while running: step 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15-9d2e4b6a8c0f1e3d5b7a9c2e4f6a8b0d, copilot (copilot -p <prompt file>) in run 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15: this launch form has no hook that gives a running step new guidance; the entry stays for later steps
+```
+
+The format is `not reachable while running: step STEP_ID, TOOL
+(LAUNCH_FORM)[ agent AGENT] in run RUN_ID: DETAIL`. Match the prefix. The
+append itself is unchanged and the exit code stays 0.
+
+**Running steps whose hook is not yet confirmed.** For each step that is
+still running, was judged at launch to have a hook (a `guidance_step_hooked`
+record whose launcher is alive), and has no `guidance_step_hook_seen` record
+in any folder written, one line follows the status line, once per step:
+
+```text
+not yet confirmed: step 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15-3f0c9a1e5b7d4e2a8c6b1d9f0e3a7c5b, claude (claude, interactive) in run 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15: no hook of this step has run since it started, so nothing yet shows that it will be given the entry; the entry stays for later steps
+```
+
+The format is `not yet confirmed: step STEP_ID, TOOL (LAUNCH_FORM)[ agent
+AGENT] in run RUN_ID: DETAIL`. Match the prefix. A step that has made no
+tool call or prompt since it started is named too: until a hook runs,
+nothing shows that it will.
 
 If a folder's `guidance.log` exists but cannot be read, its drops are
 unknown, and this line is printed in place of its drop lines:
