@@ -182,13 +182,15 @@ build_run_branch() {
 # workflow_remote_branch.sh resolves a valid <branch>--wt-<n> alias that tracks
 # origin/<branch>. An alias with another upstream is never a match.
 build_worktree_branch_matches() {
-  local path="$1" branch="$2" listed_branch="$3" resolved="" resolver=""
+  local path="$1" branch="$2" listed_branch="$3" resolved=""
   [ "$listed_branch" = "refs/heads/$branch" ] && return 0
-  case "$listed_branch" in refs/heads/*) ;; *) return 1 ;; esac
+  case "$listed_branch" in
+    "refs/heads/$branch--wt-"[1-9]*) ;;
+    *) return 1 ;;
+  esac
   [ -d "$path" ] && [ ! -L "$path" ] || return 1
   [ -f "$_BUILD_LIB_HOME/workflow_remote_branch.sh" ] || return 1
-  resolver="$_BUILD_LIB_HOME/workflow_remote_branch.sh"
-  resolved="$(bash "$resolver" "$path")" || return 1
+  resolved="$(bash "$_BUILD_LIB_HOME/workflow_remote_branch.sh" "$path")" || return 1
   [ "$resolved" = "$branch" ]
 }
 
