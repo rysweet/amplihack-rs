@@ -11,6 +11,25 @@ trap 'rm -rf -- "$WORK"' EXIT
 PASS=0; FAIL=0
 ok() { local name="$1"; shift; if "$@"; then PASS=$((PASS + 1)); echo "PASS $name"; else FAIL=$((FAIL + 1)); echo "FAIL $name" >&2; fi; }
 
+failed_turn_log_count() {
+  awk '/^auto-drive goal loop: turn [0-9][0-9]* failed / { count++ } END { print count + 0 }' "$1"
+}
+
+log_names_failed_turns() {
+  local log="$1" expected turn detail line index=1
+  shift
+  [ "$(failed_turn_log_count "$log")" -eq "$#" ] || return 1
+  for expected in "$@"; do
+    turn="${expected%%|*}"
+    detail="${expected#*|}"
+    line="$(awk -v wanted="$index" '/^auto-drive goal loop: turn [0-9][0-9]* failed / { count++; if (count == wanted) print }' "$log")"
+    [ -n "$line" ] || return 1
+    printf '%s\n' "$line" | grep -F -- "turn ${turn} failed" >/dev/null || return 1
+    printf '%s\n' "$line" | grep -F -- "$detail" >/dev/null || return 1
+    index=$((index + 1))
+  done
+}
+
 make_loop_case() {
   local name="${1:-loop}" c base wrapper
   c="$WORK/$name"; base="$WORK/bin/amplihack"; wrapper="$WORK/bin/amplihack-wrapper"
@@ -78,7 +97,8 @@ ok one_owner_wait test "$(cat "$STUB_STATE/owner_waits" 2>/dev/null || echo 0)" 
 ok fresh_turn_after_guidance test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
 ok failure_detail_recorded jq -e '.failure.class == "environmental" and .failure.detail == "untrusted bundle"' "$LOOP_CASE/state/turns/001/result.json" >/dev/null
 ok wait_result_is_guidance jq -e '.outcome == "guidance-arrived"' "$LOOP_CASE/state/turns/002/result.json" >/dev/null
-ok each_failed_turn_is_logged test "$(wc -l < "$LOOP_CASE/run.log")" -ge 2
+ok each_failed_turn_is_logged log_names_failed_turns "$LOOP_CASE/run.log" \
+  '1|untrusted bundle' '2|untrusted bundle'
 
 # Usage-limit failures emitted before the decide step take the same pairwise
 # owner wait as every other structured pre-agent failure.
@@ -86,9 +106,10 @@ IFS='|' read -r LIMIT_CASE LIMIT_BIN LIMIT_BASE < <(make_loop_case usage_limit)
 LIMIT_OUT='amplihack.recipe.failure_class {"class":"usage_limit","signal":"ERROR: Your workspace is out of credits. Add credits to continue.","retryable":false,"completed_steps":[],"failed_steps":[]}'
 export BASE_STUB="$LIMIT_BASE" STUB_STATE="$LIMIT_CASE/stub" STUB_RC_1=1 STUB_RC_2=1 STUB_OUT_1="$LIMIT_OUT" STUB_OUT_2="$LIMIT_OUT"
 mkdir -p "$STUB_STATE"
+touch "$LIMIT_CASE/run.log"
 set +e
 ( cd "$LIMIT_CASE" && HOME="$WORK/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 PATH="$WORK/bin:$PATH" \
-    AMPLIHACK_BIN="$LIMIT_BIN" bash "$LIMIT_CASE/bundle/tools/autodrive_goal_loop.sh" \
+    AMPLIHACK_BIN="$LIMIT_BIN" AMPLIHACK_RECIPE_LOG="$LIMIT_CASE/run.log" bash "$LIMIT_CASE/bundle/tools/autodrive_goal_loop.sh" \
       --goal-tool issue_3424_goal.sh --goal-file goal.md --repo "$LIMIT_CASE" --state-dir "$LIMIT_CASE/state" </dev/null ) \
   > "$LIMIT_CASE/out" 2> "$LIMIT_CASE/err"
 LIMIT_RC=$?
@@ -97,20 +118,29 @@ ok usage_limit_pre_agent_wait test "$LIMIT_RC" -eq 0
 ok usage_limit_one_handoff test "$(cat "$STUB_STATE/publishes" 2>/dev/null || echo 0)" -eq 1
 ok usage_limit_one_owner_wait test "$(cat "$STUB_STATE/owner_waits" 2>/dev/null || echo 0)" -eq 1
 ok usage_limit_fresh_turn_after_guidance test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
+ok usage_limit_failed_turns_logged log_names_failed_turns "$LIMIT_CASE/run.log" \
+  '1|ERROR: Your workspace is out of credits. Add credits to continue.' \
+  '2|ERROR: Your workspace is out of credits. Add credits to continue.'
 
 run_marker_case() {
-  local label="$1" class="$2" first="$3" second="$4" third="${5:-}" expected_wait="$6" marker1 marker2 marker3
+  local label="$1" class="$2" first="$3" second="$4" third="${5:-}" expected_wait="$6" marker1 marker2 marker3 second_detail third_detail
   IFS='|' read -r CASE BIN BASE < <(make_loop_case "$label")
   marker1="amplihack.recipe.failure_class {\"class\":\"$class\",\"signal\":\"$first\",\"retryable\":false,\"completed_steps\":[\"read\"],\"failed_steps\":[\"decide\"]}"
   marker2=""
   [ -n "$second" ] && marker2="amplihack.recipe.failure_class {\"class\":\"$class\",\"signal\":\"$second\",\"retryable\":false,\"completed_steps\":[\"read\"],\"failed_steps\":[\"decide\"]}"
+  second_detail="$second"
+  [ -n "$second_detail" ] || second_detail="unmarked failure"
   marker3=""
   [ -n "$third" ] && marker3="amplihack.recipe.failure_class {\"class\":\"$class\",\"signal\":\"$third\",\"retryable\":false,\"completed_steps\":[\"read\"],\"failed_steps\":[\"decide\"]}"
-  export BASE_STUB="$BASE" STUB_STATE="$CASE/stub" STUB_RC_1=1 STUB_RC_2=1 STUB_RC_3=1 STUB_OUT_1="$marker1" STUB_OUT_2="$marker2" STUB_OUT_3="$marker3"
+  third_detail="$third"
+  [ -n "$third_detail" ] || third_detail="unmarked failure"
+  export BASE_STUB="$BASE" STUB_STATE="$CASE/stub" STUB_RC_1=1 STUB_RC_2=1 STUB_RC_3=1 \
+    STUB_OUT_1="$marker1" STUB_OUT_2="${marker2:-unmarked failure}" STUB_OUT_3="${marker3:-unmarked failure}"
   mkdir -p "$STUB_STATE"
+  touch "$CASE/run.log"
   set +e
   ( cd "$CASE" && HOME="$WORK/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 PATH="$WORK/bin:$PATH" \
-      AMPLIHACK_BIN="$BIN" bash "$CASE/bundle/tools/autodrive_goal_loop.sh" \
+      AMPLIHACK_BIN="$BIN" AMPLIHACK_RECIPE_LOG="$CASE/run.log" bash "$CASE/bundle/tools/autodrive_goal_loop.sh" \
         --goal-tool issue_3424_goal.sh --goal-file goal.md --repo "$CASE" --state-dir "$CASE/state" </dev/null ) \
     > "$CASE/out" 2> "$CASE/err"
   rc=$?
@@ -118,6 +148,8 @@ run_marker_case() {
   ok "${label}_exit" test "$rc" -eq 0
   ok "${label}_waits" test "$(cat "$STUB_STATE/owner_waits" 2>/dev/null || echo 0)" -eq "$expected_wait"
   ok "${label}_rounds" test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
+  ok "${label}_failed_turns_logged" log_names_failed_turns "$CASE/run.log" \
+    "1|$first" "2|$second_detail" "3|$third_detail"
 }
 
 run_marker_case failed_decide_same environmental "workspace unavailable" "workspace unavailable" "" 1
