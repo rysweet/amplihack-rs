@@ -141,7 +141,7 @@ fn codex_plugin_install_update_uninstall_preserves_user_configuration_and_resour
     let mut packaged_roots = Vec::new();
     skill_roots(&canonical, &mut canonical_roots);
     skill_roots(&package.join("skills"), &mut packaged_roots);
-    assert!(canonical_roots.len() >= 121, "canonical all121 fixture");
+    assert!(canonical_roots.len() >= 116, "canonical all116 fixture");
     for original in canonical_roots {
         let body = fs::read_to_string(original.join("SKILL.md")).unwrap();
         let name = body

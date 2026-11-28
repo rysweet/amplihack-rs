@@ -118,7 +118,7 @@ fn a_base_name_that_looks_like_an_option_or_climbs_never_reaches_git() {
 fn exit_79_from_gh_ends_the_run_and_nothing_is_merged() {
     let h = Harness::new();
     h.set_checks("build\tpending\t0\thttps://example.invalid\n");
-    h.checks_exit_79();
+    h.ci_wait_exit_79();
     h.policy(r#"echo '{"action":"wait","args":{"required":true},"why":"Waiting."}'"#);
     let out = h.drive("auto-drive-to-merge", &["no_merge=false"]);
     assert!(!out.status.success(), "{}", describe(&out));

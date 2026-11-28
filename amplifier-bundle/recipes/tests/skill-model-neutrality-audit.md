@@ -145,7 +145,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | auto-drive-to-merge | Pass | Yes |
 | azure-admin | Pass | Yes |
 | azure-devops | Pass | No |
-| backlog-curator | Pass | Yes |
 | biologist-analyst | Pass | Yes |
 | cascade-workflow | Pass | Yes |
 | chemist-analyst | Pass | Yes |
@@ -170,7 +169,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | dotnet-install | Pass | No |
 | dotnet10-pack-tool | Pass | No |
 | dynamic-debugger | Pass | Yes |
-| e2e-outside-in-test-generator | Pass | No |
 | economist-analyst | Pass | Yes |
 | email-drafter | Pass | Yes |
 | engineer-analyst | Pass | Yes |
@@ -228,7 +226,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | quality-audit | Pass | Yes |
 | repository-oom-audit | Pass | No |
 | research/researching-topics | Pass | Yes |
-| roadmap-strategist | Pass | Yes |
 | self-improving-agent-builder | Pass | No |
 | session-learning | Pass | No |
 | session-replay | Pass | No |
@@ -250,7 +247,5 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | transcript-viewer | Pass | Yes |
 | urban-planner-analyst | Pass | Yes |
 | verus-expert | Pass | Yes |
-| work-delegator | Pass | Yes |
 | work-iq | Pass | No |
-| workstream-coordinator | Pass | Yes |
 | xlsx | Pass | Yes |

@@ -1,92 +1,76 @@
-//! The real PR goal's check wait with the stand-in gh and guidance command.
+//! The CI wait uses the interval from #3378 with and without a guidance wake.
 
 #![cfg(target_os = "linux")]
 
-use super::support::{Harness, PR, describe};
-use crate::support::fifo_release;
-use serde_json::json;
+use super::ci_wait::{fake_sleep, goal, read_and_decide, sleeps};
+use super::support::{Harness, describe};
+use serde_json::Value;
 use std::fs;
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
+use std::os::unix::fs::DirBuilderExt;
 
-fn run_wait(value: Option<&str>, guidance: bool) -> Harness {
+fn run_wait(value: Option<&str>, guidance: bool) -> (Vec<u64>, usize) {
     let h = Harness::new();
-    let turn = h.state.join("turns/0001");
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&turn)
-        .unwrap();
-    fs::write(
-        turn.join("decision.json"),
-        json!({"action":"wait","args":{"required":true}}).to_string(),
-    )
-    .unwrap();
-    fs::write(
-        turn.join("reading.json"),
-        json!({"goal":{"checks":{"required_known":true}}}).to_string(),
-    )
-    .unwrap();
-    let mut command = h.tool_command("autodrive_pr_goal.sh");
-    command
-        .args(["act", "wait", turn.to_str().unwrap()])
-        .env("AUTODRIVE_GOAL_CONTRACT", "1")
-        .env("AUTODRIVE_STATE_DIR", &h.state)
-        .env("AMPLIHACK_BIN", h.bin.join("amplihack"))
-        .env("RECIPE_VAR_pr_number", PR)
-        .env_remove("AMPLIHACK_RUN_GUIDANCE_DIRS")
-        .env_remove("RECIPE_VAR_checks_watch_interval");
+    h.set_checks("build\tpending\t0\n");
+    read_and_decide(&h, true);
+    let turn = h.state.join("turns/001");
+    let path = turn.join("reading.json");
+    let mut reading: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    reading["goal"]["guidance_target"] = Value::Null;
+    fs::write(path, reading.to_string()).unwrap();
+    fake_sleep(
+        &h,
+        r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
+printf 'build\tpass\t0\n' > "$GH_STATE/checks""#,
+    );
+    let mut command = goal(&h, &["act", "wait"]);
     if guidance {
-        command.env("AMPLIHACK_RUN_GUIDANCE_DIRS", h.state.join("guidance"));
+        let directory = h.state.join("guidance");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        command.env("AMPLIHACK_RUN_GUIDANCE_DIRS", directory);
     }
     if let Some(value) = value {
         command.env("RECIPE_VAR_checks_watch_interval", value);
     }
-
-    let mut live = fifo_release::start(command, &h.gh.join("release.fifo"), "the check wait");
-    let wake = h.state.join("guidance-wake");
-    let armed = wake.read_dir().is_ok_and(|mut entries| {
-        entries.any(|entry| entry.unwrap().file_type().unwrap().is_fifo())
-    });
-    assert_eq!(armed, guidance);
-    let out = live.finish();
+    let out = command.output().unwrap();
     assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(h.result("0001")["outcome"], "checks-complete");
-    h
+    assert_eq!(h.result("001")["checks_state"], "passed");
+    assert_eq!(h.state.join("guidance-wake").is_dir(), guidance);
+    let diagnostics = fs::read_to_string(turn.join("wait.err")).unwrap();
+    (sleeps(&h), diagnostics.lines().count())
 }
 
 #[test]
-fn checks_watch_interval_unset_uses_the_gh_default() {
-    let h = run_wait(None, true);
-    assert_eq!(h.watch_calls(), ["pr checks 7 --watch --required"]);
-}
-
-#[test]
-fn checks_watch_interval_is_passed_when_guidance_is_armed() {
-    for value in ["120", "9223372036"] {
-        let h = run_wait(Some(value), true);
-        assert_eq!(
-            h.watch_calls(),
-            [format!("pr checks 7 --watch --required --interval {value}")]
-        );
+fn an_empty_interval_uses_the_default_with_no_diagnostic() {
+    let baseline = run_wait(Some("120"), true);
+    assert_eq!(baseline.0, [120]);
+    for value in [None, Some("")] {
+        assert_eq!(run_wait(value, true), baseline);
     }
 }
 
 #[test]
-fn checks_watch_interval_is_passed_when_the_watch_runs_alone() {
-    let h = run_wait(Some("120"), false);
-    assert_eq!(
-        h.watch_calls(),
-        ["pr checks 7 --watch --required --interval 120"]
-    );
+fn the_configured_interval_is_used_when_guidance_is_available() {
+    for value in [37, 9_223_372_036_u64] {
+        assert_eq!(run_wait(Some(&value.to_string()), true).0, [value]);
+    }
 }
 
 #[test]
-fn checks_watch_interval_invalid_values_use_the_gh_default() {
-    for value in ["abc", "0", "-5", "9223372037", "9999999999"] {
-        let h = run_wait(Some(value), true);
+fn the_configured_interval_is_used_when_the_guidance_wake_is_unavailable() {
+    assert_eq!(run_wait(Some("37"), false).0, [37]);
+}
+
+#[test]
+fn an_invalid_interval_uses_the_default_and_reports_it_once() {
+    // Count diagnostics relative to the same command with a valid setting.
+    let (_, baseline) = run_wait(Some("120"), true);
+    for value in ["abc", "0", "-5", "037", "9223372037", "9999999999"] {
         assert_eq!(
-            h.watch_calls(),
-            ["pr checks 7 --watch --required"],
+            run_wait(Some(value), true),
+            (vec![120], baseline + 1),
             "{value}"
         );
     }

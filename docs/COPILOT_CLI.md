@@ -817,8 +817,7 @@ gh copilot suggest -a .github/agents/amplihack/core/builder.md \
 - **knowledge-extractor**: Learning capture
 - **mermaid-diagram-generator**: Architecture diagrams
 - **learning-path-builder**: Technology onboarding
-- **work-delegator**: Task distribution
-- **workstream-coordinator**: Parallel workflow management
+- **pm-architect**: Backlog, delegation, workstream tracking, and roadmap planning
 - **storytelling-synthesizer**: Narrative generation
 
 ### Utility Skills (10+)
@@ -826,8 +825,6 @@ gh copilot suggest -a .github/agents/amplihack/core/builder.md \
 - **context_management**: Token monitoring, context optimization
 - **skill-builder**: Creating new skills
 - **mcp-manager**: MCP server configuration
-- **backlog-curator**: Backlog management
-- **roadmap-strategist**: Roadmap planning
 - **test-gap-analyzer**: Test coverage analysis
 - **reviewing-code**: Code and PR review
 

@@ -634,14 +634,14 @@ whether the bundled skill needs a refresh.
 
 ### Documentation
 
-- **Complete Skill Guide**: `SKILL.md` - Core guide of 765 lines, with `reference.md`, `practice.md` and `parity-and-shadow.md` beside it
+- **Complete Skill Guide**: `SKILL.md` - Core guide of 766 lines, with `reference.md`, `practice.md`, `parity-and-shadow.md` and `writing-e2e-tests.md` beside it
 - **Examples**: `examples/` - 15 complete working examples
 - **Framework Repo**: https://github.com/rysweet/gadugi-agentic-test
 
 ### Getting Help
 
 - Review examples in `examples/` directory
-- Check `SKILL.md`, `reference.md`, `practice.md` and `parity-and-shadow.md` for detailed explanations
+- Check `SKILL.md`, `reference.md`, `practice.md`, `parity-and-shadow.md` and `writing-e2e-tests.md` for detailed explanations
 - See troubleshooting section in `practice.md`
 - Open issues at: https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues
 

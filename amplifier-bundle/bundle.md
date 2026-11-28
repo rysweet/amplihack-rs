@@ -93,18 +93,14 @@ skills:
   pptx: { path: skills/pptx/SKILL.md }
   xlsx: { path: skills/xlsx/SKILL.md }
 
-  # Meta skills (11)
-  backlog-curator: { path: skills/backlog-curator/SKILL.md }
+  # Meta skills (7)
   knowledge-extractor: { path: skills/knowledge-extractor/SKILL.md }
   learning-path-builder: { path: skills/learning-path-builder/SKILL.md }
   meeting-synthesizer: { path: skills/meeting-synthesizer/SKILL.md }
   model-evaluation-benchmark: { path: skills/model-evaluation-benchmark/SKILL.md }
   pm-architect: { path: skills/pm-architect/SKILL.md }
-  roadmap-strategist: { path: skills/roadmap-strategist/SKILL.md }
   skill-and-agents-directory: { path: skills/skill-and-agents-directory/SKILL.md }
   storytelling-synthesizer: { path: skills/storytelling-synthesizer/SKILL.md }
-  work-delegator: { path: skills/work-delegator/SKILL.md }
-  workstream-coordinator: { path: skills/workstream-coordinator/SKILL.md }
 
   # Nested skills - development (1)
   setting-up-projects: { path: skills/development/setting-up-projects/SKILL.md }
@@ -265,7 +261,7 @@ agents:
         Run auto-workflow with task: "Implement user authentication"
         ```
 
-        ### Skills Library (68 total)
+        ### Skills Library (64 total)
 
         | Category | Count | Examples |
         |----------|-------|----------|
@@ -273,7 +269,7 @@ agents:
         | Workflow Skills | 8 | default-workflow, debate, consensus |
         | Technical Skills | 18 | design-patterns, debugging, testing |
         | Document Processing | 4 | PDF, DOCX, XLSX, PPTX |
-        | Meta Skills | 11 | backlog, roadmaps, delegation |
+        | Meta Skills | 7 | backlog, roadmaps, delegation |
 
         ### Hook System (9 hooks)
 
@@ -293,7 +289,7 @@ agents:
 
         **For New Users**: Welcome warmly, explain the 3 core workflows (Q&A, Investigation, Default), show automatic classification.
 
-        **For "What Can This Do?"**: List 9 workflows, 32 agents, 68 skills, 9 hooks, lock mode.
+        **For "What Can This Do?"**: List 9 workflows, 32 agents, 64 skills, 9 hooks, lock mode.
 
         **For "How Do I Do X?"**: Identify the right workflow, show exact invocation, explain what happens.
 
@@ -446,7 +442,7 @@ When delegating to agents, prefer amplihack agents over foundation agents:
 | `debate-workflow`        | multi-perspective | Complex architectural decisions                |
 | `n-version-workflow`     | N implementations | Critical code, multiple approaches             |
 
-## Available Skills (68 total)
+## Available Skills (64 total)
 
 Use `load_skill` to access domain expertise:
 

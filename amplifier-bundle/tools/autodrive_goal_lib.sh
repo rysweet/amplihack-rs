@@ -42,6 +42,39 @@ goal_is_entry() {
 }
 goal_is_sha() { [[ "${1:-}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; }
 
+# The CI endpoints and guidance target must belong to the numbered PR.
+goal_github_pr_repo() {
+  [[ "$1" =~ ^https://github\.com/([A-Za-z0-9_-]+)/([A-Za-z0-9._-]+)/pull/([0-9]+)$ ]] &&
+    [ "${BASH_REMATCH[3]}" = "$2" ] || return 1
+  case "${BASH_REMATCH[2]}" in .|..) return 1 ;; esac
+  printf '%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+}
+
+# The driver delivers the entry from its own mark when the reading returns.
+goal_read_guidance() {
+  local rc=0 entry response="$GH_READ_DIR/rate-limit-guidance.json"
+  gh_goal_command "${AMPLIHACK_BIN:-amplihack}" recipe guidance wait "--since=$GUIDANCE_SINCE" \
+    ${GUIDANCE_TARGET:+"$GUIDANCE_TARGET"} >"$response" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  entry="$(goal_guidance_wait_event < "$response" | jq -r 'select(.event == "guidance") | .entry | strings')" || return 1
+  [ -n "$entry" ] && goal_is_entry "$entry"
+}
+
+# The CLI can print startup diagnostics before its final JSON event.
+goal_guidance_wait_event() {
+  tail -n 1 | jq -ce 'objects | select(.event | type == "string")'
+}
+
+goal_ci_cache_dir() {
+  local cache="$1/ci-rest"
+  if [ ! -L "$cache" ] && mkdir -p -- "$cache" && goal_private_dir_ok "$cache"; then
+    printf '%s\n' "$cache"
+  else
+    echo 'the conditional CI cache directory is unavailable' >&2
+    return 1
+  fi
+}
+
 # goal_private_dir_ok <dir>: a real folder of this user with mode exactly 0700.
 goal_private_dir_ok() {
   [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] \
@@ -85,6 +118,23 @@ goal_atomic_write() {
   tmp="$(umask 077 && mktemp "${path%/*}/.${path##*/}.XXXXXX")" || return 1
   if ! cat > "$tmp"; then rm -f -- "$tmp"; return 1; fi
   mv -f -- "$tmp" "$path" || { rm -f -- "$tmp"; return 1; }
+}
+
+goal_write_ci_result() {
+  jq -c --arg head "$2" --arg base "$3" --arg base_sha "$4" '
+    . as $ci | {outcome:"checks-complete", checks_state:.state, head:$head, base:$base, base_sha:$base_sha, summary:(
+      if .state == "passed" then "the checks at the head completed and passed"
+      elif .state == "failed" then "the checks at the head completed and at least one failed"
+      else "the checks at the head completed with unverified results" end)}
+    + (if (.unverified_checks | length) > 0 then {unverified_checks} else {} end)
+    | if $ci.execution_detail then
+        . + ($ci | {execution_detail}) | .summary += ". " + .execution_detail
+      else . end
+    | if $ci.required_error then
+        . + ($ci | {counts, required_error})
+        | .summary += ". The required-check policy is incomplete: " + .required_error
+      else . end' "$1" \
+    | goal_atomic_write "$5"
 }
 
 goal_clean_text() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }

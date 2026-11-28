@@ -73,18 +73,15 @@ fn a_running_required_check_makes_the_run_wait_and_it_merges_when_the_check_comp
     let h = Harness::new();
     h.set_checks("scripts/check fast and full\tpending\t0\thttps://example.invalid\n");
     h.policy(MERGE_WHEN_GREEN);
+    crate::support::exec_stub::write_executable(
+        &h.bin.join("sleep"),
+        "#!/bin/bash\nread -r _ < \"$GH_STATE/release.fifo\"\n",
+        0o755,
+    );
     let mut live = fifo_release::start(
         h.drive_command("auto-drive-to-merge", &["no_merge=false"]),
         &h.gh.join("release.fifo"),
         "the drive",
-    );
-    // The stand-in `gh pr checks --watch` is blocked: the run is waiting.
-    assert!(
-        h.calls()
-            .iter()
-            .any(|c| c.starts_with("pr checks") && c.contains("--watch")),
-        "{:?}",
-        h.calls()
     );
     assert!(
         h.merge_calls().is_empty(),
@@ -94,15 +91,16 @@ fn a_running_required_check_makes_the_run_wait_and_it_merges_when_the_check_comp
     let out = live.finish();
     ok(&out);
     let calls = h.calls();
-    let watch = calls
-        .iter()
-        .position(|c| c.starts_with("pr checks") && c.contains("--watch"))
-        .unwrap();
     let merge = calls
         .iter()
         .position(|c| c.starts_with("pr merge"))
         .expect("a merge call");
-    assert!(watch < merge, "the merge came after the wait: {calls:?}");
+    let last_check = calls[..merge]
+        .iter()
+        .rposition(|c| c.contains("/check-runs?"))
+        .expect("the run read checks before merging");
+    assert!(calls[last_check].contains("If-None-Match:"));
+    assert_eq!(h.result("001")["checks_state"], "passed");
     every_merge_call_is_safe(&h);
     no_draft_conversion(&h);
     assert_eq!(h.loop_end()["end"], "merged");
