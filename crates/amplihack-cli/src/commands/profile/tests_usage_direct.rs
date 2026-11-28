@@ -592,7 +592,7 @@ fn a_partial_deadline_write_allows_request_and_publication_recovery() {
     let renewed = next
         .retry_until_ms
         .expect("second 429 publishes a deadline");
-    assert!(renewed > until);
+    assert_eq!(renewed, until + 59_999);
     assert_eq!(gets(&fake).len(), 2);
     assert_eq!(
         super::usage_direct::active_retry(&ep, &l.dir, location, || req.now_ms),
