@@ -122,6 +122,7 @@ steps:
       1. Identify blocking issues from each review
       2. Implement fixes for each blocking issue
       3. If issues found, re-run applicable reviews after fixing
+      4. After a full check fails (the pre-push hook, a local full test run or a CI job), rerun only the failing tests, binary or script in the same environment until it passes, then the full check once (for a push, the pre-push hook through plain `git push`); write the failed part, the narrow command and its result in your output; report a failure the narrow rerun cannot reproduce instead of fixing it blind, and read a CI-only failure from the CI job log first
       **Output:** Summary of blocking issues found and how they were addressed.
       If no blocking issues, state "No blocking issues found."
     output: "blocking_issues_addressed"
@@ -176,6 +177,7 @@ steps:
       - [ ] For disagreements, document reasoning
       - [ ] Open decisions (issue #3364): when a disagreement or design question stays open after your comments are posted and `AMPLIHACK_RUN_DIR` is set, record it in the run folder so `amplihack recipe waiting` lists it until guidance answers it or the PR is merged or closed. One command, with each open question and the URL of the comment that holds it: `jq -n --arg r "$AMPLIHACK_RUN_ID" --arg t "<PR URL>" --argjson q '["<question>"]' --argjson w '["<comment URL>"]' --arg c "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{kind:"open-decisions",run_id:$r,target:$t,questions:$q,where:$w,created_at:$c}' > "$AMPLIHACK_RUN_DIR/.open-decisions.tmp" && mv -f "$AMPLIHACK_RUN_DIR/.open-decisions.tmp" "$AMPLIHACK_RUN_DIR/open-decisions.json"`
       - [ ] Ensure changes don't introduce new issues
+      - [ ] After a full check fails (the pre-push hook, a local full test run or a CI job), rerun only the failing tests, binary or script in the same environment until it passes, then the full check once (for a push, the pre-push hook through plain `git push`); write the failed part, the narrow command and its result in your output; report a failure the narrow rerun cannot reproduce instead of fixing it blind, and read a CI-only failure from the CI job log first
       - [ ] Waiting (issue #1794): use `amplihack wait --seconds N`, or `cmd & pid=$!; wait $pid`; never `tail -f /dev/null` or `timeout N tail -f /dev/null`, whose `tail` outlives the tool call as an orphan and which the PreToolUse hook denies
       **Output:** Summary of changes for each feedback item.
     output: "pr_feedback_changes"

@@ -159,6 +159,13 @@ Work the agent does inside its own step, before it names the action:
 
 - Fix what a review or CI found and push with plain `git push`, through the
   hooks.
+- After a full check fails (the pre-push hook, a local full test run or a CI
+  job), rerun only the part that failed until it passes: the named failing
+  tests or the one failing test binary or script, in the same environment.
+  Then run the full check once; for a push, that is the pre-push hook. Record
+  the part that failed, the narrow command and its result in `why`. Report a
+  failure the narrow rerun cannot reproduce rather than fix it blind, and read
+  a failure only CI shows from the CI job log first.
 - Bring the base in only when the PR conflicts, when the task text asks, or when
   the repository requires an up-to-date branch. Use a merge commit, resolve any
   conflict, and push. Never rebase, amend, squash or force-push. A branch that
