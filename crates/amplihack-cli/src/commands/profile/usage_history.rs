@@ -43,9 +43,10 @@ const TAIL: u64 = 4 * 1024 * 1024;
 /// The longest span any reader uses is the capacity summary's six hours
 /// (`RATE_WINDOW`); the last-good reader needs five and `rotate status`
 /// reads the same six. At the measured 128 lines an hour that is 768 lines.
-/// A line written now is about 2 KiB (see [`to_line`]), so the span takes
-/// about 1.5 MB, inside [`FILE_LOW`]. Where lines are longer, the bound
-/// governs and the oldest lines go first.
+/// A line written now is at most about 2.3 KiB whatever the mix of
+/// observation times (see [`to_line`]), so the span takes under 1.8 MB,
+/// inside [`FILE_LOW`]. Where lines are longer, the bound governs and the
+/// oldest lines go first.
 #[cfg_attr(not(unix), allow(dead_code))]
 pub(super) const FILE_MAX: usize = 2_000_000;
 /// A rewrite leaves the file under this size, so a file at the bound is not
@@ -555,11 +556,18 @@ struct PointOut {
     w_reset: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     observed_at: Option<String>,
+    /// Seconds from the point's observation to the line's time, for a point
+    /// observed at or before the line's time on a line that is not a batch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observed_ago: Option<u64>,
 }
 
 /// One history line, without the newline. The session reset is not kept.
 /// When every point was observed at the line's time, the per-point times are
-/// left out and the line says so, which takes about a third off a line.
+/// left out and the line says so. Otherwise a point observed at or before the
+/// line's time gives its age in seconds rather than a full time, so a line
+/// holding passive readings is nearly as short; either way the line is about
+/// a third shorter than one with a full time on every point.
 pub(super) fn to_line(e: &Entry) -> String {
     let batch = !e.profiles.is_empty() && e.profiles.values().all(|p| p.observed_at == Some(e.at));
     let out = LineOut {
@@ -577,7 +585,11 @@ pub(super) fn to_line(e: &Entry) -> String {
                         session_limit: (p.no_session_limit && p.s.is_none()).then_some(false),
                         w: p.w,
                         w_reset: p.w_reset.map(utc_time),
-                        observed_at: p.observed_at.filter(|_| !batch).map(utc_time),
+                        observed_at: p.observed_at.filter(|o| !batch && *o > e.at).map(utc_time),
+                        observed_ago: p
+                            .observed_at
+                            .filter(|o| !batch && *o <= e.at)
+                            .map(|o| e.at.abs_diff(o)),
                     },
                 )
             })
@@ -601,7 +613,7 @@ fn pct_in(v: &serde_json::Value) -> Option<u8> {
 }
 
 /// One profile of a line; `None` drops that profile only.
-fn point_in(v: &serde_json::Value, now: i64, batch_at: Option<i64>) -> Option<Point> {
+fn point_in(v: &serde_json::Value, now: i64, at: i64, batch_at: Option<i64>) -> Option<Point> {
     let o = v.as_object()?;
     let s = match o.get("s") {
         None | Some(serde_json::Value::Null) => None,
@@ -625,6 +637,11 @@ fn point_in(v: &serde_json::Value, now: i64, batch_at: Option<i64>) -> Option<Po
         observed_at: o
             .get("observed_at")
             .and_then(|v| time_of(v, now))
+            .or_else(|| {
+                let ago = i64::try_from(o.get("observed_ago")?.as_u64()?).ok()?;
+                let t = at.checked_sub(ago)?;
+                (t.saturating_sub(now).abs() <= MAX_SKEW).then_some(t)
+            })
             .or(batch_at),
         no_session_limit,
         // A line never says how a reading was taken.
@@ -650,7 +667,7 @@ pub(super) fn parse_line(line: &str, now: i64) -> Option<Entry> {
         .as_object()?
         .iter()
         .filter(|(n, _)| ProfileName::parse(n).is_ok())
-        .filter_map(|(n, p)| point_in(p, now, batch_at).map(|p| (n.clone(), p)))
+        .filter_map(|(n, p)| point_in(p, now, at, batch_at).map(|p| (n.clone(), p)))
         .collect();
     let by = o
         .get("by")
@@ -869,14 +886,46 @@ fn lock(dir: &Path) -> Result<std::fs::File, HistoryError> {
     }
 }
 
-/// Ignores SIGXFSZ for this process, so a write past the file-size limit
-/// returns an error (EFBIG) instead of ending the process.
+/// SIGXFSZ is ignored while any history write is running, so a write past
+/// the file-size limit returns an error (EFBIG) instead of ending the
+/// process. The count and the earlier disposition are shared, so writes on
+/// several threads restore the setting once, when the last one ends.
 #[cfg(unix)]
-fn ignore_file_size_signal() {
-    // SAFETY: `signal` with SIG_IGN installs no handler code; it only
-    // changes how this process treats a signal it would otherwise die of.
-    unsafe {
-        libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+static SIGXFSZ_HOLD: std::sync::Mutex<(usize, libc::sighandler_t)> =
+    std::sync::Mutex::new((0, libc::SIG_DFL));
+
+/// Restores SIGXFSZ's earlier disposition when dropped, so the setting does
+/// not outlive the write, and a child process started later does not inherit
+/// it.
+#[cfg(unix)]
+struct IgnoreFileSizeSignal;
+
+#[cfg(unix)]
+impl IgnoreFileSizeSignal {
+    fn new() -> Self {
+        let mut g = SIGXFSZ_HOLD.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0 == 0 {
+            // SAFETY: `signal` with SIG_IGN installs no handler code; it only
+            // changes how this process treats a signal it would otherwise
+            // die of.
+            g.1 = unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) };
+        }
+        g.0 += 1;
+        Self
+    }
+}
+
+#[cfg(unix)]
+impl Drop for IgnoreFileSizeSignal {
+    fn drop(&mut self) {
+        let mut g = SIGXFSZ_HOLD.lock().unwrap_or_else(|e| e.into_inner());
+        g.0 -= 1;
+        if g.0 == 0 && g.1 != libc::SIG_ERR {
+            // SAFETY: restores the disposition `signal` returned earlier.
+            unsafe {
+                libc::signal(libc::SIGXFSZ, g.1);
+            }
+        }
     }
 }
 
@@ -1004,7 +1053,7 @@ pub(super) fn append_with(
     };
     use std::io::Write;
 
-    ignore_file_size_signal();
+    let _sigxfsz = IgnoreFileSizeSignal::new();
     if cred.is_some() {
         return Err(HistoryError::CredentialVar);
     }

@@ -53,6 +53,22 @@ fn long_form(e: &Entry) -> String {
     serde_json::to_string(&v).unwrap()
 }
 
+/// A cycle in which every login's reading is a passive one, taken earlier
+/// than the line (as `usage_passive` records it), so no batch shortening
+/// applies. Ages differ by login, up to the passive reading's age limit.
+fn passive_cycle(at: i64) -> Entry {
+    let mut e = cycle(at);
+    for (i, p) in e.profiles.values_mut().enumerate() {
+        p.observed_at = Some(at - 1 + -((i as i64 * 10) % 300));
+        p.passive = true;
+    }
+    // A line never says how a reading was taken.
+    for p in e.profiles.values_mut() {
+        p.passive = false;
+    }
+    e
+}
+
 struct Root {
     _t: tempfile::TempDir,
     root: std::path::PathBuf,
@@ -100,6 +116,38 @@ fn the_longest_reader_span_fits_the_bound_at_the_measured_line() {
     let long = long_form(&e).len() + 1;
     assert!(long > 2800, "a long line is about 2.8 KiB, got {long}");
     assert!(lines_in_span * long > FILE_MAX);
+}
+
+#[test]
+fn the_span_fits_the_bound_when_points_were_observed_before_the_line() {
+    let lines_in_span = (RATE_WINDOW / LINE_SECS) as usize + 1;
+    let e = passive_cycle(T);
+    assert!(e.profiles.values().all(|p| p.observed_at != Some(T)));
+    let line = to_line(&e);
+    assert_eq!(parse_line(&line, T).unwrap(), e);
+    assert!(
+        lines_in_span * (line.len() + 1) <= FILE_LOW,
+        "{lines_in_span} lines of {} bytes must fit the low mark",
+        line.len() + 1
+    );
+}
+
+#[test]
+fn appending_lines_of_passive_points_keeps_the_readers_span() {
+    let r = Root::new();
+    let total = 3 * (RATE_WINDOW / LINE_SECS) as usize;
+    let mut last = T;
+    for i in 0..total {
+        last = T + i as i64 * LINE_SECS;
+        append_with(&r.root, &passive_cycle(last), last, None).unwrap();
+    }
+    let now = last + 1;
+    let (recent, warning) = read_recent(&r.root, now, RATE_WINDOW);
+    assert!(warning.is_none());
+    let want = (0..total)
+        .filter(|i| now - (T + *i as i64 * LINE_SECS) <= RATE_WINDOW)
+        .count();
+    assert_eq!(recent.len(), want);
 }
 
 #[test]
@@ -356,22 +404,20 @@ fn a_rewrite_drops_only_what_the_reader_already_ignores() {
     assert_eq!(entries, vec![cycle(old_at), cycle(T)]);
 }
 
-/// A reader built before the batch flag reads a point with no time as having
-/// none. The flag is `true` only when every point's time is the line's time,
-/// so a line that cannot be told from a long one carries the times itself.
+/// The batch flag is `true` only when every point's time is the line's time.
+/// A line with any other time gives each point's age in seconds instead, and
+/// a point observed after the line keeps its full time.
 #[test]
-fn a_line_with_a_point_time_that_differs_carries_every_time() {
+fn a_line_with_a_point_time_that_differs_gives_each_point_its_age() {
     let mut e = cycle(T);
     e.profiles.get_mut("login-03").unwrap().observed_at = Some(T - 60);
+    e.profiles.get_mut("login-04").unwrap().observed_at = Some(T + 5);
     let v: serde_json::Value = serde_json::from_str(&to_line(&e)).unwrap();
     assert!(v.get("observed_at_batch").is_none());
-    assert!(
-        v["profiles"]
-            .as_object()
-            .unwrap()
-            .values()
-            .all(|p| p.get("observed_at").is_some())
-    );
+    assert_eq!(v["profiles"]["login-03"]["observed_ago"], 60);
+    assert_eq!(v["profiles"]["login-00"]["observed_ago"], 0);
+    assert!(v["profiles"]["login-04"].get("observed_at").is_some());
+    assert_eq!(parse_line(&to_line(&e), T).unwrap(), e);
     let batch: serde_json::Value = serde_json::from_str(&to_line(&cycle(T))).unwrap();
     assert_eq!(batch["observed_at_batch"], true);
 }

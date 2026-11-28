@@ -3464,40 +3464,37 @@ older than that or cannot be read, or the new line would take the file past
 eight days or lines that cannot be read, dropping the oldest entries until it
 is under 1,800,000 bytes. The bound is under 2 MiB (2,097,152 bytes) and holds
 the longest span a reader uses, the six hours of the capacity summary's rate
-window, at 128 lines an hour. To fit, a line whose points were all observed at
-the line's own time leaves those times out and says so with
-`"observed_at_batch": true`, and a rewrite writes every kept line in that
-form. Readers give such a point the line's time, and read an older, longer
-line as before. The hour's slack means a full history is rewritten at most
-once an hour rather than on every cycle. If the rewrite fails while the new
+window, at 128 lines an hour (768 lines). To fit, a line leaves out the full
+time of each point. When every point was observed at the line's own time, the
+points carry no time and the line says so with `"observed_at_batch": true`.
+Otherwise each point observed at or before the line's time gives its age in
+seconds as `observed_ago`. A line of 29 logins is then about 2.2 KiB whatever
+the mix of times, against 2.8 KiB with a full time on every point, so six
+hours fit under the low mark. A rewrite writes every kept line in this form.
+Readers give a point its time from `observed_at`, `observed_ago` or the batch
+flag, and read an older, longer line as before. The hour's slack means a full
+history is rewritten at most once an hour rather than on every cycle. If the rewrite fails while the new
 line would still pass the bound, nothing is appended. If it fails on a smaller
 file, the line is still appended, the trim is tried again on the next cycle,
 and one warning is printed: `warning: usage history not trimmed`.
-
-The brief's figures cannot all hold. Six hours at 128 lines an hour is 768
-lines, and at the measured 2.8 KiB a line that is about 2.15 MB, more than
-2,097,152 bytes. The line format was shortened (to about 2 KiB) to make the
-span fit; this is a decision for the maintainer to confirm.
 
 A rewrite writes each kept line again in the current format, so it drops what
 a reader already ignores: lines that are not valid JSON objects or are over
 64 KiB, profiles whose names fail the name rules, and unknown keys. It keeps
 every entry a reader would have returned, unchanged.
 
-Readers built before the `observed_at_batch` key read a batch line's points as
-having no observation time, which the stale check and the last-good reading
-depend on. During an upgrade or a rollback, install the new build on every
-host before the history is rewritten, or expect those readers to treat the
-points as unobserved until the line is older than their window (six hours at
-most). Readers with this change read both forms the same, which the replay of
-the recorded histories in `tests_usage_history_bound.rs` checks.
+Readers built before the `observed_at_batch` and `observed_ago` keys read
+those points as having no observation time, which the stale check and the
+last-good reading depend on. During an upgrade or a rollback, install the new
+build on every host before the history is rewritten, or expect those readers
+to treat the points as unobserved until the line is older than their window
+(six hours at most). Readers with this change read every form the same, which
+the replay of the recorded histories in `tests_usage_history_bound.rs` checks.
 
-SIGXFSZ is ignored for the rest of the process once a history write is first
-tried, and a child process the command starts inherits that setting.
-
-A write that cannot finish never changes the command. Writers ignore SIGXFSZ,
-and before an append or a rewrite they compare the length the file would reach
-with the process's file-size limit (`ulimit -f`). If it would pass the limit,
+A write that cannot finish never changes the command. Writers ignore SIGXFSZ
+only while the write runs (the earlier setting is restored afterwards, so
+child processes do not inherit it), and before an append or a rewrite they
+compare the length the file would reach with the process's file-size limit (`ulimit -f`). If it would pass the limit,
 nothing is written and the fixed warning `usage history not updated (too
 large)` is printed. Any other failed write, such as a full disk, is the same
 warning with its own reason, and a line cut short by a failed append is cut
